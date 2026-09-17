@@ -215,9 +215,21 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "method-synthesizer-v1",
         "9341ab10390015fb45d528d95dac0af5b29658f0ee9b70060369d607f8f0ae32",
     ),
-    "METHOD_SYNTHESIZER": (
+    "METHOD_SYNTHESIZER_V2": (
         "method-synthesizer-v2",
         "27ccb23492ef00b73404735a03f51439d2bf0eb1339a6a6b4320950ee8beaccb",
+    ),
+    # P2.3i: v3 = v2 plus "schema_feedback may carry the admission protocol's refusal
+    # lines, and here is what may change on one"; v2 keeps its bytes above.
+    # P2.3i: v3 (protocol refusals travel in schema_feedback); P2.3j merge: the default
+    # is v4, revised from v3 with ``review_feedback``.  v3 keeps its bytes.
+    "METHOD_SYNTHESIZER_V3": (
+        "method-synthesizer-v3",
+        "a38309fdb328c929d6ddefa37ff4de294628f0f508dfad82c7a27bb1cd0e6c9c",
+    ),
+    "METHOD_SYNTHESIZER": (
+        "method-synthesizer-v4",
+        "8d457abe7a74d614642ac7e2446e656aea9c46e4a7f509820353dd04f93f39b6",
     ),
     "PLANNER_HIERARCHICAL_V3": (
         "planner-hierarchical-v3",
@@ -227,15 +239,11 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "planner-hierarchical-v4",
         "5ae3b39acf9326888e20bab934848ed6e1d21482884ccda932ac693b31122223",
     ),
-    # P2.3j: the repair-round prompts.  v5 reads ``rejected_refinements`` and knows
-    # the retire_method + refine repair; synthesizer v3 reads ``review_feedback``.
+    # P2.3j: the repair-round Planner prompt.  v5 reads ``rejected_refinements`` and
+    # knows the retire_method + refine repair.
     "PLANNER_HIERARCHICAL_V5": (
         "planner-hierarchical-v5",
         "2517d5fe727ba27ffffa105d72e786e72109893c342e56adebeaa033794f7608",
-    ),
-    "METHOD_SYNTHESIZER_V3": (
-        "method-synthesizer-v3",
-        "29ce1cc1d42f8b464466020eaa68dde912fafe58481ad49223b350820abcd4b7",
     ),
 }
 

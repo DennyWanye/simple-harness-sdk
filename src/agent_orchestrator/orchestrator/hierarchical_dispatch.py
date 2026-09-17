@@ -223,6 +223,16 @@ SYNTHESIS_ROUND_RECORDED = "MethodSynthesisRoundRecorded"
 #: log shows which ask failed and why, and the round's one concluding event stays
 #: :data:`SYNTHESIS_ROUND_RECORDED`.
 SYNTHESIS_REPLY_UNREADABLE = "MethodSynthesisReplyUnreadable"
+#: P2.3i: one synthesiser reply the codec *read* and the admission protocol refused for
+#: something the model can correct (a port, a ref, a link — ``CORRECTABLE_REJECTIONS``
+#: in ``planning.htn.synthesis``), on a round that is not concluded by it: the same
+#: question is put once more with the protocol's problems attached.  Its own event
+#: rather than a ``kind`` on :data:`SYNTHESIS_REPLY_UNREADABLE`: that event's name and
+#: payload (``block_defect``) say the reply was never decoded, and a reader filtering
+#: on it — the Host runner's receipts, the P2.3g tests — would otherwise start seeing
+#: rows whose ``problems`` are registry verdicts.  Keyed by ordinal like its sibling;
+#: the round's one concluding event stays :data:`SYNTHESIS_ROUND_RECORDED`.
+SYNTHESIS_REPLY_REJECTED = "MethodSynthesisReplyRejected"
 #: G1 (Host acceptance runner): why each registered method was refused for each still
 #: open goal, at the plan revision the Planner was asked against.  The four-axis
 #: report was computed for the *prompt* and thrown away, so after a run nobody could
@@ -3170,6 +3180,7 @@ class HierarchicalDispatch:
         author: str = "",
         asks: int = 1,
         synthesis_round: int = 1,
+        retry_refused: str = "",
     ) -> Event:
         """What one MethodSynthesizer round produced, recorded where it can be read.
 
@@ -3185,6 +3196,10 @@ class HierarchicalDispatch:
         revision.  Round 1 keeps its exact key so the log of every earlier Mission
         reads the same; a later round is keyed by its number, which is what makes
         "once per rejected revision" a bound the log enforces.
+
+        ``retry_refused`` (P2.3i, verification P2.3g P2-1): when the reply earned a
+        second ask and none could be opened, the reason is its own field — not a line
+        appended to ``problems``, which are the reply's problems and nobody else's.
         """
 
         return self._append(
@@ -3202,6 +3217,9 @@ class HierarchicalDispatch:
                 # P2.3g: how many times the synthesiser was asked on this round.
                 "asks": int(asks),
                 "synthesis_round": int(synthesis_round),
+                # P2.3i: why the ask after the last one was not opened ("" when it was,
+                # or when none was owed).
+                "retry_refused": str(retry_refused),
             },
         )
 
@@ -3230,6 +3248,39 @@ class HierarchicalDispatch:
                 "goal_task_id": str(goal_task_id),
                 "ordinal": int(ordinal),
                 "block_defect": str(block_defect),
+                "problems": [str(item) for item in problems][:12],
+            },
+        )
+
+    def record_synthesis_reply_rejected(
+        self,
+        mission_id: str,
+        *,
+        goal_task_id: str,
+        ordinal: int,
+        method_id: str = "",
+        verdict: str = "",
+        problems: Sequence[str] = (),
+    ) -> Event:
+        """One reply the protocol refused for a correctable slip, on a round that goes on.
+
+        P2.3i.  The sibling of :meth:`record_synthesis_reply_unreadable`, for the other
+        way a first ask can fall short: the codec read it, the registry refused it, and
+        every problem is one the model can fix from the package it already holds.  The
+        payload is the receipt's — the method it named, the verdict, the ``CODE: detail``
+        lines — so the log reads "ask 1: REJECTED for PORT_UNAVAILABLE; ask 2: admitted".
+        """
+
+        return self._append(
+            SYNTHESIS_REPLY_REJECTED,
+            mission_id,
+            key=f"{mission_id}:{goal_task_id}:{int(ordinal)}",
+            task_id=goal_task_id or None,
+            payload={
+                "goal_task_id": str(goal_task_id),
+                "ordinal": int(ordinal),
+                "method_id": str(method_id),
+                "verdict": str(verdict),
                 "problems": [str(item) for item in problems][:12],
             },
         )
@@ -3897,6 +3948,7 @@ __all__ = (
     "ROOT_REVIEW_SUPERSEDED",
     "WITNESS_KEY_TAKEN",
     "COMPOUND_DISPLAY_STATUS",
+    "SYNTHESIS_REPLY_REJECTED",
     "SYNTHESIS_REPLY_UNREADABLE",
     "SYNTHESIS_ROUND_RECORDED",
     "COMPOUND_PHASE_CHANGED",

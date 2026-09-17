@@ -911,7 +911,12 @@ def test_repeated_rejections_end_honestly_with_the_reason_written_down(tmp_path)
     assert outcome["synthesis"][0]["admitted"] is False
     assert outcome["synthesis"][0]["synthesis_round"] == 2
     assert outcome["revisions"] == [1], "the first plan, and nothing after it"
-    assert outcome["roles"].get("method_synthesizer") == 1
+    # P2.3i (merged): ``UNKNOWN_OPERATOR`` is a correctable refusal, so the one round
+    # asks twice — bounded by ``MAX_SYNTHESIS_ASKS`` — and concludes on the second.
+    assert outcome["roles"].get("method_synthesizer") == 2
+    assert outcome["synthesis"][0]["asks"] == 2
+    assert outcome["synthesis"][0]["retry_refused"] == ""
+    assert outcome["types"].count("MethodSynthesisReplyRejected") == 1
     assert "MissionFailed" in outcome["types"]
 
 

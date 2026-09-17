@@ -92,6 +92,8 @@ from agent_orchestrator.runtime.role_templates import (  # noqa: E402
     METHOD_SYNTHESIZER,
     METHOD_SYNTHESIZER_V1,
     METHOD_SYNTHESIZER_V1_VERSION,
+    METHOD_SYNTHESIZER_V2,
+    METHOD_SYNTHESIZER_V2_VERSION,
     METHOD_SYNTHESIZER_VERSION,
     PLAN_REVISION_PROPOSAL_TAG,
     PLANNER_HIERARCHICAL_V3,
@@ -188,7 +190,8 @@ def test_the_grok_synthesizer_reply_is_refused_for_exactly_the_fields_the_episod
 def test_v2_names_every_field_the_codec_requires_and_v1_named_none_of_them():
     """The prompt states the codec's keys; v1 said "the full MethodContract JSON"."""
 
-    v2 = METHOD_SYNTHESIZER.instructions
+    # P2.3i registered v3 beside it as the default; v2 is the version this test is about.
+    v2 = METHOD_SYNTHESIZER_V2.instructions
     for group, names in METHOD_SHAPE.items():
         for name in names:
             assert name in v2, f"{group}.{name} is not in method-synthesizer-v2"
@@ -205,10 +208,12 @@ def test_v2_names_every_field_the_codec_requires_and_v1_named_none_of_them():
     assert not any(
         name in v1 for name in ("method_version", "obligation_relation", "evidence_requirement")
     )
-    assert (
-        METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v2"
-    )
-    assert METHOD_SYNTHESIZER.tool_names == ()
+    assert METHOD_SYNTHESIZER_V2.prompt_version == METHOD_SYNTHESIZER_V2_VERSION
+    assert METHOD_SYNTHESIZER_V2_VERSION == "method-synthesizer-v2"
+    assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
+    # P2.3i: v3; P2.3j merge: the default is v4 (v3 plus ``review_feedback``).
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v4"
+    assert METHOD_SYNTHESIZER.tool_names == METHOD_SYNTHESIZER_V2.tool_names == ()
     assert v2.startswith("[role:method_synthesizer]")
 
 
@@ -270,7 +275,11 @@ def test_the_example_in_v2_parses_and_is_admitted_once_the_placeholders_are_copi
     env = synth.empty_library_env()
     request = synth.synthesizer(env).build_request(synth.goal(env), env.capabilities())
     package = request.to_json()
-    body = _example_block(METHOD_SYNTHESIZER.instructions)
+    # the same example block is carried, byte for byte, by v2 and by v3
+    assert _example_block(METHOD_SYNTHESIZER_V2.instructions) == _example_block(
+        METHOD_SYNTHESIZER.instructions
+    )
+    body = _example_block(METHOD_SYNTHESIZER_V2.instructions)
     operators = {
         item["task_type_ref"]["id"]: item["task_type_ref"] for item in package["operators"]
     }
@@ -344,6 +353,7 @@ def test_v1_keeps_its_bytes_stays_registered_and_is_still_pinnable():
     assert METHOD_SYNTHESIZER_V1.prompt_version == METHOD_SYNTHESIZER_V1_VERSION
     versions = TEMPLATE_VERSIONS["method_synthesizer"]
     assert versions[METHOD_SYNTHESIZER_V1_VERSION] is METHOD_SYNTHESIZER_V1
+    assert versions[METHOD_SYNTHESIZER_V2_VERSION] is METHOD_SYNTHESIZER_V2
     assert versions[METHOD_SYNTHESIZER_VERSION] is METHOD_SYNTHESIZER
     pinned = template_for(METHOD_SYNTHESIZER, {"method_synthesizer": METHOD_SYNTHESIZER_V1_VERSION})
     assert pinned is METHOD_SYNTHESIZER_V1
@@ -537,12 +547,15 @@ def test_a_second_unreadable_reply_concludes_the_round_and_nobody_is_asked_a_thi
 
 def test_the_retry_is_bounded_by_a_constant_read_off_the_intents_ordinal():
     source = inspect.getsource(Orchestrator._collect_synthesizer)
-    assert "if ordinal < MAX_SYNTHESIS_ASKS:" in source
+    assert "and ordinal < MAX_SYNTHESIS_ASKS:" in source
     assert "record_synthesis_reply_unreadable(" in source
-    assert "schema_feedback=synthesis_schema_feedback(unreadable)" in source
-    # a read-and-refused reply takes the other branch and is never re-asked
+    assert "feedback = synthesis_schema_feedback(unreadable)" in source
     assert "except SynthesisReplyUnreadable as unreadable:" in source
     assert "asks=ordinal" in source
+    # P2.3i: a read-and-refused reply is re-asked only when every problem is a
+    # correctable slip; the gate is the one predicate, pinned in
+    # ``test_synthesis_rejection_reask``.
+    assert "if not admitted and rejection_is_correctable(receipt):" in source
 
 
 # ======================================================================================
