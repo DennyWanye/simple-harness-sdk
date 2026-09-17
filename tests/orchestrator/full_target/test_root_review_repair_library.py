@@ -417,9 +417,15 @@ def test_the_repair_round_package_now_offers_the_root_library_and_marks_the_reje
     assert library["plan.outer"]["rejected_by_root_review"] is True
     assert library["plan.alt"]["rejected_by_root_review"] is False
     assert library["plan.alt"]["refine_method_ref"]["id"] == "plan.alt"
-    # Both methods apply here, so the refusal section stays empty — the rejected one
-    # is *not* smuggled in as a refusal: its reason is the review, stated above.
-    assert package["applicability"] == []
+    # P2.3n: the alternative that applies is reported APPLICABLE so a Planner that
+    # grounds methods from this section can see it.  The rejected method is *not*
+    # smuggled in as a refusal: its reason is the review, stated above.
+    by_id = {
+        (item.get("method_ref") or {}).get("method_id"): item["verdict"]
+        for item in package["applicability"]
+    }
+    assert by_id.get("plan.alt") == "APPLICABLE"
+    assert "plan.outer" not in by_id
     # The repair record itself now names the instance, which is how the package (and
     # the synthesis judgment) find it after a restart.
     assert outcome["events"][0]["detail"]["method_instance_id"] == outcome["adopted_instance"]
@@ -719,7 +725,9 @@ def test_the_rejected_methods_refusal_is_not_reported_as_applicability(
         for item in world.dispatch.method_applicability(world.mission.id)
         if str(item.goal_occurrence_id) == root
     ]
-    assert entries == [], "the rejected method's refusal is the review's, not an axis"
+    named = {str(item.method_ref.method_id): item.report.status for item in entries}
+    assert "plan.outer" not in named, "the rejected method's refusal is the review's, not an axis"
+    assert named.get("plan.alt") == hd.ApplicabilityStatus.APPLICABLE
     assert world.dispatch.goals_needing_method(world.mission.id) == (), (
         "the alternative applies; one rejected candidate struck, one left"
     )

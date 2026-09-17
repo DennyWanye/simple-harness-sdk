@@ -257,6 +257,12 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "planner-hierarchical-v5",
         "2517d5fe727ba27ffffa105d72e786e72109893c342e56adebeaa033794f7608",
     ),
+    # P2.3n: v6 = v5 plus "an APPLICABLE applicability row is a usable method,
+    # including a just-admitted synthesised one".  v5 keeps its bytes above.
+    "PLANNER_HIERARCHICAL_V6": (
+        "planner-hierarchical-v6",
+        "b13d16f7d1d5aaa8919d983e93b7639105446bd6d95bd73d05353571a9a185a6",
+    ),
 }
 
 #: P2.3d / defect D1: the same freeze for the versions a *domain module* registers.

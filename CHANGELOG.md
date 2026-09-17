@@ -1,4 +1,4 @@
-## 0.12.2 — P2.3e–P2.3m：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议与只读拒绝有界（2026-09-17）
+## 0.12.2 — P2.3e–P2.3n：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界与第二轮合成采用（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -23,6 +23,12 @@
 - **401**：runtime 已区分 `ProviderAuthenticationError` 为 FAILED；编排侧对 FAILED 鉴权立即 `runtime_unavailable`。
 - 测试：`test_read_only_rewrite_bound.py` 7 条；4 变异 KILLED。同哈希过滤只走分层（legacy 静态 DAG 列出上游文件，套上会挂住 `run()`）。full_target **2865 passed / 2 skipped**（基线 2856/3）；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 清；`_new_mode` 仍 19。详见 journal 第四部分 §2o。
 - **审计 I07**：无 coverage 的 `c-composition` 不再因有子验收填 PASS。
+
+**P2.3n：round-2 准入方法必须进入下一轮 Planner 包并被采用。** 分支 `p2.3n-second-synthesis-adoption`，基 2845b7e；版本号不动。真实局 H-L3-C1-r0/r1：round 2 TRIAL_ADMITTED 后 planner:5 库里有新方法且 `rejected_by_root_review=false`，applicability 只有三条种子 NEEDS_EVIDENCE，`MethodApplicabilityAssessed` 无 round-2 行 → Planner `no_applicable_method` → stall。
+
+- **根因**：空 `applicable_when` 的合成方法是 APPLICABLE，评估把它省略；评估事件键 `(mission, plan_revision)` 在合成不改 revision 时复用旧记录。`rejected_method_refs` 未误伤新方法。准入后 Planner 轮本来就会开。
+- **修法**：`method_applicability` 报告 APPLICABLE（被拒方法仍排除）；`goals_needing_method` 仍只计拒绝。评估键 `synth:{n}`（n>1），载荷多 `applicable_methods`。替换编译排除即将离开的 occurrence，避免同 task type `binds slot … to unknown occurrence`。提示词只加 `planner-hierarchical-v6`（v5 钉住，pin 仍生效）。`max_root_review_repairs` 与合成轮上限不放宽。无新配置项，`_new_mode` 仍 19。
+- 测试：`test_second_synthesis_adoption.py` 6 条（C1-r0 ord 5 夹具 + 两条真 Orchestrator COMPLETED）；4 变异 KILLED。full_target **2874 passed / 2 skipped**；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 清；`_new_mode` 仍 19。详见 journal 第四部分 §2p。
 
 代码候选提交（第 3 版）：在第 2 版之上再并入 P2.3m bf7edc5/f518f73（只读叶拒绝有界并升级规划层；无 coverage 的 c-composition 不填 PASS；架构捷径声明）；第 2 版 = 444879a（P2.3e–P2.3h）之上并入 P2.3i 4b62bc9、P2.3j 83eaa84/3c2af6f、P2.3k a5d2d3b/9db33dc、P2.3l 5b317cc/6453573/a2a197e（合并提交 fc07312、4022da9，均已 ff 进 main）；第 2 批 Grok 重跑（c7cfedd，H 臂 L3+L4 共 20 局：官方通过 11、COMPLETED 0）逐局诊断见 Host `impl/Grok验收-第2批L3诊断` / `L4诊断`；发布身份以本条目所在的版本提交为准。四片各有独立 fable 核验记录在 `plans/2026-09-16-full-target/P2.3c/reviews/`（P2.3e/f 可合、P2.3g 可合、P2.3h 修后可合 → 256a316 已修）。**迁移**：`code.fix-by-patch` / `fix-by-revert` / `fix-by-assessed-revert` 升到 `method_version 2`，旧库 `@1` 行保留并存；Grok runner 的 FREEZE-candidate 必须按本提交重生成。
 

@@ -658,11 +658,12 @@ def test_v4_never_tells_the_planner_to_propose_a_method_and_v3_keeps_its_bytes()
     assert PLANNER_HIERARCHICAL_V4.prompt_version == PLANNER_HIERARCHICAL_V4_VERSION
     assert TEMPLATE_VERSIONS["planner"][PLANNER_HIERARCHICAL_V4_VERSION] is PLANNER_HIERARCHICAL_V4
     # P2.3j: v3 and v4 stay registered (replayable) under package 2; the current
-    # package is 3, whose only prompt is v5, so the chooser's fallback moved with it.
+    # package is 3.  P2.3n: the unpinned default moved from v5 to v6; v5 stays a
+    # pin of this package.
     assert PLANNER_HIERARCHICAL_V4_VERSION in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[2]
     assert PLANNER_HIERARCHICAL_V3.prompt_version in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[2]
     assert PLANNER_HIERARCHICAL_V4_VERSION not in hierarchical_planner_versions()
-    assert "return PLANNER_HIERARCHICAL_V5" in inspect.getsource(
+    assert "return PLANNER_HIERARCHICAL_V6" in inspect.getsource(
         Orchestrator._hierarchical_planner_template
     )
 

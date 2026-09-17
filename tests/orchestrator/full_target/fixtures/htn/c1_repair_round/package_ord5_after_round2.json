@@ -1,0 +1,61 @@
+{
+  "source": "H-L3-C1-r0 planner ordinal 5, after MethodSynthesisRoundRecorded{synthesis_round:2, TRIAL_ADMITTED} for code.fix-by-facts-apply-then-explain. SDK 0.12.2 candidate 2845b7e, Grok third batch. Read-only extract from dispatch_intents.config_json.message.content; paths redacted.",
+  "creation_key_suffix": "planner:5",
+  "package_version": "planner-package-hierarchical-v4",
+  "plan": {
+    "plan_revision": 1,
+    "open_compound_goals": [],
+    "committed_primitives_count": 6
+  },
+  "method_library": [
+    {
+      "method_id": "code.fix-by-assessed-revert",
+      "rejected_by_root_review": false,
+      "goal_signature_id": "code.fix-failing-test"
+    },
+    {
+      "method_id": "code.fix-by-diagnose-patch-verify-explain",
+      "rejected_by_root_review": true,
+      "goal_signature_id": "code.fix-failing-test"
+    },
+    {
+      "method_id": "code.fix-by-facts-apply-then-explain",
+      "rejected_by_root_review": false,
+      "goal_signature_id": "code.fix-failing-test"
+    },
+    {
+      "method_id": "code.fix-by-patch",
+      "rejected_by_root_review": false,
+      "goal_signature_id": "code.fix-failing-test"
+    },
+    {
+      "method_id": "code.fix-by-revert",
+      "rejected_by_root_review": false,
+      "goal_signature_id": "code.fix-failing-test"
+    }
+  ],
+  "applicability": [
+    {
+      "method_id": "code.fix-by-assessed-revert",
+      "verdict": "NEEDS_EVIDENCE",
+      "goal_occurrence_id": "task-root"
+    },
+    {
+      "method_id": "code.fix-by-patch",
+      "verdict": "NEEDS_EVIDENCE",
+      "goal_occurrence_id": "task-root"
+    },
+    {
+      "method_id": "code.fix-by-revert",
+      "verdict": "NEEDS_EVIDENCE",
+      "goal_occurrence_id": "task-root"
+    }
+  ],
+  "rejected_refinements": [
+    {
+      "method_id": "code.fix-by-diagnose-patch-verify-explain",
+      "occurrence_id": "task-root",
+      "plan_revision": 1
+    }
+  ]
+}

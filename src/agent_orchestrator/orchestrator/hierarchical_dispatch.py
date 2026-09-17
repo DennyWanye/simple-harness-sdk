@@ -239,9 +239,10 @@ SYNTHESIS_REPLY_REJECTED = "MethodSynthesisReplyRejected"
 #: open goal, at the plan revision the Planner was asked against.  The four-axis
 #: report was computed for the *prompt* and thrown away, so after a run nobody could
 #: say why a method had not been chosen — the runner had to re-derive it with a probe.
-#: One record per ``(mission, plan_revision)``: the assessment is a function of the
-#: world at that revision, so a second round against the same revision has nothing new
-#: to say and the idempotency key makes that explicit rather than appending a twin.
+#: One record per ``(mission, plan_revision)`` while the library is unchanged.  P2.3n:
+#: a synthesis round admits a method *without* moving the plan revision, so the key
+#: grows ``:synth:{n}`` once ``n > 1``; otherwise the post-admission Planner round
+#: would reuse the pre-admission assessment (H-L3-C1-r0/r1 ordinal 5).
 METHOD_APPLICABILITY_ASSESSED = "MethodApplicabilityAssessed"
 
 #: P2.3d / defect D5-A: the ``PlanningRejected.reason`` under which a root review's
@@ -2886,22 +2887,23 @@ class HierarchicalDispatch:
         return answered
 
     def method_applicability(self, mission_id: str) -> tuple[Any, ...]:
-        """Why each registered method does not apply to each still-open goal.
+        """Why each registered method does or does not apply to each still-open goal.
 
         Review F16: the hierarchical Planner package always passed ``reports=()``, so
         the ``applicability`` section the package's own docstring calls load-bearing
         was empty in every deployment — the Planner was told "no method fits" with no
         axis and no reason, which is the exact state the section exists to replace.
 
-        Only *refused* verdicts are reported: an applicable method is already in
-        ``method_library`` and repeating it here as "nothing was wrong with this one"
-        would push the refusals out of the model's attention.
+        P2.3n: applicable verdicts are reported too.  Omitting them left a round-2
+        synthesised method (empty ``applicable_when`` → APPLICABLE) present only in
+        ``method_library``; the v5 prompt reads "都被 applicability 拒绝" as
+        ``no_applicable_method``, and Grok H-L3-C1-r0/r1 ordinal 5 did exactly that
+        while the new method sat silently in the library.  A rejected method stays
+        out: its reason is the review, stated in ``rejected_refinements``.
 
         P2.3j: an occurrence whose adopted instance the root review rejected
         (:meth:`rejected_refinements`) is assessed as well — it is the goal the
-        repair round is *about* — with the rejected method itself left out: its
-        reason is the review, stated in the package's ``rejected_refinements``, not
-        an applicability axis.
+        repair round is *about* — with the rejected method itself left out.
         """
 
         from ..planning.htn.planner_package import MethodApplicability
@@ -2935,8 +2937,6 @@ class HierarchicalDispatch:
                 report = assess_method(
                     goal, contract, snapshot, capabilities, registry=world.predicates
                 )
-                if report.applicable:
-                    continue
                 entries.append(
                     MethodApplicability(
                         goal_occurrence_id=str(spec.occurrence_id),
@@ -2977,6 +2977,7 @@ class HierarchicalDispatch:
         semantics = self.semantics()
         rendered = applicability_reports(entries, limit=MAX_RECORDED_REFUSALS)
         refused: list[dict[str, Any]] = []
+        applicable: list[dict[str, Any]] = []
         for item in rendered:
             cited = tuple(item.get("unknown_preconditions", ())) + tuple(
                 item.get("conflicting_preconditions", ())
@@ -2992,19 +2993,52 @@ class HierarchicalDispatch:
             # precisely because what was observed did not settle it.  Naming them is
             # what lets a reader tell "nobody looked" from "somebody looked and the
             # answer did not decide it".
-            refused.append({**item, "observation_ids": seen})
+            row = {**item, "observation_ids": seen}
+            if str(item.get("verdict") or "") == "APPLICABLE":
+                applicable.append(row)
+            else:
+                refused.append(row)
+        revision = int(network.plan_revision)
+        synthesis_round = self.latest_synthesis_round(mission_id)
         return append_hierarchical_event(
             self.store,
             METHOD_APPLICABILITY_ASSESSED,
             mission_id,
-            key=f"{mission_id}:{int(network.plan_revision)}",
+            key=self._applicability_record_key(mission_id, revision, synthesis_round),
             payload={
-                "plan_revision": int(network.plan_revision),
+                "plan_revision": revision,
+                "synthesis_round": int(synthesis_round),
                 "refused_methods": refused,
-                "refusal_count": len(entries),
+                "applicable_methods": applicable,
+                "refusal_count": len(refused),
                 "truncated": len(entries) > len(rendered),
             },
         )
+
+    def latest_synthesis_round(self, mission_id: str) -> int:
+        """The highest ``synthesis_round`` recorded on this Mission, else 0."""
+
+        highest = 0
+        for event in self.store.list_events(mission_id):
+            if event.type != SYNTHESIS_ROUND_RECORDED:
+                continue
+            highest = max(highest, int(event.payload.get("synthesis_round", 1) or 1))
+        return highest
+
+    def _applicability_record_key(
+        self, mission_id: str, plan_revision: int, synthesis_round: int
+    ) -> str:
+        """Idempotency key for one applicability assessment (P2.3n).
+
+        Round 1 (and no synthesis at all) keeps the historical
+        ``{mission}:{plan_revision}`` spelling so earlier Missions' logs still
+        answer.  A later synthesis round changes the library without moving the
+        plan, so the key must move with it.
+        """
+
+        if int(synthesis_round) <= 1:
+            return f"{mission_id}:{int(plan_revision)}"
+        return f"{mission_id}:{int(plan_revision)}:synth:{int(synthesis_round)}"
 
     def plan_revision_committed_at(self, mission_id: str, plan_revision: int) -> int | None:
         """When this plan revision was committed, in observation milliseconds.
@@ -3206,6 +3240,12 @@ class HierarchicalDispatch:
         history = self.rejected_method_refs(mission_id)
         refused: dict[str, list[Any]] = {}
         for entry in self.method_applicability(mission_id):
+            # P2.3n: applicable reports travel in the package so the Planner can
+            # *see* a newly admitted method; the synthesis judgment still counts
+            # only refusals, or ``len(seen) == candidates`` would look like "none
+            # apply" and open another round.
+            if entry.report.applicable:
+                continue
             refused.setdefault(str(entry.goal_occurrence_id), []).append(entry.report)
         by_signature: dict[str, int] = {}
         registered: set[MethodRef] = set()
@@ -3656,7 +3696,14 @@ class HierarchicalDispatch:
         # read-only sub-goal two consumers both need — TG §12's shared goal, and
         # §21.5's "a shared sub-goal is reused at least once" — could not happen in a
         # running Mission at all, whatever the method library said.
-        sharing = shared_goal_index(network, catalog=world.catalog)
+        # P2.3n: a replacement must not share slots with the instance it retires —
+        # those occurrences leave with the membership, and grounding against them
+        # produced ``binds slot … to unknown occurrence`` (C1-shape same task types).
+        sharing = shared_goal_index(
+            network,
+            catalog=world.catalog,
+            exclude_occurrence_ids=_occurrences_leaving_with(network, retiring),
+        )
         draft = ground_method(
             parent,
             contract,
@@ -4084,7 +4131,35 @@ def record_assembly_missing(store: Store, mission: Mission, *, at: str) -> Event
     )
 
 
-def shared_goal_index(network: TaskNetworkSnapshot, *, catalog: Any) -> SharedGoalIndex:
+def _occurrences_leaving_with(
+    network: TaskNetworkSnapshot, retiring: Sequence[MethodInstanceId]
+) -> frozenset[OccurrenceId]:
+    """Occurrences that exist only because of the instances this proposal retires.
+
+    A shared child another adopted instance still binds is not leaving: §8.3 says
+    one consumer departing must not cancel work another consumer still needs.
+    """
+
+    if not retiring:
+        return frozenset()
+    dropped: set[OccurrenceId] = set()
+    surviving: set[OccurrenceId] = set()
+    retired = set(retiring)
+    for instance in network.method_instances:
+        children = {child.occurrence_id for child in instance.child_bindings}
+        if instance.instance_id in retired:
+            dropped |= children
+        elif instance.instance_id in set(network.adopted_instance_ids) - retired:
+            surviving |= children
+    return frozenset(dropped - surviving)
+
+
+def shared_goal_index(
+    network: TaskNetworkSnapshot,
+    *,
+    catalog: Any,
+    exclude_occurrence_ids: Sequence[OccurrenceId] = (),
+) -> SharedGoalIndex:
     """The occurrences of this network a later slot may bind instead of re-doing.
 
     G2.  Every occurrence that has a semantic binding is offered; nothing here decides
@@ -4093,14 +4168,21 @@ def shared_goal_index(network: TaskNetworkSnapshot, *, catalog: Any) -> SharedGo
     read-only or carrying an effect identity — so an index entry is a candidate, never
     a merge.  An occurrence whose task type this deployment cannot resolve is skipped
     rather than indexed under a guess.
+
+    P2.3n: ``exclude_occurrence_ids`` are occurrences that will leave with a
+    ``retire_method`` in the same proposal — offering them as share targets would
+    ground the replacement against slots the merge then removes.
     """
 
+    skipped = {OccurrenceId(str(item)) for item in exclude_occurrence_ids}
     by_signature = {
         (str(spec.goal_signature.signature_id), int(spec.goal_signature.version)): spec
         for spec in catalog.task_types()
     }
     entries: list[SharedGoalEntry] = []
     for occurrence in network.occurrences:
+        if occurrence.occurrence_id in skipped:
+            continue
         try:
             binding = network.binding_for_occurrence(occurrence.occurrence_id)
         except (KeyError, ContractError):

@@ -3676,6 +3676,46 @@ P2 未做：见核验报告 §4（`runtime_unavailable` 不键 0 token、种子 
 1. **口径**：CHANGELOG 0.12.2 标题改为 P2.3e–P2.3m；文首「架构捷径声明」三项——根收尾 = `root_reviewer` + Mission Judge、Mission 账户两次；非根 compound = 机械 composition，不是独立 COMPOSITION 审阅；根评审 v3 准则解释权以 `mission_goal` 为准（与「准则以 goal signature 为准」相反）。HANDOFF 文首「最后核查」改为本片。
 2. **AER I05/I07**：`composition_review._outcomes` 删掉 `c-composition`「有子验收即 PASS」。无 coverage 映射 → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。对照：M3 `assess-by-reading` 有链接的主路径仍决议。测试：`test_c_composition_without_coverage_does_not_form_accept`、`test_linked_assess_by_reading_still_forms_a_resolution`。变异 M1 恢复 PASS-if-accepted → 1 failed，KILLED（`/tmp/p23m-i07-composition_review.py.bak` 恢复）。回归：full_target **2867 passed / 2 skipped**（上一段 2865，+2）；旧模式 560/13/0；ruff 清。
 
+## 2p. P2.3n：round-2 准入方法必须进入下一轮 Planner 包并被采用（2026-09-18，分支 `p2.3n-second-synthesis-adoption`，基 2845b7e = 0.12.2 候选第 3 版）
+
+输入：用户任务书 + 真实局只读 `H-L3-C1-r0` / `H-L3-C1-r1`（证据目录零写入）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 根因（两局 ord 5 请求包）
+
+合成 round 2 `TRIAL_ADMITTED` 之后，新方法**在** `method_library`（`rejected_by_root_review=false`），**不在** `rejected_refinements`。Planner 轮也确实开了（`_after_synthesis_round`）。缺的是适用性：
+
+1. 新方法 `applicable_when` 为空 → `assess_method` 答 APPLICABLE。`method_applicability()` 原先 `if report.applicable: continue`，包的 `applicability` 只剩三条种子方法的 `NEEDS_EVIDENCE`。
+2. `MethodApplicabilityAssessed` 键是 `(mission, plan_revision)`。round 2 不改 revision，planner:5 复用 planner:4 那条只含三条种子的评估。
+3. v5 提示词写「都被 applicability 拒绝」就 `no_applicable_method`。Grok 只看那三条 NEEDS_EVIDENCE，当新方法不存在。系统侧 `goals_needing_method` 却认为「至少一条适用」不再合成 → 旧实例仍 ADOPTED → `hierarchical_no_dispatchable_work`。
+
+`rejected_method_refs` **没有**误伤 round-2 方法。
+
+### 修法
+
+1. `method_applicability` 报告 APPLICABLE（被拒方法仍排除）。`goals_needing_method` 计数仍只看拒绝。
+2. 评估事件键在 `synthesis_round>1` 时加 `:synth:{n}`；载荷多 `applicable_methods` / `synthesis_round`。
+3. 替换编译：`shared_goal_index` 排除即将随 `retire_method` 离开的 occurrence（C1 同 task type 原先 `binds slot … to unknown occurrence`）。
+4. 提示词只加 `planner-hierarchical-v6`（APPLICABLE 即可用，含刚准入合成方法）；v5 钉住 `2517d5fe…`，pin v5 仍生效，未 pin 默认 v6。包 schema 未升。`max_root_review_repairs` 与合成轮上限不放宽。
+
+### 测试
+
+`test_second_synthesis_adoption.py` 6 条：C1-r0 ord 5 夹具钉缺陷；活包 + 新评估事件；根评审拒绝 / 只读叶升级两条真 Orchestrator 端到端 COMPLETED；有界不放宽。夹具 `fixtures/htn/c1_repair_round/package_ord5_after_round2.json`。变异 4/4 KILLED（`/tmp/p23n-*.bak` 恢复，不用 git checkout）：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| M1 | 再跳过 APPLICABLE | 1 failed（新方法缺席 applicability）→ KILLED |
+| M2 | 评估键仍只按 revision | 1 failed（round-2 无新记录）→ KILLED |
+| M3 | 替换仍共享被退孩子 | 2 failed（proposal_not_grounded，无 revision 2）→ KILLED |
+| M4 | 准入后不开 Planner | 1 failed（无第二轮规划）→ KILLED |
+
+回归：full_target **2874 passed / 2 skipped**；旧模式 560/13/0；ruff 清；`_new_mode` 仍 19。
+
+### 未做
+
+- 真实模型第 3 批未重跑。
+- 只读叶路径新叶子的 `rule_check` 仍可能在 C1 形状 Worker 脚本下失败；端到端在 revision 2 之后用验收装配收口（与 P2.3j 相同）。
+- 工作区仍不预铺已验收补丁。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

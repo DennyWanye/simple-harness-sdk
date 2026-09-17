@@ -537,8 +537,10 @@ def hierarchical_planner_package(
             "appear in this package; if facts is empty, write no kind=fact entry at all. "
             "A rejected_refinements entry is repaired by ONE proposal carrying a retire_method "
             "of its rejected_method_instance_id together with a refine of the same goal_id / "
-            "obligation_id using a method_library entry whose rejected_by_root_review is false; "
-            "if no such entry applies, answer no_applicable_method"
+            "obligation_id using a method_library entry whose rejected_by_root_review is false "
+            "and whose applicability verdict is APPLICABLE (or which applicability does not "
+            "list as a refusal); a newly admitted synthesised method is such an entry. "
+            "If every unrejected library entry is listed as a refusal, answer no_applicable_method"
         ),
         "output_contract": "<plan_revision_proposal>{json}</plan_revision_proposal>",
         "package_version": HIERARCHICAL_PACKAGE_VERSION,

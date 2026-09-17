@@ -2717,7 +2717,7 @@ class Orchestrator:
         """
 
         from ..runtime.role_templates import (
-            PLANNER_HIERARCHICAL_V5,
+            PLANNER_HIERARCHICAL_V6,
             hierarchical_planner_versions,
         )
 
@@ -2730,9 +2730,10 @@ class Orchestrator:
         # P2.3g: v4 is v3 minus the sentence that told the Planner to write a
         # ``<method_proposal>`` when no method applied; same package, so a pin on v3
         # still selects v3 above and the unpinned default is v4.
-        # P2.3j: package v4 carries ``rejected_refinements``; v5 is the only prompt
-        # written against it, so it is the default and the only pin honoured here.
-        return PLANNER_HIERARCHICAL_V5
+        # P2.3j: package v4 carries ``rejected_refinements``; v5 is the prompt that
+        # introduced the section.  P2.3n: v6 is the unpinned default (an APPLICABLE
+        # applicability row is a usable method); a pin on v5 is still honoured above.
+        return PLANNER_HIERARCHICAL_V6
 
     def _hierarchical_worker_template(self, role: Any, mission_id: str) -> Any:
         """The Worker prompt that knows about output ports (part 2d, decision 4).

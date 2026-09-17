@@ -464,7 +464,9 @@ def test_a_verify_leaf_that_reapplies_the_accepted_patch_is_collected(tmp_path) 
 def test_two_new_rewrites_escalate_to_planning_with_named_feedback(tmp_path) -> None:
     """Genuine new writes, twice → PlanningRejected{read_only_leaf_needs_write}
     → synthesis carrying that feedback and a method that still has apply-patch.
-    The verify leaf is not attempted a third time; stop is not budget_exhausted."""
+    The verify leaf is not attempted a third time.  P2.3n: the Planner adopts the
+    round-2 method (a new plan revision), so the Mission continues; later leaf
+    failures are not this test's subject."""
 
     world = _world(tmp_path, key="p23m-escalate")
     worker = _LeafWorker(mode="new", rewrite_limit=2)
@@ -479,10 +481,6 @@ def test_two_new_rewrites_escalate_to_planning_with_named_feedback(tmp_path) -> 
         }
     )
     outcome = _run(world, tmp_path, provider)
-    assert outcome["stop_reason"] != str(MissionStopReason.BUDGET_EXHAUSTED), (
-        outcome["stop_reason"],
-        outcome["report"],
-    )
     rejections = [
         item
         for item in outcome["events"]
@@ -511,8 +509,12 @@ def test_two_new_rewrites_escalate_to_planning_with_named_feedback(tmp_path) -> 
         )
     ]
     assert first_verify == [1, 2], outcome["attempts"]
-    blob = json.dumps(outcome["report"].get("detail") or {}, ensure_ascii=False)
-    assert READ_ONLY_REWRITE_REPAIR_REASON in blob, outcome["report"].get("detail")
+    revisions = [
+        int(item.payload["plan_revision"])
+        for item in outcome["events"]
+        if item.type == "PlanRevisionCommitted"
+    ]
+    assert 2 in revisions, revisions
 
 
 def test_persistent_rewrites_stop_with_the_named_reason_and_release_reservations(

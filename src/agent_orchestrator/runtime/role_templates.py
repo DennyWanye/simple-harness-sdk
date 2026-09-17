@@ -625,11 +625,36 @@ PLANNER_HIERARCHICAL_V5 = _revise(
     ),
 )
 
+# P2.3n.  Grok H-L3-C1-r0/r1 ordinal 5: synthesis round 2 admitted a method that
+# sat in method_library (rejected_by_root_review=false) but not in applicability
+# (only the three seed methods, all NEEDS_EVIDENCE).  v5 says "都被 applicability
+# 拒绝" then no_applicable_method; the model treated the silent library entry as
+# ungrounded.  v6: an unrejected library method whose applicability verdict is
+# APPLICABLE — including a just-admitted synthesised method — is usable.  v1–v5
+# keep their exact words and stay registered (§18.5 C8).
+PLANNER_HIERARCHICAL_V6_VERSION = "planner-hierarchical-v6"
+PLANNER_HIERARCHICAL_V6 = _revise(
+    PLANNER_HIERARCHICAL_V5,
+    PLANNER_HIERARCHICAL_V6_VERSION,
+    (
+        "如果没有任何 rejected_by_root_review 为 false 的方法能用（都被 "
+        "applicability 拒绝），就按上面的方式输出 no_applicable_method 的空操作提案，"
+        "系统会带着 findings 去请求合成新方法。\n",
+        "method_library 里 rejected_by_root_review 为 false 的方法，只要 applicability "
+        "给出 APPLICABLE（刚准入的合成方法通常如此，因为它们没有种子方法那些尚未观察的前置条件），"
+        "就是可用的：照抄它的 refine_method_ref 做 refine。不要因为种子方法都是 "
+        "NEEDS_EVIDENCE 就忽略库里另一条。只有这些未拒绝条目全部被 applicability 列为拒绝"
+        "（verdict 不是 APPLICABLE）时，才输出 no_applicable_method 的空操作提案，"
+        "系统会带着 findings 去请求合成新方法。\n",
+    ),
+)
+
 register_template(PLANNER_HIERARCHICAL_V1)
 register_template(PLANNER_HIERARCHICAL)
 register_template(PLANNER_HIERARCHICAL_V3)
 register_template(PLANNER_HIERARCHICAL_V4)
 register_template(PLANNER_HIERARCHICAL_V5)
+register_template(PLANNER_HIERARCHICAL_V6)
 
 #: Every registered prompt version that belongs to the *hierarchical* Planner.
 #: P2.3c part 2b: a deployment's frozen ``prompt_versions`` pins ``planner`` to a
@@ -646,6 +671,7 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
         PLANNER_HIERARCHICAL_V3_VERSION,
         PLANNER_HIERARCHICAL_V4_VERSION,
         PLANNER_HIERARCHICAL_V5_VERSION,
+        PLANNER_HIERARCHICAL_V6_VERSION,
     }
 )
 
@@ -672,9 +698,11 @@ HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE: Mapping[int, frozenset[str]] = {
     # says), so a pin on v3 is still honoured here and v4 is the default.
     2: frozenset({PLANNER_HIERARCHICAL_V3_VERSION, PLANNER_HIERARCHICAL_V4_VERSION}),
     # package 3 (P2.3j, ``planner-package-hierarchical-v4``): carries
-    # ``rejected_refinements`` and the ``rejected_by_root_review`` flag; v5 is the
-    # only prompt that knows what to do with them.
-    3: frozenset({PLANNER_HIERARCHICAL_V5_VERSION}),
+    # ``rejected_refinements`` and the ``rejected_by_root_review`` flag.  v5 is the
+    # prompt that introduced the section; v6 (P2.3n) is the same package plus
+    # "an APPLICABLE applicability row is a usable method, including a just-admitted
+    # synthesised one".  A pin on v5 is still honoured.
+    3: frozenset({PLANNER_HIERARCHICAL_V5_VERSION, PLANNER_HIERARCHICAL_V6_VERSION}),
 }
 
 
@@ -1360,6 +1388,8 @@ __all__ = (
     "PLANNER_HIERARCHICAL_V4_VERSION",
     "PLANNER_HIERARCHICAL_V5",
     "PLANNER_HIERARCHICAL_V5_VERSION",
+    "PLANNER_HIERARCHICAL_V6",
+    "PLANNER_HIERARCHICAL_V6_VERSION",
     "PLANNER_HIERARCHICAL_VERSION",
     "TASK_ROLE_BY_KIND",
     "CRITIC",
