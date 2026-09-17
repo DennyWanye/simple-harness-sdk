@@ -1037,10 +1037,10 @@ register_template(METHOD_SYNTHESIZER_V4)
 #: with optional ``patch`` / ``report`` inputs; v5 tells the synthesiser that the step
 #: answering an "explain the change" requirement has to be *fed* the change.  v4 keeps
 #: its bytes (digest frozen in ``test_output_port_claims``).
-METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v5"
-METHOD_SYNTHESIZER = _revise(
+METHOD_SYNTHESIZER_V5_VERSION = "method-synthesizer-v5"
+METHOD_SYNTHESIZER_V5 = _revise(
     METHOD_SYNTHESIZER_V4,
-    METHOD_SYNTHESIZER_VERSION,
+    METHOD_SYNTHESIZER_V5_VERSION,
     (
         "不要把被拒方法换个名字重提。",
         "不要把被拒方法换个名字重提。"
@@ -1049,6 +1049,30 @@ METHOD_SYNTHESIZER = _revise(
         "把 verify 步的 report 输出端口绑到 summarize 步的 report 输入端口。"
         "没有任何数据输入的步骤只能看到未修改的仓库快照，它写出的解释必然是「未改代码」，"
         "这样的方法不要提出。同一算子在 operators 里只列出最高版本，按列出的版本与 content_hash 引用。",
+    ),
+)
+register_template(METHOD_SYNTHESIZER_V5)
+
+#: P2.3m.  v5 said the explaining step must be *fed* the patch; it did not say the
+#: method must *contain* a write step.  Grok H-L3-C1-r0/r1 both synthesised a method
+#: that *did* have apply-patch — the defect there was the verify leaf rewriting —
+#: but a method that puts the write on a read-only leaf is the other half of the
+#: same mistake.  ``review_feedback`` now also carries
+#: ``read_only_leaf_needs_write``.  v5 keeps its bytes.
+METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v6"
+METHOD_SYNTHESIZER = _revise(
+    METHOD_SYNTHESIZER_V5,
+    METHOD_SYNTHESIZER_VERSION,
+    (
+        "这样的方法不要提出。同一算子在 operators 里只列出最高版本，按列出的版本与 content_hash 引用。",
+        "这样的方法不要提出。同一算子在 operators 里只列出最高版本，按列出的版本与 content_hash 引用。"
+        "若目标是改代码（修测试、打补丁、实现契约），方法必须包含一个会写仓库的步骤"
+        "（task type 带 repo.write / local_write，例如 apply-patch）；"
+        "不要把改文件的工作交给只读叶（verify-tests / inspect / summarize / facts / "
+        "reproduce 的 side_effect 是 external_read）。"
+        "如果 review_feedback 指出某个只读叶改写了工作区（read_only_leaf_needs_write / "
+        "read_only_leaf_rewrote_workspace），被拒方法把写权限放错了叶子：把文件改动放到 "
+        "apply-patch 步，只读叶只观察并在声明端口上报告。",
     ),
 )
 register_template(METHOD_SYNTHESIZER)
@@ -1310,6 +1334,10 @@ __all__ = (
     "METHOD_SYNTHESIZER_VERSION",
     "METHOD_SYNTHESIZER_V3",
     "METHOD_SYNTHESIZER_V3_VERSION",
+    "METHOD_SYNTHESIZER_V4",
+    "METHOD_SYNTHESIZER_V4_VERSION",
+    "METHOD_SYNTHESIZER_V5",
+    "METHOD_SYNTHESIZER_V5_VERSION",
     "ROOT_REVIEWER",
     "ROOT_REVIEWER_V1",
     "ROOT_REVIEWER_V1_VERSION",

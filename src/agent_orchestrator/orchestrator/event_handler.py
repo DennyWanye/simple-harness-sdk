@@ -140,6 +140,7 @@ from ..runtime.model_router import (
     RoutingRules,
     RoutingUnavailable,
     RuntimeProfile,
+    _error_codes,
     classify_turn_error,
 )
 from ..runtime.output_blocks import (
@@ -221,7 +222,11 @@ from .hierarchical_dispatch import (
     is_hierarchical,
     record_assembly_missing,
 )
-from .occurrence_tasks import read_only_rewrites
+from .occurrence_tasks import (
+    MAX_READ_ONLY_REWRITE_REJECTIONS,
+    MAX_READ_ONLY_REWRITE_REPAIRS,
+    read_only_rewrites,
+)
 from .plan_commits import PlanPrincipal
 from .resolution_commits import eligible_root_receipts
 
@@ -234,7 +239,18 @@ logger = logging.getLogger("agent_orchestrator")
 #: and the per-revision bound is counted off the same rows.
 # P2.3j: the reason code now lives beside its reader (``rejected_refinements``); the
 # name is kept here so nothing that imported it from this module moves.
-from .hierarchical_dispatch import ROOT_REVIEW_REPAIR_REASON  # noqa: E402
+from .hierarchical_dispatch import (  # noqa: E402
+    READ_ONLY_REWRITE_REPAIR_REASON,
+    ROOT_REVIEW_REPAIR_REASON,
+)
+
+#: Deterministic 4xx provider refusals.  Runtime already settles
+#: ``ProviderAuthenticationError`` / ``ProviderPaymentRequiredError`` as FAILED
+#: (``_DEFINITE_PROVIDER_FAILURES``); this set is what the orchestrator reads off
+#: a FAILED turn so it does not climb the planning ladder or RETRY_WAIT.
+DEFINITE_AUTH_CODES = frozenset(
+    {"provider_authentication_failed", "provider_payment_required"}
+)
 
 #: P2.3d / defect D2c.  The ``PlanningRejected`` reason for a proposal that *was*
 #: readable and was refused on its content — a method that is not grounded here, an
@@ -1990,6 +2006,7 @@ class Orchestrator:
                     # plan and every repair route is spent says so here, rather than
                     # leaving "no dispatchable work" to be read as a scheduling problem.
                     **self._root_review_stop_detail(mission, new_mode),
+                    **self._read_only_rewrite_stop_detail(mission, new_mode),
                 },
             )
             self._note(
@@ -2236,13 +2253,21 @@ class Orchestrator:
         """
 
         reference = rejection.method_ref
-        lines = [
-            f"root review rejected the adopted method {reference.method_id}@"
-            f"{int(reference.version)} (method instance {rejection.method_instance_id}, plan "
-            f"revision {int(rejection.plan_revision)}, review package "
-            f"{rejection.review_package_id}); every leaf of that method had been accepted "
-            "and the MISSION_FINAL review still rejected the composed result"
-        ]
+        if str(getattr(rejection, "review_package_id", "") or ""):
+            lines = [
+                f"root review rejected the adopted method {reference.method_id}@"
+                f"{int(reference.version)} (method instance {rejection.method_instance_id}, plan "
+                f"revision {int(rejection.plan_revision)}, review package "
+                f"{rejection.review_package_id}); every leaf of that method had been accepted "
+                "and the MISSION_FINAL review still rejected the composed result"
+            ]
+        else:
+            lines = [
+                f"a read-only leaf rewrote the workspace under method {reference.method_id}@"
+                f"{int(reference.version)} (method instance {rejection.method_instance_id}, plan "
+                f"revision {int(rejection.plan_revision)}); {READ_ONLY_REWRITE_REPAIR_REASON}: "
+                "put file changes in a write/patch step, not in a read-only leaf"
+            ]
         for finding in list(rejection.findings)[:8]:
             severity = str(finding.get("severity", "")) or "finding"
             criterion = str(finding.get("criterion_id", "") or "")
@@ -4033,10 +4058,43 @@ class Orchestrator:
                 "committed plan stands and the Mission is not failed for it"
             )
 
+    @staticmethod
+    def _definite_auth_failure(error: Any) -> bool:
+        """HTTP 401/402-class provider refusals the runtime already settled FAILED."""
+
+        return bool(_error_codes(error) & DEFINITE_AUTH_CODES)
+
     async def _collect_plan(self, intent: DispatchIntent, result) -> None:  # type: ignore[no-untyped-def]
         mission = self.store.get_mission(intent.mission_id)
         assert mission is not None
         self._import_usage(intent)
+        new_mode = self._new_mode(mission)
+        if (
+            result.state is not AgentTurnState.COMMITTED
+            and new_mode is not None
+            and self._definite_auth_failure(result.error)
+        ):
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            detail = {"error": jsonable(result.error or {}), "auth": True}
+            if mission.status is MissionStatus.PLANNING:
+                self.commit.fail_planning(
+                    mission.id,
+                    reason="provider_unavailable",
+                    detail=detail,
+                    stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                )
+            else:
+                self.commit.fail_mission(
+                    mission.id,
+                    stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                    detail={"reason": "provider_unavailable", **detail},
+                )
+            self._note(
+                f"{intent.subject_id}: definite provider auth/payment failure → "
+                "runtime_unavailable"
+            )
+            return
         text = "" if result.public_output is None else str(result.public_output.content)
         echoed = self.bridge_for(intent).echoed_models(agent_id=intent.agent_id or "")
         if echoed and echoed != {self._expected_model(intent)}:
@@ -4068,7 +4126,7 @@ class Orchestrator:
             return
         # P2.3b: a hierarchical Mission's Planner speaks the typed contract (§18.3), so
         # the reply goes to the assembly and the flat-DAG path below is not entered.
-        new_mode = self._new_mode(mission)
+        # (``new_mode`` was asked once, above, before the auth check.)
         if new_mode is not None:
             await self._collect_plan_hierarchical(intent, result, mission, text, new_mode)
             return
@@ -4395,6 +4453,21 @@ class Orchestrator:
                 detail={"attempts": self._planning_attempts(mission_id)},
                 stop_reason=MissionStopReason.PLANNING_FAILED,
             )
+            return
+        if not admitted and self._read_only_rewrite_repairs(mission_id) > 0:
+            self.commit.fail_mission(
+                mission_id,
+                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                detail={
+                    "reason": READ_ONLY_REWRITE_REPAIR_REASON,
+                    "synthesis": "refused",
+                    **self._read_only_rewrite_stop_detail(mission),
+                },
+            )
+            self._note(
+                f"mission {mission_id}: method synthesis refused after "
+                f"{READ_ONLY_REWRITE_REPAIR_REASON}; this execution cycle ends"
+            )
 
     def _planner_intents_in_flight(self, mission_id: str) -> bool:
         """An open ``plan`` intent that is a *Planner* round, not a synthesis round.
@@ -4631,6 +4704,38 @@ class Orchestrator:
                     and type(admission.get("schema_version")) is int
                     and admission.get("schema_version") == 1):
                 admission = None
+            mission_now = self.store.get_mission(attempt.mission_id)
+            if (
+                mission_now is not None
+                and is_hierarchical(mission_now)
+                and self._definite_auth_failure(error)
+            ):
+                self.commit.reject_result(
+                    attempt.id,
+                    turn_id=result.turn_id,
+                    reason="turn_failed",
+                    detail={
+                        "error": jsonable(result.error or {}),
+                        "error_kind": "provider_unavailable",
+                    },
+                )
+                self._settle_intent(intent, "FAILED")
+                self._settle_if_known(attempt)
+                await self._release_attempt(attempt.id, cancel=False)
+                self.commit.stop_task(
+                    attempt.task_id,
+                    stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                    detail={
+                        "source_kind": "provider",
+                        "retryable": False,
+                        "error": jsonable(error or {}),
+                    },
+                )
+                await self._release_mission(attempt.mission_id)
+                self._note(
+                    f"attempt {attempt.id}: definite provider auth/payment failure → stopped"
+                )
+                return
             self.commit.reject_result(
                 attempt.id,
                 turn_id=result.turn_id,
@@ -4799,12 +4904,21 @@ class Orchestrator:
         # come in, not merely trusted.  Legacy Missions carry no binding and are
         # untouched (``new_mode`` answers None).
         new_mode = self._new_mode(mission)
+        accepted_hashes = (
+            {} if new_mode is None else self._accepted_path_hashes(mission.id)
+        )
         if new_mode is not None:
             binding = new_mode.semantics().task_semantics_of(mission.id, task.id)
             rewrote = (
                 []
                 if binding is None
-                else read_only_rewrites(binding, artifacts, initial, guarded=guarded)
+                else read_only_rewrites(
+                    binding,
+                    artifacts,
+                    initial,
+                    guarded=guarded,
+                    accepted=accepted_hashes,
+                )
             )
             if rewrote:
                 self.commit.reject_result(
@@ -4824,18 +4938,45 @@ class Orchestrator:
                 self._settle_intent(intent, "FAILED")
                 self._settle_if_known(attempt)
                 await self._release_attempt(attempt.id, cancel=False)
+                count = self._read_only_rewrite_rejections(mission.id, task.id)
+                if count >= MAX_READ_ONLY_REWRITE_REJECTIONS:
+                    await self._escalate_read_only_rewrite(
+                        mission, task, new_mode, rewrote=rewrote, count=count
+                    )
+                    return
                 self._note(
-                    f"attempt {attempt.id}: read-only leaf rewrote {rewrote} → RETRY_WAIT"
+                    f"attempt {attempt.id}: read-only leaf rewrote {rewrote} → RETRY_WAIT "
+                    f"({count}/{MAX_READ_ONLY_REWRITE_REJECTIONS})"
                 )
                 return
+        # P2.3m: drop files whose bytes already belong to a completed leaf.  Legacy
+        # Missions cite upstream artifacts by listing them; applying this filter
+        # there dropped those citations and left the static-DAG golden run waiting
+        # on a result that never settled.
+        consistent = (
+            set()
+            if new_mode is None
+            else {
+                artifact.path
+                for artifact in artifacts
+                if artifact.path in initial
+                and accepted_hashes.get(artifact.path) == artifact.content_hash
+            }
+        )
         referenced = [
             artifact
             for artifact in artifacts
-            if (
-                artifact.path not in guarded
-                and (artifact.path in listed or initial.get(artifact.path) != artifact.content_hash)
+            if artifact.path not in consistent
+            and (
+                (
+                    artifact.path not in guarded
+                    and (
+                        artifact.path in listed
+                        or initial.get(artifact.path) != artifact.content_hash
+                    )
+                )
+                or (artifact.path in guarded and artifact.path in listed)
             )
-            or (artifact.path in guarded and artifact.path in listed)  # unchanged, merely cited
         ]
         self.commit.record_result(
             attempt.id,
@@ -6659,7 +6800,8 @@ class Orchestrator:
         """
 
         key = f"{intent.intent_id}:{intent.replays}"
-        if not self._provider_blocked(liveness):
+        auth_blocked = self._definite_auth_failure(liveness.blocker)
+        if not self._provider_blocked(liveness) and not auth_blocked:
             self._service_blocked_since.pop(key, None)
             return None
         mission = self.store.get_mission(intent.mission_id)
@@ -6668,6 +6810,14 @@ class Orchestrator:
         new_mode = self._new_mode(mission)
         if new_mode is None:
             return None  # legacy: the executor's wait is the executor's, unchanged
+        if auth_blocked:
+            await self._give_up_blocked_plan_intent(
+                intent,
+                mission,
+                new_mode,
+                detail={"blocker": dict(liveness.blocker or {}), "auth": True, "rehandoffs": 0},
+            )
+            return "give_up"
         now = self.store.now
         since = self._service_blocked_since.get(key)
         if since is None:
@@ -7590,6 +7740,168 @@ class Orchestrator:
             }
         }
 
+    def _accepted_path_hashes(self, mission_id: str) -> dict[str, str]:
+        """Files a COMPLETED leaf already produced, keyed by path.  Later writers win.
+
+        P2.3m: Grok H-L3-C1-r0's apply-patch leaf listed ``metrics/collector.py`` on
+        its result (not only the ``patch`` port file).  The verify leaf then wrote
+        the same bytes.  Those files are accepted work even when they are not the
+        declared port output.
+        """
+
+        completed = {
+            task.id
+            for task in self.store.list_tasks(mission_id)
+            if task.status is TaskStatus.COMPLETED
+        }
+        hashes: dict[str, str] = {}
+        for artifact in self.store.list_mission_artifacts(mission_id):
+            if artifact.task_id in completed:
+                hashes[artifact.path] = artifact.content_hash
+        return hashes
+
+    def _read_only_rewrite_rejections(self, mission_id: str, task_id: str) -> int:
+        return sum(
+            1
+            for event in self.store.list_events(mission_id)
+            if event.type == "ResultRejected"
+            and event.task_id == task_id
+            and event.payload.get("reason") == "read_only_leaf_rewrote_workspace"
+        )
+
+    def _read_only_rewrite_repairs(self, mission_id: str) -> int:
+        return sum(
+            1
+            for event in self.store.list_events(mission_id)
+            if event.type == "PlanningRejected"
+            and event.payload.get("reason") == READ_ONLY_REWRITE_REPAIR_REASON
+        )
+
+    def _read_only_rewrite_stop_detail(
+        self, mission: Mission, new_mode: HierarchicalDispatch | None = None
+    ) -> dict[str, Any]:
+        """Named stall payload when a read-only rewrite repair is why there is no work."""
+
+        if self._read_only_rewrite_repairs(mission.id) < 1:
+            return {}
+        revision = 0
+        if new_mode is not None:
+            active = new_mode.semantics().active_plan_revision(mission.id)
+            revision = 0 if active is None else int(active.revision)
+        findings: list[dict[str, Any]] = []
+        for event in self.store.list_events(mission.id):
+            if event.type != "PlanningRejected":
+                continue
+            if event.payload.get("reason") != READ_ONLY_REWRITE_REPAIR_REASON:
+                continue
+            findings = list((event.payload.get("detail") or {}).get("findings") or [])
+        return {
+            "read_only_rewrite": {
+                "reason": READ_ONLY_REWRITE_REPAIR_REASON,
+                "plan_revision": revision,
+                "repairs_used": self._read_only_rewrite_repairs(mission.id),
+                "max_repairs": MAX_READ_ONLY_REWRITE_REPAIRS,
+                "findings": findings[:8],
+            }
+        }
+
+    async def _escalate_read_only_rewrite(
+        self,
+        mission: Mission,
+        task: Task,
+        new_mode: HierarchicalDispatch,
+        *,
+        rewrote: Sequence[str],
+        count: int,
+    ) -> None:
+        """P2.3m: N refusals of a genuine new write → planning, not another Attempt."""
+
+        # Close the stuck leaf so a repair revision can retire the method
+        # (P2.3j: ``running_work_not_reconciled`` otherwise).  RETRY_WAIT is not
+        # terminal; leaving it open made Grok C1 burn the attempts budget instead.
+        if task.status not in TERMINAL_TASK:
+            self.commit._cancel_task_entity(  # noqa: SLF001
+                task.id, reason=READ_ONLY_REWRITE_REPAIR_REASON, replaced_by=None
+            )
+        used = self._read_only_rewrite_repairs(mission.id)
+        if used >= MAX_READ_ONLY_REWRITE_REPAIRS:
+            self.commit.fail_mission(
+                mission.id,
+                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                detail={
+                    "reason": READ_ONLY_REWRITE_REPAIR_REASON,
+                    "task_id": task.id,
+                    "paths": list(rewrote),
+                    "rejections": count,
+                    **self._read_only_rewrite_stop_detail(mission, new_mode),
+                },
+            )
+            self._note(
+                f"mission {mission.id}: read-only leaf {task.id} rewrote {list(rewrote)} "
+                f"{count} time(s); repair budget spent → {READ_ONLY_REWRITE_REPAIR_REASON}"
+            )
+            return
+        if new_mode.planner_round_in_flight(mission.id):
+            return
+        active = new_mode.semantics().active_plan_revision(mission.id)
+        revision = 0 if active is None else int(active.revision)
+        rejected: dict[str, Any] = {}
+        occurrence_id = ""
+        try:
+            network = new_mode.network(mission.id)
+            spec = next(
+                (item for item in network.occurrences if str(item.task_id) == task.id),
+                None,
+            )
+            if spec is not None:
+                occurrence_id = str(spec.occurrence_id)
+            root = network.root_occurrence_ids[0] if network.root_occurrence_ids else None
+            adopted = None if root is None else network.adopted_instance_for(root)
+            if adopted is not None:
+                rejected = {
+                    "occurrence_id": str(root),
+                    "method_instance_id": str(adopted.instance_id),
+                    "method_ref": adopted.method_ref.to_json(),
+                }
+        except (GraphIntegrityError, ContractError, StoreError, KeyError, StopIteration):
+            rejected = {}
+        ordinal = self._next_planning_ordinal(mission.id)
+        self.commit.record_planning_rejected(
+            mission.id,
+            ordinal=ordinal,
+            reason=READ_ONLY_REWRITE_REPAIR_REASON,
+            key=f"{mission.id}:read-only-rewrite:{task.id}:{revision}",
+            detail={
+                "plan_revision": revision,
+                "repair_round": used + 1,
+                "task_id": task.id,
+                "occurrence_id": occurrence_id or rejected.get("occurrence_id", ""),
+                "paths": list(rewrote),
+                "rejections": count,
+                "findings": [
+                    {
+                        "severity": "blocker",
+                        "detail": (
+                            f"read-only leaf {task.id} rewrote {list(rewrote)} {count} "
+                            "times (read_only_leaf_rewrote_workspace). This leaf's task "
+                            "type is read-only; the method must put file changes in a "
+                            "write/patch step (repo.write / apply-patch), not in a "
+                            "verify/inspect/summarize/facts/reproduce leaf."
+                        ),
+                    }
+                ],
+                **rejected,
+            },
+        )
+        self._note(
+            f"mission {mission.id}: read-only leaf {task.id} rewrote {list(rewrote)} "
+            f"{count} time(s); asking the Planner (ordinal {ordinal}, "
+            f"{READ_ONLY_REWRITE_REPAIR_REASON})"
+        )
+        await self._planner_round_on_committed_plan(
+            mission.id, ordinal=ordinal, phase="read_only_rewrite_repair"
+        )
+
     def _next_planning_ordinal(self, mission_id: str) -> int:
         """One past the highest ordinal any planning round of this Mission has used.
 
@@ -7933,6 +8245,13 @@ class Orchestrator:
                     f"task {task.id} not dispatched: {intercepted.reason} "
                     f"(occurrence {intercepted.occurrence_id})"
                 )
+                return False
+            if (
+                self._read_only_rewrite_rejections(mission.id, task.id)
+                >= MAX_READ_ONLY_REWRITE_REJECTIONS
+            ):
+                # P2.3m: the collector already opened the planning repair (or stopped
+                # the Mission).  Do not spend another Attempt on the same occurrence.
                 return False
             # P2.3c part 2 / TG §8.3: the dispatch transaction re-checks.  An
             # ``EligiblePrimitiveTask`` is *not* a capability — it records that a

@@ -252,6 +252,14 @@ METHOD_APPLICABILITY_ASSESSED = "MethodApplicabilityAssessed"
 #: the synthesis judgment both hang off that answer.  The event handler re-exports
 #: the name, so nothing that imported it from there moves.
 ROOT_REVIEW_REPAIR_REASON = "root_review_rejected"
+#: P2.3m: the same repair record, opened when a read-only leaf has been refused
+#: ``read_only_leaf_rewrote_workspace`` ``MAX_READ_ONLY_REWRITE_REJECTIONS`` times.
+#: Findings travel as ``PlanningRejected`` so the P2.3j package section, the
+#: synthesis ``review_feedback`` and the stall report all read one named reason.
+READ_ONLY_REWRITE_REPAIR_REASON = "read_only_leaf_needs_write"
+#: Reasons :meth:`HierarchicalDispatch.rejected_refinements` treats as "this adopted
+#: instance is the one a repair round is about".
+REPAIR_REASONS = frozenset({ROOT_REVIEW_REPAIR_REASON, READ_ONLY_REWRITE_REPAIR_REASON})
 
 #: How many refusals one :data:`METHOD_APPLICABILITY_ASSESSED` payload carries.  Far
 #: larger than the prompt's own cap (that one protects the model's attention; this one
@@ -2766,7 +2774,7 @@ class HierarchicalDispatch:
         for event in self.store.list_events(mission_id):
             if event.type != "PlanningRejected":
                 continue
-            if str(event.payload.get("reason", "")) != ROOT_REVIEW_REPAIR_REASON:
+            if str(event.payload.get("reason", "")) not in REPAIR_REASONS:
                 continue
             detail = dict(event.payload.get("detail") or {})
             instance_id = str(detail.get("method_instance_id", "") or "")
@@ -2818,7 +2826,7 @@ class HierarchicalDispatch:
         for event in self.store.list_events(mission_id):
             if event.type != "PlanningRejected":
                 continue
-            if str(event.payload.get("reason", "")) != ROOT_REVIEW_REPAIR_REASON:
+            if str(event.payload.get("reason", "")) not in REPAIR_REASONS:
                 continue
             detail = dict(event.payload.get("detail") or {})
             occurrence = str(detail.get("occurrence_id", "") or "")
@@ -2869,7 +2877,7 @@ class HierarchicalDispatch:
             reason = str(event.payload.get("reason", ""))
             detail = dict(event.payload.get("detail") or {})
             ordinal = int(event.payload.get("ordinal", 0) or 0)
-            if reason == ROOT_REVIEW_REPAIR_REASON:
+            if reason in REPAIR_REASONS:
                 if str(detail.get("method_instance_id", "")) == rejected.method_instance_id:
                     repair_ordinal = ordinal
                 continue
@@ -3226,6 +3234,12 @@ class HierarchicalDispatch:
                     if reference in registered
                 )
                 candidates = max(0, candidates - struck)
+                # P2.3m: a read-only rewrite repair has no review package.  The adopted
+                # method already ran; leftover NEEDS_EVIDENCE library methods are why
+                # it was synthesised, not a reason to look again.
+                if not str(rejection.review_package_id or ""):
+                    needing.append(str(spec.task_id))
+                    continue
             seen = refused.get(str(spec.occurrence_id), [])
             if candidates and len(seen) < candidates:
                 continue  # at least one method applies; nothing to synthesise
@@ -4167,6 +4181,8 @@ __all__ = (
     "PlanRoundOutcome",
     "PlanningWorld",
     "RejectedRefinement",
+    "READ_ONLY_REWRITE_REPAIR_REASON",
+    "REPAIR_REASONS",
     "ROOT_REVIEW_REPAIR_REASON",
     "SYNTHESIS_WORTHY_REFUSALS",
     "METHOD_APPLICABILITY_ASSESSED",

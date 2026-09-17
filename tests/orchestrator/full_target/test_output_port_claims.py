@@ -233,9 +233,15 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
     ),
     # P2.3k / N1: v5 = v4 plus "the step that explains the change must be fed the
     # change through an input port; operators list the latest version only".
-    "METHOD_SYNTHESIZER": (
+    "METHOD_SYNTHESIZER_V5": (
         "method-synthesizer-v5",
         "6973e125b9cc3b02b8af77190a9b0ff4b5a1ddd3cdfe8cc1f60900304fe21e6b",
+    ),
+    # P2.3m: v6 = v5 plus "a code-change method must contain a write/patch step;
+    # read_only_leaf_needs_write in review_feedback".
+    "METHOD_SYNTHESIZER": (
+        "method-synthesizer-v6",
+        "75a8a4a1a888e2ac165d16a711df9e981ad44da92c15b652bbc29bbc97774c42",
     ),
     "PLANNER_HIERARCHICAL_V3": (
         "planner-hierarchical-v3",

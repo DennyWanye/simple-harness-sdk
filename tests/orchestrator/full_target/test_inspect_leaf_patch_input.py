@@ -120,6 +120,7 @@ class _CodeWorld:
         success_criteria: tuple[str, ...] = ("c",),
         allowed_tools: tuple[str, ...] = (),
         workspace_seed: dict[str, str] | None = None,
+        max_attempts: int = 4,
     ) -> None:
         if db_name is None:
             self.service, self.mission = _mission(tmp_path, key=key)
@@ -139,7 +140,7 @@ class _CodeWorld:
                     tenant_id="t",
                     idempotency_key=key,
                     allowed_tools=allowed_tools,
-                    budget=Budget(max_tokens=200_000, max_attempts=4),
+                    budget=Budget(max_tokens=200_000, max_attempts=max_attempts),
                     workspace_seed=dict(workspace_seed or {}),
                     orchestration_semantics_version="hierarchical",
                 )
@@ -378,7 +379,7 @@ def test_the_prompt_v5_binds_the_explaining_step_and_v4_is_frozen() -> None:
     )
 
     assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
-    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v5"
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v6"
     v5 = METHOD_SYNTHESIZER.instructions
     v4 = METHOD_SYNTHESIZER_V4.instructions
     for sentence in (

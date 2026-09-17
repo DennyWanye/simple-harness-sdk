@@ -3631,6 +3631,44 @@ P2 未做：见核验报告 §4（`runtime_unavailable` 不键 0 token、种子 
 
 回归：full_target **2857 passed / 2 skipped**（核验基线 2851/3，+5 P1 测试；本机少 1 条环境 skip）；旧模式 / ruff 见提交。`_new_mode` 仍 19；无新事件、无新提示词、无新配置项。
 
+## 2o. P2.3m：只读拒绝有界并升级到规划层（2026-09-17，分支 `p2.3m-readonly-rejection-bounded`，基 e149524 = 0.12.2 候选第 2 版）
+
+输入：用户任务书 + 真实局只读 `H-L3-C1-r0` / `H-L3-C1-r1`（证据目录零写入）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 两局证据（只读查询）
+
+- **r0**（`mission-0c4c41e823938374`）：合成方法 `code.fix-by-reproduce-patch-verify-explain` **有** apply-patch 步（`repo.write`），facts/diagnosis/patch 三端口已验收。随后 `code.verify-tests`（`external_read` / `tests.run`）九次 `ResultRejected{read_only_leaf_rewrote_workspace, paths:[metrics/collector.py, metrics/reporter.py]}`。工作区哈希与 apply-patch 已验收产物 **相同**——只读叶把已验收补丁重新应用到未打补丁的起步快照。停机 `budget_exhausted` / attempts，611K token 量级，隐藏评分 FAIL。
+- **r1**（`mission-ce8db252f256a320`）：同样有 patch 步且三端口验收，隐藏评分器 PASS。verify 叶 `paths:[metrics/reporter.py]` ×9。attempt-1 工作区 reporter 哈希 `083fd4e…` **不等于** 已验收 `00d4cfc8…` 也不等于 seed `bc8e827c…`；attempt-1 的 REPORT.md 是「修复说明」（summary 读路径非原子快照），attempt-2–9 自称未改源码但仍带着 attempt-1 的新字节。模型做对了题，系统因无界重试把整局判失败。
+- **合成无 patch 步**：两局方法都有 apply-patch。任务书里的「没有 patch 步」是对 r0 链条的误读——写代码的是已验收的 apply 叶，被拒的是后续只读 verify。v5 已要求解释步绑补丁端口，但没说「改代码的方法必须有写步」。
+
+### 修法
+
+1. **同内容 vs 新改动**：`read_only_rewrites(..., accepted=)`——CURRENT 完成叶已产出的 path→hash 若与本次改写相同，不算新写。收集处用 `_accepted_path_hashes`（完成叶的全部产物，不限于端口），匹配文件不登记为本叶产物。
+2. **有界升级**：同一 occurrence `read_only_leaf_rewrote_workspace` 满 `MAX_READ_ONLY_REWRITE_REJECTIONS=2`（与 `MAX_SYNTHESIS_ASKS` 同口径，非常量配置）后取消该叶（否则 RETRY_WAIT 非终态，修复轮 retire 会 `running_work_not_reconciled`），写 `PlanningRejected{read_only_leaf_needs_write}`（走 P2.3j `rejected_refinements` / `review_feedback`）。`MAX_READ_ONLY_REWRITE_REPAIRS=1`。停机 `no_dispatchable_work` 的 detail 带 `read_only_rewrite.reason`，不是 `budget_exhausted`。
+3. **提示词**：只加 `method-synthesizer-v6`（改代码必须有 `repo.write`/`apply-patch` 步；`review_feedback` 的 `read_only_leaf_needs_write` 表示写权限放错叶子）。v5 字节钉住 `6973e125…`。
+4. **401**：runtime 已把 `ProviderAuthenticationError` 放进 `_DEFINITE_PROVIDER_FAILURES`，交接后 `settle_failed` 不是 UNKNOWN，不进 300s 重交接。编排侧 FAILED 回合若 `error_code` ∈ `{provider_authentication_failed, provider_payment_required}` 立即 `runtime_unavailable`，不爬规划梯子 / 不 RETRY_WAIT。
+
+### 测试
+
+`test_read_only_rewrite_bound.py`：单元 4 + 端到端 3 + 提示词 1。真 Orchestrator 周期：匹配已验收补丁不拒；两次新写 → 规划反馈 + 合成准入；持续失败 → 具名停机、预留 0、守恒。变异 4/4 KILLED（临时改源、从 `/tmp/p23m-*.bak` 恢复，不用 git checkout）：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| M1 | 收集处丢掉 `accepted=` | 1 failed（同哈希重打补丁仍被拒）→ KILLED |
+| M2 | 永不升级到规划 | 2 failed（无 PlanningRejected，Mission 停 ACTIVE）→ KILLED |
+| M3 | `goals_needing_method` 不因空 `review_package_id` 强制合成 | 1 failed → KILLED |
+| M4 | 规则忽略 `accepted` 哈希 | 1 failed（匹配改写仍报新写）→ KILLED |
+
+### 挂住（续接）
+
+全量回归卡在 `test_the_legacy_path_never_enters_the_assembly_at_all[a parallel DAG with artifact flow]`：收集处把「与已验收产物同哈希」过滤套到了 **legacy** Mission，下游叶列出的上游文件被从 `referenced` 拿掉，静态 DAG 的结果收不齐，`run()` 等到 max_cycles。修法：`accepted_hashes` / `consistent` 只在 `new_mode is not None` 时生效；401 快速失败同样只走分层。登记集合漏了 v5 被 `test_v2_keeps_its_bytes…` 钉住后补上。回归：full_target **2865 passed / 2 skipped**（基线 2856/3）；旧模式 560/13/0；ruff 清；`_new_mode` 仍 19。
+
+### 未做
+
+- 替换方法与旧方法同 task type 时 compile merge 把新 slot 绑到已退 occurrence（`binds slot … to unknown occurrence`）——P2.3j 换方法测试用的是不同子类型。本片合成能准入带 patch 的新方法，commit 替换未在 C1 形状上跑到 COMPLETED。
+- 只读叶工作区起步时不预铺已验收补丁（只在收集处豁免同哈希）；Worker 仍可能「再打一遍补丁」。
+- 真实模型第 3 批未验。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

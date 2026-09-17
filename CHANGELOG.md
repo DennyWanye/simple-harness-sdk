@@ -7,6 +7,14 @@
 - 测试：`test_provider_grant_rehandoff.py` 2（真 `run()`）+ `test_nested_compound_composition.py` 2（夹具 + 真 `Orchestrator.run()` 两层到 COMPLETED）；4 条变异全部 KILLED（M3 关 `resolve_ready` 在真 `run()` 上复验 `no_dispatchable_work`）。独立核验「修后可合」两条 P1 已修：P1-1 UNKNOWN 调用进 `imported_usage.unknown=1`、可覆盖导入、`settle_known` 只结算已知；P1-2 删任意 PASS fallback、子验收按 task_id、GoalResolution 认 CURRENT+epoch。详见 journal 第四部分 §2n「核验处置」。
 - 核验后测试：上段 4 条 + P1-1 2 + P1-2 3；变异 P1-1 / P1-2（M5）KILLED。full_target **2857 passed / 2 skipped**（核验基线 2851/3，+5）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；ruff 全清；`_new_mode` 19 处不变。
 
+**P2.3m：只读拒绝有界并升级到规划层。** 分支 `p2.3m-readonly-rejection-bounded`，基 e149524；版本号不动。真实局 H-L3-C1-r0/r1：verify 叶 `read_only_leaf_rewrote_workspace` ×9 → `budget_exhausted`。r0 改写哈希与已验收 patch 相同；r1 隐藏评分 PASS 但 reporter.py 是新哈希。两局方法都有 apply-patch 步。
+
+- **同内容豁免**：`read_only_rewrites(..., accepted=)`，完成叶已产出的同 path 同 hash 不算新写。
+- **有界升级**：同一 occurrence 满 `MAX_READ_ONLY_REWRITE_REJECTIONS=2` 后取消该叶，`PlanningRejected{read_only_leaf_needs_write}` 进 P2.3j 修复轮 / `review_feedback`。停机 detail 带该理由，不是 `budget_exhausted`。无新配置项。
+- **提示词**：只加 `method-synthesizer-v6`（必须有写/patch 步；只读叶不得改文件），v5 钉住。
+- **401**：runtime 已区分 `ProviderAuthenticationError` 为 FAILED；编排侧对 FAILED 鉴权立即 `runtime_unavailable`。
+- 测试：`test_read_only_rewrite_bound.py` 7 条；4 变异 KILLED。同哈希过滤只走分层（legacy 静态 DAG 列出上游文件，套上会挂住 `run()`）。full_target **2865 passed / 2 skipped**（基线 2856/3）；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 清；`_new_mode` 仍 19。详见 journal 第四部分 §2o。
+
 代码候选提交（第 2 版）：444879a（P2.3e–P2.3h）之上再并入 P2.3i 4b62bc9、P2.3j 83eaa84/3c2af6f、P2.3k a5d2d3b/9db33dc、P2.3l 5b317cc/6453573/a2a197e（合并提交 fc07312、4022da9，均已 ff 进 main）；第 2 批 Grok 重跑（c7cfedd，H 臂 L3+L4 共 20 局：官方通过 11、COMPLETED 0）逐局诊断见 Host `impl/Grok验收-第2批L3诊断` / `L4诊断`；发布身份以本条目所在的版本提交为准。四片各有独立 fable 核验记录在 `plans/2026-09-16-full-target/P2.3c/reviews/`（P2.3e/f 可合、P2.3g 可合、P2.3h 修后可合 → 256a316 已修）。**迁移**：`code.fix-by-patch` / `fix-by-revert` / `fix-by-assessed-revert` 升到 `method_version 2`，旧库 `@1` 行保留并存；Grok runner 的 FREEZE-candidate 必须按本提交重生成。
 
 **P2.3e：`run()` 在两个规划类意图在途时提前退出。** 分支 `p2.3e-run-exit`，基于 `05cfbb83`（= 0.12.1）。Grok 验收重跑 H 臂 L3 C1 三局完全一致：runner 的 `first_evidence_round` 已把 `code.test-is-failing` 由同一观察器记了两次 FALSE，D2b 的证据饱和判定在**第一个规划周期**就成立，Planner 意图与 MethodSynthesizer 意图同周期创建、同为 `InputSubmitted`；约 28.5 s 后 `orchestrator.run()` 返回、`Orchestrator` 上下文关闭，两个 agent run 在刚开始 preflight 的那一刻被取消（`runtime_boundary_interrupted` / `provider_error_after_handoff`），Mission 停在 PLANNING，事件表只有 AgentCreated/InputSubmitted。

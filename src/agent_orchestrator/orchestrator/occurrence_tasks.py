@@ -352,12 +352,25 @@ def occurrence_policy(
     return chosen
 
 
+#: P2.3m.  How many times one occurrence may be refused
+#: ``read_only_leaf_rewrote_workspace`` before the named feedback goes to planning
+#: instead of another Attempt.  Same bound as ``MAX_SYNTHESIS_ASKS`` /
+#: ``MAX_ROOT_REVIEW_ASKS`` / ``evidence_saturation_rounds``: one retry, then the
+#: honest next layer.  Not a config item.
+MAX_READ_ONLY_REWRITE_REJECTIONS = 2
+#: How many planning repair rounds one Mission may open for this reason.  Same
+#: shape as ``max_root_review_repairs``'s default, as a constant so nothing is
+#: added to the policy snapshot.
+MAX_READ_ONLY_REWRITE_REPAIRS = 1
+
+
 def read_only_rewrites(
     binding: TaskSemanticBindingV1,
     artifacts: Sequence[Any],
     initial: Mapping[str, str],
     *,
     guarded: Iterable[str] = (),
+    accepted: Mapping[str, str] = (),
 ) -> list[str]:
     """The files a read-only leaf's Attempt changed that it was not allowed to change.
 
@@ -370,17 +383,26 @@ def read_only_rewrites(
     path present there whose bytes differ is a write into the world the leaf was asked
     to observe.  ``guarded`` paths are already refused as ``protected_path_rewritten``
     and are not reported twice.
+
+    P2.3m: ``accepted`` is path → content hash of CURRENT accepted artifacts on this
+    Mission.  Grok H-L3-C1-r0's verify leaf rewrote ``metrics/collector.py`` and
+    ``metrics/reporter.py`` to the hashes the apply-patch leaf had already had
+    accepted — it was re-applying the patch onto a workspace that still started from
+    the unpatched seed.  Bytes that already belong to an accepted artifact at that
+    path are not a new write.
     """
 
     if not read_only_leaf(binding):
         return []
     shielded = set(guarded)
+    allowed = dict(accepted)
     return sorted(
         artifact.path
         for artifact in artifacts
         if artifact.path in initial
         and artifact.path not in shielded
         and artifact.content_hash != initial[artifact.path]
+        and allowed.get(artifact.path) != artifact.content_hash
     )
 
 
@@ -483,9 +505,13 @@ __all__ = (
     "MIN_TOKEN_SHARE",
     "Materialisation",
     "OccurrenceTask",
+    "MAX_READ_ONLY_REWRITE_REJECTIONS",
+    "MAX_READ_ONLY_REWRITE_REPAIRS",
     "occurrence_criteria",
     "occurrence_policy",
     "occurrence_task",
+    "read_only_leaf",
+    "read_only_rewrites",
     "share_tokens",
     "task_pool_tokens",
 )
