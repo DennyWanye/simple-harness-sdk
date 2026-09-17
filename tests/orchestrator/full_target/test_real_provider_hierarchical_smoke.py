@@ -375,6 +375,23 @@ def test_real_hierarchical_planner_round(tmp_path):
                         for stored in semantics.list_review_records(str(package.package_id))
                     ],
                 },
+                # P2.3d / defect D3: what each leaf's Acceptance actually filed at a
+                # declared output port.  Part 3a's run reached COMPLETED with the
+                # finalizer leaf's list **empty** — the reviewer was lenient about
+                # ``evidence.kind=none`` — so "it completed" was never evidence that
+                # the closure worked.  Recording and asserting the lists is what makes
+                # the next COMPLETED mean something.
+                "accepted_outputs": [
+                    {
+                        "task_id": item.task_id,
+                        "ports": [
+                            entry.get("port")
+                            for entry in (item.payload.get("accepted_outputs") or [])
+                        ],
+                    }
+                    for item in events
+                    if item.type == "AcceptanceCommitted"
+                ],
                 "tokens": _account(orchestrator, mission.id),
                 "progress": orchestrator.progress_log[-40:],
             }
@@ -402,6 +419,21 @@ def test_real_hierarchical_planner_round(tmp_path):
     assert not report["proposal_unreadable"], (
         "the hierarchical Planner round came back unreadable — the package and the "
         f"prompt are still not agreeing: {report['rejections']}"
+    )
+    # P2.3d / defect D3: no leaf may be accepted with an empty ``accepted_outputs``.
+    # In the Grok acceptance run every H-arm episode had exactly one such acceptance —
+    # the finalizer step, whose port no ``DataRequirement`` consumed — and the root
+    # reviewer then rejected the Mission for delivering no readable proof.  Part 3a's
+    # own smoke had the identical gap and still reached COMPLETED, because
+    # deepseek-flash accepted it anyway; that is why this assertion runs whatever the
+    # Mission's final status is.
+    empty = [item for item in report["accepted_outputs"] if not item["ports"]]
+    assert report["accepted_outputs"], "at least one leaf was accepted in this run"
+    assert not empty, (
+        "a leaf was accepted having claimed no declared output port: "
+        f"{empty}. The finalizer step's port is declared through the root criterion "
+        "link even when no DataRequirement consumes it, so an empty list here is the "
+        "D3 closure gap and not a leaf that owed nothing"
     )
     # Closure: completed, or an honest ending — a stop that names its reason, or a
     # recorded stall that names every gate still holding an occurrence.  What is

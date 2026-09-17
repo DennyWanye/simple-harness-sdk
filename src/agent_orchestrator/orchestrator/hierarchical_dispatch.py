@@ -275,6 +275,11 @@ SYNTHESIS_WORTHY_REFUSALS: frozenset[Any] = frozenset(
     }
 )
 
+#: P2.3d / defect D2b: how many OBSERVED readings of one proposition by one observer,
+#: with the truth still UNKNOWN afterwards, make "look again" a non-answer.  Two is the
+#: smallest number that can tell a first reading apart from a repeat.
+DEFAULT_EVIDENCE_SATURATION_ROUNDS = 2
+
 #: Readiness answers that mean "the planner still owes something about the facts
 #: or the authority", as opposed to "a method has not been chosen yet".
 _WAIT_REASONS: frozenset[ReadinessReason] = frozenset(
@@ -686,10 +691,16 @@ class HierarchicalDispatch:
     compile_attempts: int = DEFAULT_COMPILE_ATTEMPTS
     target_rules: TargetRules | None = None
     resolution_policy: ResolutionPolicy = field(default_factory=ResolutionPolicy)
+    #: P2.3d / defect D2b: how many times one observer may record an OBSERVED reading
+    #: of one proposition, with the truth still UNKNOWN afterwards, before looking again
+    #: stops counting as an answer.  See :meth:`goals_needing_method`.
+    evidence_saturation_rounds: int = DEFAULT_EVIDENCE_SATURATION_ROUNDS
 
     def __post_init__(self) -> None:
         if int(self.compile_attempts) < 1:
             raise ContractError("compile_attempts must be at least 1")
+        if int(self.evidence_saturation_rounds) < 1:
+            raise ContractError("evidence_saturation_rounds must be at least 1")
 
     # ---------------------------------------------------------------- reading the plan
     def semantics(self) -> HtnStore:
@@ -2836,10 +2847,50 @@ class HierarchicalDispatch:
             seen = refused.get(str(spec.occurrence_id), [])
             if candidates and len(seen) < candidates:
                 continue  # at least one method applies; nothing to synthesise
-            if any(report.status not in SYNTHESIS_WORTHY_REFUSALS for report in seen):
+            if any(
+                report.status not in SYNTHESIS_WORTHY_REFUSALS
+                and not self._evidence_is_saturated(mission_id, report)
+                for report in seen
+            ):
                 continue  # the answer is "look" or "settle", not "invent"
             needing.append(str(spec.task_id))
         return tuple(needing)
+
+    def _evidence_is_saturated(self, mission_id: str, report: Any) -> bool:
+        """Whether "look again" has stopped being an answer for this refusal (D2b).
+
+        ``NEEDS_EVIDENCE`` is excluded from :data:`SYNTHESIS_WORTHY_REFUSALS` because
+        its repair is to look, not to invent — and that is right until looking cannot
+        change anything.  The Grok acceptance run found the case where it cannot: for an
+        **OPEN** predicate a non-authoritative negative observation contributes
+        ``NO_SUPPORT``, so ``atom_truth`` answers UNKNOWN however many times the observer
+        reads the world and answers "no".  All six L3 episodes sat in that live-lock —
+        ``_gather_evidence`` reported progress every cycle because it had *recorded* an
+        observation, ``goals_needing_method`` returned nothing every cycle because the
+        refusal was NEEDS_EVIDENCE, and planning never had a way forward.
+
+        So: a precondition one observer has already read ``evidence_saturation_rounds``
+        times, while the truth is still UNKNOWN, is treated as a refusal a *different
+        method* could route around — which is all ``SYNTHESIS_WORTHY_REFUSALS`` means.
+        I18 is untouched: nothing here turns UNKNOWN into TRUE or opens a safety gate;
+        it only decides whether proposing a new method is a sensible next question.
+        """
+
+        if report.status is not ApplicabilityStatus.NEEDS_EVIDENCE:
+            return False
+        keys = tuple(report.needs_evidence)
+        if not keys:
+            return False
+        bound = int(self.evidence_saturation_rounds)
+        semantics = self.semantics()
+        for key in keys:
+            by_observer: dict[str, int] = {}
+            for record in semantics.list_observations(mission_id, proposition_key=str(key)):
+                observer = str(record.observer_id or "")
+                by_observer[observer] = by_observer.get(observer, 0) + 1
+            if not by_observer or max(by_observer.values()) < bound:
+                return False
+        return True
 
     def record_synthesis_outcome(
         self,

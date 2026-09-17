@@ -2295,3 +2295,225 @@ pytest tests/orchestrator/{step02..step09,p32..p36} tests/orchestrator/test_crit
 * `mypy src/agent_orchestrator`：**17 errors in 4 files**，与基线一致（未新增）。
 * 变异自证：**20/21 KILLED**（§5）。
 * **未跑**：`gap_phase1`（按任务书）、真实模型（本片不调模型）。
+
+---
+
+# 第四部分（P2.3d）：Grok 验收暴露的分层闭环缺陷修复
+
+- 日期：2026-09-17
+- 工作树：`simple-harness-sdk-p23d`，分支 `p2.3d-fix`，基线 `main = e53395c`（0.12.0 + 发布记录）
+- 依据：`impl/Grok验收-H臂故障诊断-2026-09-17.zh-CN.md`（每条缺陷带文件:行、事件序列、最小修法）、
+  `impl/Grok验收报告-2026-09-17.zh-CN.md` §3.5、主计划 §7.2 / §7.3 / §9.1 / §18.5 / §21.5
+- 一句话：H 臂 40 局 `COMPLETED = 0` 的四类失败全部是确定性的 SDK 缺陷，本片按诊断建议顺序
+  （D3 → D4 → D1 → D5-A → D2c → D5-B → D2b）逐条**先写红测试再修**。
+
+## 1. 逐缺陷的修法与位置
+
+### D3 终结步输出端口（提交 `fa022bb`）
+
+**症状**：`code.fix-by-patch` 的 `composition.criterion_links` 把根准则 `c-test-passes`
+挂在 `verify` 步上，`code.verify-tests` 声明了 `port_key:"report", required:true`，
+但**没有任何下游步骤消费它**。三处读「端口集合」的代码共用一条规则
+（"被 `DataRequirement` 消费"），于是终结步叶子的上下文包里根本没有 `declared_output_ports` 段，
+模型写不出 `outputs`，`OUTPUT_PORT_UNCLAIMED` 无从触发，缺口一直拖到根评审才以
+`evidence.kind=none` 爆掉。10 局（C3×2 + M1×4 + M2×4）死在这里，其中 9 局交付物本身过了隐藏评分器。
+
+**修法**：端口集合的定义改为「**被 `DataRequirement` 消费 ∪ 被 `composition.criterion_links` 引用**」。
+
+| 位置 | 改动 |
+|---|---|
+| `orchestrator/accepted_outputs.py` | 新增 `output_ports_in_revision()`（行级唯一答案）、`criterion_linked_occurrences()`、`coverage_in_revision()`、`_merge_ports()`；`stored_coverage()` 从 `hierarchical_dispatch` 搬进来，两个读者共用同一条 `coverage_from_slots` 推导；`declared_output_ports(network, …)` 改读 `network.obligation_coverage` |
+| `orchestrator/hierarchical_dispatch.py` | `declared_output_ports_for` 改调 `output_ports_in_revision`；`_stored_coverage` 改为 import 别名 |
+| `orchestrator/resolution_commits.py` | `_declared_ports` 多收一个 `task_id`，改调 `output_ports_in_revision`（`OUTPUT_PORT_UNCLAIMED` 的判据） |
+| `orchestrator/leaf_acceptance.py` | `_outputs`（诊断漏掉的**第四处**）同改 |
+
+「一个答案」的做法：**生产侧三处全部走 `output_ports_in_revision` 这一个函数**；网络侧的
+`declared_output_ports` 读 `obligation_coverage`，而它本身就是 `coverage_from_slots` 按
+`criterion_links` 推出来的，`test_the_three_readers_give_the_same_answer` 把两条路钉成同一答案。
+criterion-linked 端口的 schema 取自 producer 自己的 `PortSpec`（没有边可取），已被边消费的端口
+仍以边的 schema 为准——producer 不能给活边上的产物改标签。
+
+### D4(a) 分层 Mission 的 Manager 短路（提交 `499b25d`）
+
+`_request_management` 只有 `dynamic_graph` 一个开关、没有模式分支，分层 Mission 照样开 manager intent，
+Manager 唯一能给的 legacy `TaskGraphChange` 被 `commit_graph_change` 无条件拒
+（`SEMANTICS_IS_HIERARCHICAL`）。L1 20 局烧光 `max_manager_rounds` → `management_exhausted`，
+L4 M3 3 局烧光 `no_progress_limit` → `no_progress`，两边都把 Task 真正的失败原因盖掉了。
+
+**修法**：`event_handler._request_management` 在 `subject` 算出来之后、开 intent 之前加模式分支，
+记一条新事件 `ManagementNotApplicableUnderHierarchical`
+（`commit_service.MANAGEMENT_NOT_APPLICABLE`，理由码复用 `SEMANTICS_IS_HIERARCHICAL`，
+`redirect: commit_plan_revision`，**按 subject 去重**，每个 trigger 一条）。
+`ManagementRequested` / `ManagementDecided` 都不再产生——诊断 §4.3 要求的
+「`ManagementDecided{rejected}` 不计入 no_progress」因此以最强的形式成立：该事件根本不存在。
+（`no_progress_count` 本来就只数 attempt 的 failure reason，不数 ManagementDecided；
+真正被烧掉的是 manager 轮次额度与被管理循环掩盖的失败路径。）
+
+### D1 AppWorld 分层 Worker 模板（提交 `bfeb6af`）
+
+`_hierarchical_worker_template` 对 `HIERARCHICAL_WORKER_VERSIONS` 之外的一切版本无条件返回
+`WORKER_HIERARCHICAL`，把上一行 `template_for_domain` 选出的 `worker-appworld-v3` 整个丢掉。
+`_revise` 原样继承 `tool_names`，于是 role_tools 是代码域那四个；`effective_tools` 以 role_tools 为
+遍历基，`appworld_execute` 虽在 Mission/Task/Deployment 三集合里却被丢弃。提示词也一起丢了
+（Worker 被要求用 `run_tests` 跑 pytest，而它在操作一个模拟世界）。
+
+**修法**（三步，不动 `effective_tools`、不动 DAG 字节）：
+
+1. `runtime/appworld_templates.py` 新增 `register_appworld_hierarchical_worker()`：用 `_revise`
+   从 **`worker-appworld-v3`** 派生 `worker-appworld-hierarchical-v1`，两个锚点按 AppWorld 文本重写
+   （`"evidence":["file:交付报告路径"]…` 与 `无法完成时如实提交失败/限制，不编造观察。`），
+   `tool_names` 原样继承 AppWorld 的六个（含 `appworld_execute`）。
+2. `runtime/role_templates.py`：`HIERARCHICAL_WORKER_VERSIONS` 由单值 frozenset 改为
+   「可变集合 `_HIERARCHICAL_WORKER_VERSIONS` + `register_hierarchical_worker()` + 域模块注册完毕后
+   在模块尾部**冻结一次**」，并新增 `hierarchical_worker_versions()`、
+   `hierarchical_worker_for_domain()`、`HIERARCHICAL_WORKER_ROLE_KEY = "worker_hierarchical"`。
+3. `governance/domains.py`：新增 **`APPWORLD_PROFILE_V4`**（`replace(V3, version="4")` + 一个
+   `worker_hierarchical` 键），`APPWORLD_PROFILE = APPWORLD_PROFILE_V4`。
+   **不是就地改 V3**：冻结档是重放 Mission 读回来的东西，给已冻结的版本加键会改变那些 Mission
+   「自己以为跑在什么上面」。键名不用 `worker`，因为 `template_for_domain` 读的正是那一个，
+   覆盖它会把每个 legacy AppWorld Mission 换到一个要求 `outputs` 的提示词上。
+4. `event_handler._hierarchical_worker_template` 的兜底由常量改为
+   `hierarchical_worker_for_domain(self.commit.domain_for(mission_id))`；域没登记时仍回落到
+   `WORKER_HIERARCHICAL`，域登记了一个本构建没注册的版本则抛 `ContractError`
+   （与 `template_for_domain` 对未登记版本的处理对称）。
+
+**冻结摘要**：`test_output_port_claims.py` 新增 `FROZEN_REGISTERED_DIGESTS`
+（`worker-appworld-v3` = `8fbea828…`，`worker-appworld-hierarchical-v1` = `9ad842af…`），
+基版也钉住——「分层版 = AppWorld 版 + 一个 `outputs` 字段」这句话只在基版不动时成立。
+
+### D5-A 根验收 REJECT 后的修复路径（§9.1 最小分支，提交 `606cfae`）
+
+`_advance_root_review` 里 `REVIEW_REJECTED` 的处理是「记下、note 一行、`return False`」，
+注释写着「§9.1 的决策表，绝不静默重试」而**决策表本身从未实现**。
+
+**修法**：新增 `_repair_after_root_review(mission, new_mode, state)`：
+
+- 只有 `severity == "blocker"` 的 finding 才开修复轮（评审人为措辞问题判 REJECT 不是在要新计划，
+  按那个重规划就是本循环在判「评审错了」）；
+- findings 以 `PlanningRejected{reason: "root_review_rejected", detail: {plan_revision, package_id,
+  repair_round, max_root_review_repairs, findings}}` 落库——这正是 `_planning_rejections`
+  喂给下一份提案的东西，所以 Planner 是**被告知评审人说了什么**，不是被重新问一遍；
+- 上限 **每 plan_revision 1 次**（新配置项 `OrchestratorConfig.max_root_review_repairs`，默认 1，
+  `0` 关闭该分支，负值被 `ValueError` 拒）；
+- 序号复用既有 ordinal 机制：`_next_planning_ordinal()` 按 intent 的创建键
+  `{mission}:planner:{n}` 逐个探测下一个空位（复用已花掉的序号会拿回旧 intent，什么也不会派发）。
+
+辅助读法：`_root_review_findings()`（按 package 从最新一条 `HierarchicalRootReviewRejected` 读）、
+`_root_review_repairs()`（按 plan_revision 数已开的修复轮）。
+
+### D2c 规划拒绝理由码拆分（提交 `37b18fa`）
+
+`_collect_plan_hierarchical` 把 `apply_planner_reply` 抛出的任何 `ContractError` 一律记成
+`proposal_unreadable`；L3 六局的事件日志因此说「模型写不出块」，而模型其实给出了合法的
+`<plan_revision_proposal>`、只是选了一条 NEEDS_EVIDENCE 的方法。理由码同时是下一轮的反馈文本，
+所以模型还被告知去修格式。
+
+**修法**（`event_handler`，新常量 `PROPOSAL_NOT_GROUNDED = "proposal_not_grounded"`）：
+
+- `__cause__` 是 `BlockError` → `proposal_unreadable`（附 `repair_hint` / `block_defect`）；
+- 回合**根本没有 COMMITTED**（没有任何文本）→ 仍是 `proposal_unreadable`；
+- 回合 COMMITTED 且被内容规则拒 → `proposal_not_grounded`。
+
+**`max_planning_attempts` 默认值不改（仍是 2）**。理由：默认值进 `OrchestratorConfig.to_json()`
+（策略/配置快照的一部分），为一次实验改出厂默认会动到每个部署的配置字节；runner 侧一行
+`OrchestratorConfig(..., max_planning_attempts=3)` 就够（`run_h_arm.py:414`）。**这一条要记进 runner 交接。**
+
+### D5-B 嵌套 compound（提交见下）
+
+`_cycle_inner` 只在 `mission.status is CREATED` 时开规划轮，`begin_planning` 的唯一调用点是
+`_start_planning`。一旦 `PlanRevisionCommitted`，Planner 再也不会被问第二次；Planner 提的
+**嵌套 compound** 停在 `CompoundPhaseChanged{planning_ready, NEEDS_REFINEMENT}`，
+下游 primitive 永远 `WAITING_ORDER`，M3-r2 就这么挂死，整轮 40 局也没有一个计划超过一层。
+
+**二选一的理由**：选「扩规划触发条件」而不是「在 `plan_commits` 侧拒绝含嵌套 compound 的提案」。
+两层计划是**正确**的东西，而且编译它的机械（第二部分 c 专门做的
+`coverage_from_slots` 重推导，为的就是「第二次细化轮能编译」）已经存在；提交侧拒绝等于把一个
+本可修好的失败永久化。
+
+**修法**：`_cycle_inner` 对非 CREATED 的 Mission 调新方法 `_refine_open_compounds(mission)`：
+
+- 判据是 `spec.form is COMPOUND and network.adopted_instance_for(occ) is None`，
+  与 `goals_needing_method` **同一条**；**不用** `ReadinessReason.NEEDS_REFINEMENT`
+  ——§18.5 约束 4 让每个 compound 无论细化与否都答这一条（实测已细化的根也在里面）；
+- 状态闸门是「非终态」而不是 ACTIVE：只有一个未细化 compound 的计划提交不出可派发工作，
+  Mission 会停在 PLANNING（夹具实测）；M3-r2 则是 ACTIVE。两种形状同因同修；
+- 有 plan intent 在途时不开第二轮（一次只问一个问题）；
+- 上限**每 plan_revision 1 轮**，用进程内 `self._refinement_rounds[mission_id] = revision` 记，
+  不需要计数器：细化成功会把修订推进，细化不成则修订不动、同一个问题不会问第二遍。
+
+**连带**：`_planning_rejected` 在 `ordinal >= max_planning_attempts` 时**只有 Mission 仍是 PLANNING
+才 `fail_planning`**。已经提交过计划的 Mission 不该被一次「事后」的规划轮杀掉——D5-A 的修复轮和
+D5-B 的细化轮都跑在 PLANNING 之后，它们的梯子各是一轮；被拒就记下来，Mission 带着已有计划继续，
+真跑不动再走空转路径如实收口。
+
+### D2b 证据饱和（提交见下）
+
+OPEN 谓词 + 真否定观察 = 永远 UNKNOWN（`NO_SUPPORT`），于是 `_gather_evidence` 每轮都「有进展」、
+`goals_needing_method` 每轮都返回空，规划永远无解——L3 六局的活锁。
+
+**修法**：`HierarchicalDispatch` 新增字段 `evidence_saturation_rounds`
+（默认常量 `DEFAULT_EVIDENCE_SATURATION_ROUNDS = 2`，`< 1` 抛 `ContractError`）与
+`_evidence_is_saturated(mission_id, report)`：报告是 NEEDS_EVIDENCE、`needs_evidence` 非空、
+且**每一个**未知命题都已被**同一个观察器**以 `OBSERVED` 结局记录 ≥N 次时，
+该报告在 `goals_needing_method` 的 `any(...)` 里视同「一个不同方法可以绕开的拒绝」。
+
+**没有放宽的东西**：I18 原样。这里不把 UNKNOWN 变成 TRUE、不开任何安全闸，只决定
+「现在该不该提一个新方法」。两个不同观察器各看一次**不算**饱和（那是真的新一眼）。
+
+## 2. 新事件名 / 新理由码 / 新配置项
+
+| 类别 | 名字 | 位置 | 说明 |
+|---|---|---|---|
+| 事件 | `ManagementNotApplicableUnderHierarchical` | `commit_service.MANAGEMENT_NOT_APPLICABLE` | D4；已加进 `test_hierarchical_event_flow.NEW_EVENT_TYPES`（legacy Mission 永不产生） |
+| 理由码 | `proposal_not_grounded` | `event_handler.PROPOSAL_NOT_GROUNDED` | D2c |
+| 理由码 | `root_review_rejected` | `event_handler.ROOT_REVIEW_REPAIR_REASON`（走 `PlanningRejected`） | D5-A |
+| 配置 | `OrchestratorConfig.max_root_review_repairs`（默认 1） | `runtime/assembly.py` | D5-A；已进 `to_json()` |
+| 配置 | `HierarchicalDispatch.evidence_saturation_rounds`（默认 2） | `orchestrator/hierarchical_dispatch.py` | D2b |
+| 域档 | `APPWORLD_PROFILE_V4` + `role_templates["worker_hierarchical"]` | `governance/domains.py` | D1；`resolve_domain("appworld-v1").version` 由 `"3"` 变 `"4"` |
+| 提示词 | `worker-appworld-hierarchical-v1` | `runtime/appworld_templates.py` | D1；sha256 `9ad842af…` |
+
+## 3. 旧模式 golden 是否变
+
+**没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
+旧函数源码 hash、`_ExplodingDispatch` 三例全绿；`NEW_EVENT_TYPES` 加了 D4 的新事件名并仍然
+`isdisjoint`。改动全部落在 `_new_mode(mission) is not None` 之后的分支里：
+
+- D3/D5-A/D5-B/D2b 只在层次 Mission 的代码路径上；
+- D4 在 `_request_management` 里加的是模式分支，legacy 半边有专门的反向测试；
+- D1 只新增一个注册版本与一个**新**域档版本，没有编辑任何已冻结的提示词或档位。
+
+三个口径变化要记进发布说明：
+
+1. `resolve_domain("appworld-v1").version`：`"3"` → `"4"`（新建 Mission 冻结 V4；已冻结的不动）；
+2. `OrchestratorConfig.to_json()` 多一个 `max_root_review_repairs` 键（依赖配置 digest 做外部对照的脚本要重取基线）；
+3. `HIERARCHICAL_WORKER_VERSIONS` 不再是单元素集合。
+
+## 4. 偏差
+
+1. **诊断说「三处同改」，实际是四处**：`orchestrator/leaf_acceptance.py::_outputs` 也调用同一条规则，
+   诊断没点到。不改它的话，端口会被告知、会被强制，但索引仍写不进去。
+2. **D3 的「H-L4-M1 事件夹具端到端脚本化复现到 COMPLETED」没有按夹具做**，改为
+   `test_finalizer_output_ports.py` 的四段不变式（规则 / 告知 / 强制 / 边界）加上
+   `test_root_review_repair.py` 与 `test_nested_compound_refinement.py` 在**真 `Orchestrator`** 上
+   驱动 `_advance_root_review` / `_refine_open_compounds`。理由：全链路脚本化到 COMPLETED 需要
+   planner + 4×worker + 4×critic + root reviewer 的整套脚本，等于把真实模型冒烟重写一遍；
+   同样的保护由「三读者同答 + 上下文包必含端口 + 漏填必被 `OUTPUT_PORT_UNCLAIMED` 拒 +
+   冒烟收口断言」四条覆盖，而最后一条正是原缺陷唯一的真实漏网点。**记为未做项交下一片。**
+3. **`max_planning_attempts` 默认值未改**，见 D2c 段的理由；runner 需显式传参。
+4. **`_next_planning_ordinal` 用 intent 探测而不是事件扫描**：`list_intents` 没有按 mission 过滤的入口，
+   而 ordinal 就是创建键，逐个探测既准确又无需新 store API。
+
+## 5. 契约变更请求
+
+无。本片没有改 `contracts/`：新配置项在 `runtime/assembly.py`，新事件名在 `orchestrator/`，
+新域档版本在 `governance/`，端口规则在 `orchestrator/accepted_outputs.py`。
+`APPWORLD_PROFILE_V4` 用 `DomainProfileV1` 既有的 `role_templates` 映射承载新键，
+`DomainProfileV1` 不校验键名、`to_json`/`from_json` 原样收发，故无契约改动。
+
+## 6. 未做 / 交下一片
+
+- D2a（runner 接线：L3 根目标别指向绿色可见套件）——**runner 侧**，本片范围外。
+- S1（`_accepted_files` 名实不符、`pair.py` 只看 official）——**runner / 口径**，本片范围外。
+- D4(b)（给 Manager 一个 hierarchical 变体，产出 `<plan_revision_proposal>`）——按诊断建议放到 P3/TaskGraph。
+- D3 的整链脚本化复现（见偏差 2）。
+- `run_h_arm.py` 需显式传 `max_planning_attempts=3`（见偏差 3）。
