@@ -2179,10 +2179,20 @@ class Orchestrator:
             return False
         except ContextRejected as error:
             self._deferred_planning.pop(mission_id, None)
+            # Verification P2-F / mutation VO: ``ordinal`` is added only where it is
+            # new information.  A Mission still in PLANNING writes exactly the payload
+            # it wrote on main — the legacy ``MissionFailed.detail`` is a shipped shape
+            # and this slice has no business widening it — while a Mission past PLANNING
+            # is in a round that only P2.3d opens, where "which round" is the one thing
+            # an operator cannot otherwise work out.
+            rejected = self.store.get_mission(mission_id)
+            detail: dict[str, Any] = {"error": str(error)[:300]}
+            if rejected is not None and rejected.status is not MissionStatus.PLANNING:
+                detail["ordinal"] = ordinal
             self._stop_planning_round(
                 mission_id,
                 reason="context_rejected",
-                detail={"error": str(error)[:300], "ordinal": ordinal},
+                detail=detail,
                 stop_reason=MissionStopReason.CONTEXT_REJECTED,
             )
             self._note(f"mission {mission_id}: planner package refused ({error})")
@@ -3707,7 +3717,22 @@ class Orchestrator:
         # answer arrived before the ladder ran out decided whether the Mission lived.
         allowance = int(self._config.max_planning_attempts) + self._synthesis_credits(mission.id)
         if ordinal < allowance:
-            await self._try_planner_intent(mission.id, ordinal=ordinal + 1)
+            if mission.status is MissionStatus.PLANNING:
+                # The phase that produces the first plan, legacy included: unchanged,
+                # exception and all.  ``_start_planning`` guards ordinal 1 and this rung
+                # has never been guarded — widening that is a decision about the legacy
+                # path and not one this slice gets to make on the way past.
+                await self._try_planner_intent(mission.id, ordinal=ordinal + 1)
+            else:
+                # Verification of the P0-1 fix: it had closed only the *opening* of
+                # D5-A's and D5-B's rounds.  When the answer to one of them is refused
+                # the ladder climbs — with the runner passing ``max_planning_attempts=3``
+                # that is simply the next thing that happens — and this rung was still
+                # bare, so the same ``BudgetExhausted`` escaped ``_cycle()`` one rung
+                # later, Mission left ACTIVE and no ``MissionFailed``.
+                await self._planner_round_on_committed_plan(
+                    mission.id, ordinal=ordinal + 1, phase="planning_ladder"
+                )
         elif self._synthesis_intents_in_flight(mission.id):
             # The ladder is spent but the library is still being extended.  Ending here
             # would be ending on the old library; ``_after_synthesis_round`` reopens the

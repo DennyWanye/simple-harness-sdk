@@ -2630,6 +2630,28 @@ uv run --frozen --no-sync --group dev --extra local-capacity \
 
 5. **§2d 那次 COMPLETED 跑在审阅前的代码上**：它用的是 `worker-hierarchical-v1`（P1-2 的旧措辞），也没有走过 P0-1/P1-1 的任何分支。结论仍然成立（终结步端口有产物 = D3 在真实模型上闭环），但它**不是**对本节这批改动的验证。Grok 两臂重跑前值得再跑一次冒烟，成本一次约 14 万 token；**记为未做项交下一片**。
 
+### 二修：核验稿 `reviews/核验-第四部分修复6c282a8-2026-09-17.md`（结论「需再修——P0-1 一处残留」）的处置
+
+核验方式：隔离副本全量 + 原探针复跑 + 11 条新探针 + 17 条自拟变异（11 KILLED / 6 SURVIVED）。
+
+| 条目 | 处置 | 红测试 / 变异杀手 |
+|---|---|---|
+| **P0-1 残留**（`_planning_rejected` 对 ACTIVE Mission 开下一级梯子仍是裸 `_try_planner_intent`） | **已修**：非 PLANNING 走 `_planner_round_on_committed_plan(phase="planning_ladder")`；PLANNING 逐字节不动 | `test_root_review_repair.py::test_the_rung_after_a_refused_repair_round_cannot_crash_the_loop_either`（探针的形状：`tokens=4100`，修复轮占掉 4000 预留，下一级请求 4000 → 原先 `BudgetExhausted` 逃出 `_cycle`） |
+| **VA / VJ 存活**（测试分不清 `fail_planning` 与 `fail_mission`） | **已补断言**：`"planning_failure" not in final_report`、`detail.phase`、`TaskCancelled` 级联 | `::test_a_repair_round_that_cannot_be_funded_stops_the_mission_visibly`（VA、VJ 现均 KILLED） |
+| **VH 存活**（`_prune_deferred` 判据无测试） | **已补** | `::test_a_repair_round_whose_pool_is_cooling_down_keeps_its_place_in_the_queue` |
+| **VI 存活**（`_retry_deferred_planning` 新分支无测试） | **已补** | `::test_a_deferred_repair_round_is_retried_and_its_exhaustion_is_still_caught` |
+| **VO 存活**（`ContextRejected` 的 `ordinal` 键落进 legacy payload） | **已修**：只在**非 PLANNING** 时加该键——PLANNING（含 legacy）写的仍是 main 上那个 payload，一个字节都不多 | `::test_a_repair_round_whose_package_is_refused_stops_the_mission_not_the_planning` |
+| **VN 存活**（`method_synthesis_refused` 无测试） | **已补** | `test_evidence_saturation.py::test_a_refused_synthesis_round_ends_the_wait_it_caused` |
+| P2-C（D5-B 的预算夹具停在 PLANNING，没覆盖 `fail_mission`） | **已补 ACTIVE 夹具**（`_mixed_world`：一个可派发叶 + 一个未细化 compound，即 M3-r2 的形状） | `test_nested_compound_refinement.py::test_an_active_mission_that_cannot_fund_a_refinement_round_fails_as_a_mission` |
+| P2-D（`_publish_admitted_method` 读 `world.semantics`） | **已修**：改用 `self.semantics()`——`compile_proposal` 读的就是它，`world.semantics` 缺失时原先是**静默不发布** | 既有 e2e（变异 VC）继续覆盖 |
+| VG3 | 按核验稿忽略：只是内存缓存，日志兜底 | — |
+| P2-E（合成 intent 丢失/超时的收口） | **未做**，记为下一片核对项 | — |
+| P2-A 的「口径更正」 | 上一版 §2e 写 P2-4「与 P0-1 同一组测试」不成立，已由本轮 VH / VI 两条测试补上 | — |
+
+一条口径：`_planning_rejected` 对**仍在 PLANNING** 的 Mission 开下一级仍是裸调用。
+那是 main 上就有的行为（`_start_planning` 只保护 ordinal 1），改它等于改 legacy 的失败形态，
+不在本片范围；核验稿也是这么记的。
+
 ### P2-3 / P2-9 两处口径更正
 
 - **P2-3**：D5-A 开的是**一轮**，不是 Mission 此后只花一轮。那一轮是普通 Planner 轮，

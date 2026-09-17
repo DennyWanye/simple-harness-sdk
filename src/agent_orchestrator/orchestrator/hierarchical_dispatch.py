@@ -2977,9 +2977,15 @@ class HierarchicalDispatch:
         Same re-registration rule as the assembly path: identical bytes are a no-op.
         """
 
-        semantics = getattr(world, "semantics", None)
-        if semantics is None or reference is None:
+        # Verification P2-D: ``self.semantics()`` and not ``world.semantics``.  The
+        # latter is an attribute a deployment sets on its planning world, and when it is
+        # absent this method used to publish nothing at all, silently — while
+        # ``compile_proposal`` reads from ``self.semantics()`` regardless.  The two have
+        # to be the same store or this whole fix is a no-op on a world shaped slightly
+        # differently from the fixtures'.
+        if reference is None:
             return
+        semantics = self.semantics()
         contract = world.registry.definition(reference)
         registration = world.registry.registration(reference)
         if contract is None or registration is None:

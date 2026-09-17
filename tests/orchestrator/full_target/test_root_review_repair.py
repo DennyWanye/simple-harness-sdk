@@ -42,6 +42,7 @@ from agent_orchestrator.contracts.resolution import (  # noqa: E402
     ReviewVerdict,
 )
 from agent_orchestrator.contracts.state_machines import TERMINAL_MISSION  # noqa: E402
+from agent_orchestrator.orchestrator.commit_service import mission_account  # noqa: E402
 from agent_orchestrator.orchestrator.event_handler import (  # noqa: E402
     ROOT_REVIEW_REPAIR_REASON,
     Orchestrator,
@@ -141,6 +142,9 @@ def _advance(
                 "status": loop.store.get_mission(world.mission.id).status,
                 "stop_reason": loop.store.get_mission(world.mission.id).stop_reason,
                 "next_ordinal": loop._next_planning_ordinal(world.mission.id),
+                "report": dict(
+                    loop.store.get_mission(world.mission.id).final_report or {}
+                ),
                 "packages": [
                     str(item.config.get("message", ""))
                     for item in loop.store.list_intents(
@@ -334,6 +338,19 @@ def test_a_repair_round_that_cannot_be_funded_stops_the_mission_visibly(tmp_path
     assert outcome["status"] is MissionStatus.FAILED
     assert outcome["stop_reason"] == str(MissionStopReason.BUDGET_EXHAUSTED)
     assert not outcome["intents"], "nothing was dispatched"
+    # Mutations VA and VJ: ``fail_planning(stop_reason=BUDGET_EXHAUSTED)`` produces the
+    # same status and the same stop reason, so the two assertions above cannot tell the
+    # endings apart — and telling them apart is the whole point of ``_stop_planning_round``.
+    # ``fail_planning`` files a ``planning_failure`` on a Mission that *was* planned and
+    # leaves its open work running; ``fail_mission`` files the Mission-level stop and
+    # cascades.
+    assert "planning_failure" not in outcome["report"], (
+        "a Mission holding a committed plan did not fail at planning"
+    )
+    assert outcome["report"].get("detail", {}).get("phase") == "root_review_repair"
+    assert "TaskCancelled" in [item.type for item in outcome["events"]], (
+        "the open work is stopped with it"
+    )
 
 
 def test_the_whole_loop_survives_a_repair_round_it_cannot_fund(tmp_path) -> None:
@@ -435,3 +452,222 @@ def test_the_repair_record_does_not_swallow_the_rounds_own_rejection(blocked) ->
     reasons = [str(item["reason"]) for item in asyncio.run(case())]
     assert ROOT_REVIEW_REPAIR_REASON in reasons, "why the round was opened"
     assert "proposal_not_grounded" in reasons, "and what came back from it"
+
+
+def test_the_rung_after_a_refused_repair_round_cannot_crash_the_loop_either(tmp_path) -> None:
+    """Verification P0-1 residual: the fix had only closed the *opening* of the round.
+
+    ``_repair_after_root_review`` opens one round.  When the Planner's answer to it is
+    refused, ``_planning_rejected`` climbs the ordinary ladder — with the runner passing
+    ``max_planning_attempts=3`` that is not an edge case, it is the next thing that
+    happens — and that rung was still a bare ``_try_planner_intent``.  So the same
+    ``BudgetExhausted`` escaped ``_cycle()`` one rung later, with the Mission left ACTIVE
+    and no ``MissionFailed``: exactly the crash P0-1 was about, postponed.
+
+    The account here holds one reservation and a hundred tokens over: the repair round
+    takes the reservation, and the rung after it cannot be funded.
+    """
+
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-rung", tokens=4100)
+    evidence = Path(tmp_path) / "evidence"
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=5,
+        max_root_review_repairs=1,
+        max_planning_attempts=3,
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            assert await loop._advance_root_review(mission, loop._new_mode(mission))
+            assert loop.store.get_mission(world.mission.id).status is MissionStatus.ACTIVE
+            intent = next(
+                item
+                for item in loop.store.list_intents(
+                    "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                )
+                if item.mission_id == world.mission.id and item.kind == "plan"
+            )
+            # What ``_collect_plan`` does with an unreadable repair proposal.
+            await loop._planning_rejected(
+                intent, reason="proposal_unreadable", detail={"error": "junk"}
+            )
+            final = loop.store.get_mission(world.mission.id)
+            return {
+                "status": final.status,
+                "stop_reason": final.stop_reason,
+                "report": dict(final.final_report or {}),
+                "events": [item.type for item in loop.store.list_events(world.mission.id)],
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["status"] is MissionStatus.FAILED
+    assert outcome["stop_reason"] == str(MissionStopReason.BUDGET_EXHAUSTED)
+    assert "MissionFailed" in outcome["events"]
+    assert "planning_failure" not in outcome["report"], (
+        "a Mission that holds a committed plan did not fail *at planning*"
+    )
+
+
+# ======================================================================================
+# verification P2-A / P2-F: the two routing paths, on a Mission that already has a plan
+# ======================================================================================
+
+
+def _repair_with_broken_planner(
+    world: World, evidence: Path, error: Exception, *, wait_seconds: float = 300.0
+) -> dict[str, Any]:
+    """Open D5-A's repair round with ``_create_planner_intent`` raising ``error``."""
+
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=5,
+        max_root_review_repairs=1,
+        max_planning_attempts=4,
+        profile_wait_seconds=wait_seconds,
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+
+            async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+                raise error
+
+            loop._create_planner_intent = refuse  # type: ignore[method-assign]
+            mission = loop.store.get_mission(world.mission.id)
+            moved = await loop._advance_root_review(mission, loop._new_mode(mission))
+            deferred = dict(loop._deferred_planning)
+            loop._prune_deferred()
+            after_prune = dict(loop._deferred_planning)
+            final = loop.store.get_mission(world.mission.id)
+            return {
+                "moved": moved,
+                "deferred": deferred,
+                "after_prune": after_prune,
+                "status": final.status,
+                "stop_reason": final.stop_reason,
+                "report": dict(final.final_report or {}),
+                "events": [item.type for item in loop.store.list_events(world.mission.id)],
+            }
+
+    return asyncio.run(case())
+
+
+def test_a_repair_round_whose_pool_is_cooling_down_keeps_its_place_in_the_queue(
+    tmp_path,
+) -> None:
+    """Verification P2-A (mutation VH survived): ``_prune_deferred``'s criterion.
+
+    It used to drop every Mission that was not PLANNING, which was right while the only
+    deferred round was the one producing the first plan.  D5-A's round belongs to an
+    ACTIVE Mission, so the prune threw it away — with ``max_root_review_repairs``
+    already spent on it, meaning the Mission silently lost its one repair to a pool that
+    was merely cooling down.
+    """
+
+    from agent_orchestrator.runtime.model_router import RoutingUnavailable
+
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-cooldown")
+    outcome = _repair_with_broken_planner(
+        world, Path(tmp_path) / "evidence", RoutingUnavailable("default", None)
+    )
+    assert outcome["moved"] is False, "nothing was dispatched this cycle"
+    assert outcome["deferred"], "the round is waiting, not lost"
+    assert outcome["after_prune"] == outcome["deferred"], (
+        "an ACTIVE Mission's deferred round survives the prune"
+    )
+    assert outcome["status"] is MissionStatus.ACTIVE, "waiting is not failing"
+
+
+def test_a_deferred_repair_round_is_retried_and_its_exhaustion_is_still_caught(
+    tmp_path,
+) -> None:
+    """Verification P2-A (mutation VI survived): the retry branch, and its guard.
+
+    ``_retry_deferred_planning`` takes the waiting round up again; for a Mission past
+    PLANNING it has to go through ``_planner_round_on_committed_plan``, or the retry is
+    one more place ``BudgetExhausted`` leaves the loop.
+    """
+
+    from agent_orchestrator.runtime.model_router import RoutingUnavailable
+
+    world = _rejected_world(
+        tmp_path, findings=BLOCKER, key="p23d-repair-retry", tokens=4100
+    )
+    evidence = Path(tmp_path) / "evidence"
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=5,
+        max_root_review_repairs=1,
+        max_planning_attempts=4,
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            original = loop._create_planner_intent
+
+            async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+                raise RoutingUnavailable("default", None)
+
+            loop._create_planner_intent = refuse  # type: ignore[method-assign]
+            mission = loop.store.get_mission(world.mission.id)
+            await loop._advance_root_review(mission, loop._new_mode(mission))
+            assert loop._deferred_planning, "the round is waiting"
+            # The pool comes back, and the account has meanwhile gone: the retry has to
+            # end the Mission rather than the process.
+            loop._create_planner_intent = original  # type: ignore[method-assign]
+            loop.commit.ledger.reserve(
+                account_id=mission_account(world.mission.id),
+                subject_id="drain-the-account",
+                tokens=4000,
+                cost_micros=0,
+                counts_attempt=False,
+                mission_id=world.mission.id,
+            )
+            await loop._retry_deferred_planning()
+            final = loop.store.get_mission(world.mission.id)
+            return {
+                "status": final.status,
+                "stop_reason": final.stop_reason,
+                "report": dict(final.final_report or {}),
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["status"] is MissionStatus.FAILED
+    assert outcome["stop_reason"] == str(MissionStopReason.BUDGET_EXHAUSTED)
+    assert outcome["report"].get("detail", {}).get("phase") == "deferred_planning"
+    assert "planning_failure" not in outcome["report"]
+
+
+def test_a_repair_round_whose_package_is_refused_stops_the_mission_not_the_planning(
+    tmp_path,
+) -> None:
+    """``ContextRejected`` on a Mission that already holds a plan (verification P2-A).
+
+    And the payload it writes: ``ordinal`` is added here, where the round is one only
+    P2.3d opens, and **not** on the PLANNING path whose ``MissionFailed.detail`` is a
+    shipped shape (mutation VO / P2-F).
+    """
+
+    from agent_orchestrator.context.context_builder import ContextRejected
+
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-context")
+    outcome = _repair_with_broken_planner(
+        world, Path(tmp_path) / "evidence", ContextRejected("package too large")
+    )
+    assert outcome["moved"] is False
+    assert outcome["status"] is MissionStatus.FAILED
+    assert outcome["stop_reason"] == str(MissionStopReason.CONTEXT_REJECTED)
+    assert "planning_failure" not in outcome["report"], "it did not fail at planning"
+    assert "TaskCancelled" in outcome["events"]
+    assert outcome["report"]["detail"]["ordinal"] == 1

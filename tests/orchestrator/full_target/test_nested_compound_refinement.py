@@ -200,6 +200,7 @@ def _cycle(
                 "moved": moved,
                 "status": final.status,
                 "stop_reason": final.stop_reason,
+                "report": dict(final.final_report or {}),
                 "next_ordinal": loop._next_planning_ordinal(world.mission.id),
                 "events": [item.type for item in loop.store.list_events(world.mission.id)],
                 "intents": [
@@ -373,3 +374,101 @@ def test_a_restarted_process_does_not_ask_the_same_revision_again(tmp_path) -> N
     assert outcome["asked"] is True
     assert outcome["again"] is False, "the revision was already put to the Planner"
     assert outcome["next_ordinal"] == 2
+
+
+def _mixed_outer():
+    """One primitive step **and** one unrefined compound: the M3-r2 shape.
+
+    The plan has dispatchable work, so the Mission is ACTIVE — which is the state the
+    ``_nested_outer`` fixture cannot reach (a plan whose only step is an unrefined
+    compound commits nothing to dispatch and leaves the Mission in PLANNING) and which
+    is the one production is normally in.  Verification P2-C: without it, the
+    ``fail_mission`` half of ``_stop_planning_round`` is exercised only from D5-A.
+    """
+
+    return method(
+        "plan.mixed",
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        steps=(
+            step(
+                "leaf",
+                "plan.leaf",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("plan.read",),
+            ),
+            step(
+                "inner",
+                "plan.subgoal",
+                TaskForm.COMPOUND,
+                {"subject": param("subject")},
+            ),
+        ),
+        links=(("c-root", "inner", "c-sub"),),
+        finalizer="inner",
+    )
+
+
+def _mixed_world(tmp_path, *, key: str, tokens: int | None = None) -> World:
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = build_world(
+        evidence,
+        key=key,
+        mode=HIERARCHICAL_SEMANTICS,
+        **({} if tokens is None else {"tokens": tokens}),
+    )
+    env = world.env
+    env.register_type(
+        "plan.subgoal",
+        form=TaskForm.COMPOUND,
+        parameters=(("subject", "string"),),
+        criteria=("c-sub",),
+        domain="plan",
+    )
+    outer, inner = _mixed_outer(), _inner_method()
+    for contract in (outer, inner):
+        receipt = env.admit(contract)
+        assert receipt.admitted, receipt.problems
+        HtnStore(world.store).register_method(
+            contract, env.registry.registration(contract.method_ref())
+        )
+    outcome = world.dispatch.apply_planner_reply(
+        world.mission.id,
+        _proposal(
+            outer, goal_id=ROOT_TASK, obligation_id=ROOT_DUTY, revision=0,
+            proposal_id="prop-mixed",
+        ),
+        principal=world.principal,
+        command_id="cmd-mixed",
+    )
+    assert outcome.committed, outcome.last_reason
+    world.dispatch.advance_compound_phases(world.mission.id)
+    return world
+
+
+def test_an_active_mission_that_cannot_fund_a_refinement_round_fails_as_a_mission(
+    tmp_path,
+) -> None:
+    """Verification P2-C: the ``fail_mission`` half, from D5-B's own side.
+
+    The ``tokens=100`` test above uses a plan whose only step is the unrefined compound,
+    so its Mission never left PLANNING and it went out through ``fail_planning`` — the
+    right ending for that shape, but not the shape production is usually in.  With a
+    dispatchable leaf beside the compound the Mission is ACTIVE, and then a refinement
+    round it cannot fund must end the *Mission*, not file a planning failure against a
+    Mission that was planned, and must stop the work it has open.
+    """
+
+    world = _mixed_world(tmp_path, key="p23d-mixed-broke", tokens=100)
+    evidence = Path(tmp_path) / "evidence"
+    assert world.store.get_mission(world.mission.id).status is MissionStatus.ACTIVE
+    world.store.close()
+    outcome = _cycle(world, evidence)
+    assert outcome["moved"] == [False]
+    assert outcome["status"] is MissionStatus.FAILED
+    assert outcome["stop_reason"] == str(MissionStopReason.BUDGET_EXHAUSTED)
+    assert "planning_failure" not in outcome["report"], "it did not fail at planning"
+    assert outcome["report"]["detail"]["phase"] == "compound_refinement"
+    assert "MissionFailed" in outcome["events"]

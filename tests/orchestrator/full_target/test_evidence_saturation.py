@@ -493,3 +493,102 @@ def test_the_planning_ladder_waits_for_a_synthesis_round_instead_of_racing_it(tm
     )
     assert "MissionFailed" not in outcome["types"], outcome["types"]
     assert outcome["committed"], outcome["types"]
+
+
+def test_a_refused_synthesis_round_ends_the_wait_it_caused(tmp_path) -> None:
+    """Verification VN: the other exit from the branch that makes the ladder wait.
+
+    ``_planning_rejected`` stops short of failing a PLANNING Mission while a synthesis
+    round is in flight — otherwise the Mission is ended on the old library.  That wait
+    has to be ended by whoever caused it: if the synthesised method is *refused*, the
+    Mission has no Planner round out, no rung left and nothing to dispatch, and leaving
+    it there turns a decided failure into an idle one that the stall path has to guess at.
+    """
+
+    from agent_orchestrator.testing.fixtures import method_proposal_step
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _gated_world(evidence, key="p23d-saturation-refused")
+    for ordinal in (1, 2):
+        _observe(world, observer="plan.observer", ordinal=ordinal)
+    world.store.close()
+
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=60,
+        max_planning_attempts=2,
+    )
+    provider = RoleScriptedProvider(
+        {
+            "planner": ["nothing to propose", "still nothing"],
+            # Readable as a block, refused by the admission protocol: it names a goal
+            # signature this deployment has never heard of.
+            "method_synthesizer": [
+                method_proposal_step(
+                    {"method_id": "plan.nowhere", "goal_signature": "no.such.goal"}
+                )
+            ],
+        }
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, provider) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            await loop._try_planner_intent(mission.id, ordinal=1)
+            await loop._request_method_synthesis(mission)
+
+            def planner_intent(ordinal: int):
+                return next(
+                    item
+                    for item in loop.store.list_intents(
+                        "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                    )
+                    if item.kind == "plan"
+                    and str(item.config.get("role", "")) != "method_synthesizer"
+                    and int(item.config.get("ordinal", 0)) == ordinal
+                )
+
+            await loop._planning_rejected(
+                planner_intent(1), reason="proposal_unreadable", detail={"error": "no block"}
+            )
+            await loop._planning_rejected(
+                planner_intent(2), reason="proposal_unreadable", detail={"error": "again"}
+            )
+            waiting = loop.store.get_mission(world.mission.id).status
+            # ``_collect_plan`` settles the round it rejected; doing it by hand here is
+            # what leaves the Mission in the state the wait is *about* — no Planner round
+            # out, no rung left, one synthesis round still to answer.
+            for item in loop.store.list_intents(
+                "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+            ):
+                if item.kind == "plan" and str(item.config.get("role", "")) != (
+                    "method_synthesizer"
+                ):
+                    loop._settle_intent(item, "FAILED")
+            for _ in range(24):
+                await loop._cycle()
+                await asyncio.sleep(0.02)
+                current = loop.store.get_mission(world.mission.id)
+                if current is not None and current.status in TERMINAL_MISSION:
+                    break
+            final = loop.store.get_mission(world.mission.id)
+            return {
+                "waiting": waiting,
+                "status": final.status,
+                "report": dict(final.final_report or {}),
+                "synthesis": [
+                    dict(item.payload)
+                    for item in loop.store.list_events(world.mission.id)
+                    if item.type == "MethodSynthesisRoundRecorded"
+                ],
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["waiting"] is MissionStatus.PLANNING, "the ladder waited, as it should"
+    assert outcome["synthesis"] and outcome["synthesis"][0]["admitted"] is False
+    assert outcome["status"] is MissionStatus.FAILED, "the wait ended, and it ended honestly"
+    assert outcome["report"]["planning_failure"]["reason"] == "method_synthesis_refused"
