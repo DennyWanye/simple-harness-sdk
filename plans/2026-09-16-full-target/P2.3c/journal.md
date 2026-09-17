@@ -3131,6 +3131,165 @@ Planner 的 `planner-hierarchical-v1` 原文写着「如果当前目标缺一个
 - P2-5：`excerpt_of` 经 `read_verified` 整文件读入再截断（哈希复核需要全量）；可用 `artifact.size_bytes` 预筛，超过阈值直接
   `omitted` + size。
 
+## 2k. P2.3i：注册协议的「可修正拒绝」也重问一次；第二问开不出时按预算如实停机（2026-09-17，分支 `p2.3i-synthesis-reask`，基 c7cfedd = 0.12.2 候选）
+
+### 现象（真实 Grok 局 `runs/h-arm` H-L3-C1-r0，`orchestrator.db` / `execution.db` 只读）
+
+C1 的题意就是 L3：可见套件是绿的 → `code.test-is-failing` 观察 FALSE（OPEN 谓词，读作 UNKNOWN）→ 三条种子方法全部
+NEEDS_EVIDENCE → 必须走方法合成。P2.3g 之后合成器（`method-synthesizer-v2`，ordinal 1）的回复**已被 codec 读懂**：
+六步（facts → reproduce → apply → verify → inspect → summarize）、六条部分序、两条 criterion link、每个 content_hash 都与目录一致。
+注册协议在第 3 步拒绝，且只有一条：
+
+```
+MethodSynthesisRoundRecorded{admitted:false, asks:1, verdict:REJECTED,
+  method_id:"code.fix-by-reproduce-patch-verify-explain",
+  problems:["PORT_UNAVAILABLE: step 'summarize' binds input port 'report', which task type 'code.summarize-review' does not declare"]}
+```
+
+请求包 `operators[]` 对 `code.summarize-review` 明确写了 `input_ports:["findings"], output_ports:["summary"]`；模型在 `summarize.arguments`
+里既绑了 `findings`（对）又多绑了一个 `report`（错）——一处笔误。P2.3g 的结构化重问只覆盖 `SynthesisReplyUnreadable`（codec 读不懂），
+REJECTED 走「结论」分支，于是合成轮就此终结；Planner 三轮（v4）都正确声明 `no_applicable_method`，Mission `planning_failed`（32K token）。
+Planner 侧本片不动。
+
+### 根因（一句话）
+
+P2.3g 把「再问一次」的门开在 codec 上，没开在注册协议上：**读懂了但因引用/形状笔误被拒**与**读不懂**对模型而言是同一类可修正问题，
+系统却只给前者一次机会。
+
+### 可修正 / 不可修正清单（按 `contracts/htn.RejectionCode` 与 `registry.py` 三步实际能产生的码逐个列出）
+
+判定标准：**问题点名的东西，模型只靠请求包里已有的信息就能改对**（端口名在 `operators[].input_ports/output_ports`，ref 在 `operators[].task_type_ref` /
+`goal_type_ref` / `goal_signature.*_schema_ref`，准则在 `goal_signature.coverage_criteria`，local_id 在它自己的 steps 里）。两个集合必须**划分**整个枚举，
+`synthesis.py` 在 import 时断言；新增一个码不分类就起不来。
+
+| 码 | 产生处 | 分类 | 理由 |
+|---|---|---|---|
+| `PORT_UNAVAILABLE` | 步 3：消费步绑了类型未声明的输入端口 / 读了上游未声明的输出端口 | **可修正** | C1 本例；端口清单在包里 |
+| `UNKNOWN_TASK_TYPE` | 步 1：goal_type_ref 或 compound 步的 task_type_ref 在该 hash 下未注册 | **可修正** | `goal_type_ref` / `operators[]` 在包里，抄错即改 |
+| `UNKNOWN_OPERATOR` | 步 1：primitive 步的 task_type_ref 无注册类型；步 2：类型注册了但没有 operator | **可修正** | 模型只能从 `operators[]` 里选；选了不存在的就是引用错。步 2 变体（类型有、算子无）与之共码，但 `_offers` 只提供 PRIMITIVE 类型、fixture/seed 里的 PRIMITIVE 类型都有 operator_ref，实际到不了 |
+| `UNKNOWN_SCHEMA` | 步 1：parameter_schema_ref / output_schema_ref 在该 hash 下未注册 | **可修正** | 两个 ref 原样在 `goal_signature` 里 |
+| `FORM_MISMATCH` | 步 1：步的 form 与类型不符 / 目标类型是 primitive | **可修正** | 形状；提示词要求写 primitive，`operators[].form` 在包里 |
+| `MALFORMED_DEFINITION` | 步 1：无步骤、argument 读了未声明参数或未知/自身步的输出、reuse_policy 与类型冲突；步 3：criterion link 指向未知步 | **可修正** | 全是引用/形状；`reject_executable` 变体到不了这里（codec 先拒 → `SynthesisReplyUnreadable`，已由 P2.3g 覆盖） |
+| `ORDERING_CYCLE` | 步 3：声明序 + 数据序成环 | **可修正** | 模型自己写的 ordering |
+| `ROOT_COVERAGE_GAP` | 步 3：goal_signature.coverage_criteria 有准则未被 criterion_links 覆盖 | **可修正** | 准则清单在包里 |
+| `MODEL_CLAIMED_STATUS` | 准入前：声明 registry_status / 自称 author | 不可修正 | §18.5 / §6.3 边界：提示词明令禁止，拒绝本身就是记录，不给第二次 |
+| `ALREADY_REGISTERED` | 准入前：同 (id, version, hash) 已注册不同内容 | 不可修正 | 注册表状态，不是回复形状 |
+| `UNKNOWN_PREDICATE` | 步 2：条件里的谓词未注册 | 不可修正 | 前置条件类；包里没有谓词清单（P2.3g「未做」），再问也没得抄；I18 不放宽 |
+| `PREDICATE_TYPE_ERROR` | 步 2：谓词参数类型/读步输出 | 不可修正 | 同上 |
+| `UNKNOWN_CAPABILITY` | 步 2：能力未被部署声明 | 不可修正 | 部署事实 |
+| `UNBOUNDED_RECURSION` | 步 3：递归无守卫 / 全部步骤自展开 | 不可修正 | 守卫是前置条件；策略界限包里没写 |
+| `SIZE_BOUND` | 步 1：步数超策略；步 3：类型端口数超策略 | 不可修正 | 策略界限包里没写；步 3 变体说的是类型不是方法 |
+
+组合规则：`rejection_is_correctable(receipt)` 要求 `verdict is REJECTED` **且 problems 非空且每一条都在可修正集合**——协议在第一个失败步就停，
+列出的 problems 是那一步的全部意见，混进一条不可修正的（例如端口笔误旁边还有个未声明能力）就没必要再问。
+
+### 修法（`git diff --numstat`，代码 +299/−31，测试 +46/−18 + 新文件）
+
+1. `planning/htn/synthesis.py`（+102/−1）：`CORRECTABLE_REJECTIONS` / `NON_CORRECTABLE_REJECTIONS`（划分断言）、`rejection_is_correctable(receipt)`、
+   `rejection_problems(receipt)`（`CODE: detail`，与事件记法同一函数）、`synthesis_rejection_feedback(receipt)` = 协议原话 + 一句「已通过解码但被注册协议拒绝，
+   只改点名的引用/形状，保留 method_id 与 method_version，重出整块」。
+2. `orchestrator/hierarchical_dispatch.py`（+52/−0）：新事件 **`MethodSynthesisReplyRejected`**（键 `{mission}:{goal}:{ordinal}`，payload
+   `goal_task_id / ordinal / method_id / verdict / problems`）与 `record_synthesis_reply_rejected`；`record_synthesis_outcome` payload 多 **`retry_refused`**（字符串，开不出下一问的原因；开出了或不欠就是 `""`）。
+3. `orchestrator/event_handler.py`（+103/−27）`_collect_synthesizer` 重排为一条通路：先算出「这条回复欠不欠第二问」（`feedback` 与 `record_first_ask`，
+   两种来源：`SynthesisReplyUnreadable` → codec 原话；`rejection_is_correctable(receipt)` → 协议原话），再统一走
+   `if feedback is not None and ordinal < MAX_SYNTHESIS_ASKS:`：结算意图 → **先** `_create_synthesizer_intent(ordinal+1, schema_feedback=feedback)` →
+   成功**才**写第一问的事件并 return；`BudgetExhausted` 单独 `except` 记 `exhausted`；其它开不出（ContractError / CommitRejected / BudgetError / RoutingUnavailable）
+   记 `retry_refused`。收口：`record_synthesis_outcome(asks=ordinal, retry_refused=…)` → 结算 → 若 `exhausted`：`_stop_planning_round(reason="budget_exhausted",
+   detail={dimension, requested, remaining, account, phase:"method_synthesis", ordinal, goal_task_id, scope}, stop_reason=BUDGET_EXHAUSTED)`（与
+   `_planner_round_on_committed_plan` 同一口径）并 return；否则 `_after_synthesis_round` 老路。`MAX_SYNTHESIS_ASKS` 仍 2，注释更新。
+4. `runtime/role_templates.py`（+42/−3）：`METHOD_SYNTHESIZER_V2`（= 原 v2 对象，`METHOD_SYNTHESIZER_V2_VERSION`，字节不动 sha256 `27ccb234…`）；
+   新 **`METHOD_SYNTHESIZER = method-synthesizer-v3`**（`_revise` 自 v2，只改两句：输入字段说明里 schema_feedback 的含义，和结尾「schema_feedback 非空时怎么做」——
+   没有拒绝码前缀的按 method_shape 改，以拒绝码开头的只改点名的引用/形状：输入端口名须在该算子 input_ports、`{"op":"output"}` 的 port 须在上游 output_ports、
+   三个 ref 照抄、criterion_links / ordering 只引用自己的 local_id、保留 method_id 与 method_version）；v3 点名的码恰好是可修正集合（测试钉住：可修正码全在、
+   不可修正码全不在）；`TEMPLATE_VERSIONS["method_synthesizer"]` = {v1, v2, v3}，默认 v3，pin v2 / v1 仍生效；`__all__` 加两个名字。
+
+### 事件口径：为什么是新事件而不是给 `MethodSynthesisReplyUnreadable` 加 `kind`
+
+`MethodSynthesisReplyUnreadable` 的名字和 payload（`block_defect`）都在说「这条回复没被解码」；被拒回复的 payload 是 `method_id / verdict / problems`（注册表判决）。
+给它加 `kind` 会让按类型过滤的读者（Host runner 收据、P2.3g 的测试）开始看到 `problems` 是注册判决的行，而且 `block_defect` 对它没有意义。
+新事件 `MethodSynthesisReplyRejected` 与 sibling 同键规则（按 ordinal），`MethodSynthesisRoundRecorded` 仍只在收口时写一次并带 `asks`。
+`contracts/` 一字未动（事件名在 `orchestrator/`，`NEW_EVENT_TYPES` 登记）。
+
+### 顺手修掉的 P2.3g 核验 P2-1
+
+核验指摘：第二问因预算开不出时，先写了 `MethodSynthesisReplyUnreadable{ordinal:1}`（语义「将再问一次」），预算耗尽只藏在 `problems[1]` 字符串里，
+Mission 以 `planning_failed` 收口、`planning_failure.reason` 取自 Planner 最后一级，与 P2.3d P0-1 的 `BUDGET_EXHAUSTED` 口径不一致。现在：
+(1) 第一问事件只在第二问真的开出来之后写；(2) `BudgetExhausted` 单独接住，Mission `stop_reason=budget_exhausted`、`planning_failure.reason=budget_exhausted`、
+detail 带 `phase:"method_synthesis"` / `ordinal:2` / `goal_task_id` / 维度与数字；(3) 其它开不出的原因写进 `MethodSynthesisRoundRecorded.retry_refused` 独立字段，
+不再并进 `problems`。两种第一问（REJECTED / UNREADABLE）参数化各测一遍。`BudgetExhausted` 仍不逃出 `_cycle()`（`run()` 正常返回）。
+
+### 预算
+
+第二问与第一问同一 `mission_planning` 账户、同 `planner_reserve_tokens` 预留、如实计费（沿用 P2.3g）；预留不出来的处理见上。无新增配置项。
+
+### 夹具
+
+`tests/orchestrator/full_target/fixtures/htn/replies/grok_synthesizer_c1r0_round1.txt`（C1-r0 合成器回复原文，脱敏核对：无 `/Users/`、无 key；文末补一个换行），
+`SOURCE.md` 追加一条。同回合的**请求包**含本机 worktree 路径（`goal_parameters.repository`），不入仓；测试用本仓库的 code 域目录
+（`build_planning_world(domains=("code",))`）复现，回复里每个 content_hash 都与目录一致，所以拒绝理由**逐字**复现，去掉 `summarize.arguments.report`
+一处绑定后同一注册表上 TRIAL_ADMITTED。
+
+### 测试（`tests/orchestrator/full_target/test_synthesis_rejection_reask.py`，14 函数 / 15 用例）
+
+| 测试 | 断言 |
+|---|---|
+| `test_the_c1_reply_decodes_and_is_refused_for_exactly_the_port_the_episode_recorded` | 原文 `parse_method_proposal` 通过；六步 local_id；对 code 域 `REJECTED`，problems **逐字** == 真实局记录；目录 `code.summarize-review` 端口 in=[findings] out=[summary]；模型绑了 findings+report；每个 ref 都能在目录解析 |
+| `test_the_c1_refusal_is_correctable_and_its_feedback_is_the_protocols_own_line` | `rejection_is_correctable` True；feedback[0] == 原话，尾句含 `<method_proposal>`、「注册协议」、method_id/method_version |
+| `test_the_corrected_c1_reply_is_admitted_on_the_registry_that_refused_the_first` | 同一注册表：先 REJECTED 后 TRIAL_ADMITTED；同 id 同 version 不同 hash；新 ref 在 `method_refs()` 里 |
+| `test_on_the_real_dispatch_the_corrected_c1_method_is_published_to_the_library` | `_both_lane_world` 的真 `HierarchicalDispatch.apply_synthesizer_reply` 两次：被拒的不入 htn_store，准入的入库且 registration TRIAL_ADMITTED |
+| `test_every_rejection_code_is_classified_once_and_the_reference_slips_are_correctable` | 两集合划分 `RejectionCode`，成员逐个钉住（上表） |
+| `test_a_refusal_the_model_cannot_correct_is_not_correctable_even_beside_one_it_could` | synth 域：端口笔误 True；未声明能力 False；声明状态 False；端口笔误 + UNKNOWN_CAPABILITY → False；+ ORDERING_CYCLE → True；准入回执 False；空 problems False；codec 拒绝仍是异常不是回执 |
+| `test_a_correctable_refusal_is_asked_once_more_and_the_corrected_reply_is_adopted` | **真 `Orchestrator.run()`**（plan 域转写 C1：review 多绑 `report`）：`MethodSynthesisReplyRejected{ordinal:1, REJECTED, problems==[PORT_UNAVAILABLE 原话]}`、无 Unreadable 事件；第二意图 `…:synthesizer:task-root:2`、序号 [1,2]、状态 [FAILED, SETTLED]、同 `mission_planning` 账户；第二包 `schema_feedback[0]` == 原话、第一包为空、`role_prompt_version` = v3；`MethodSynthesisRoundRecorded{admitted:true, asks:2, retry_refused:""}` 只一条；`PlanRevisionCommitted`；synthesizer 恰 2 次 |
+| `test_a_refusal_the_model_cannot_correct_concludes_the_round_on_the_spot` | UNKNOWN_CAPABILITY：无 Rejected/Unreadable 事件，`REJECTED, asks:1, retry_refused:""`，1 个意图、1 次调用，Mission FAILED `planning_failed`（reason ∈ {method_synthesis_refused, proposal_unreadable}，`run()` 下梯子与合成轮赛跑、谁后到谁命名，两者皆如实） |
+| `test_a_second_refusal_concludes_the_round_with_two_asks_and_nobody_is_asked_a_third_time` | 两次端口笔误：Rejected 事件只 ordinal 1；`REJECTED, asks:2`；2 意图 2 调用；第二包带原话；FAILED `method_synthesis_refused` |
+| `test_a_second_ask_the_mission_cannot_afford_stops_it_for_the_budget_and_says_so[rejected/unreadable]` | 只把第二问的预留改成 10⁹：无任何 `MethodSynthesisReply*` 事件；`RoundRecorded{asks:1, verdict 各自, retry_refused 以 "budget_exhausted: budget exhausted on " 开头}`，problems 里没有 "retry not asked"；1 个意图；Mission FAILED、`stop_reason=budget_exhausted`、`planning_failure{reason:budget_exhausted, phase:method_synthesis, ordinal:2, goal_task_id, dimension:tokens, requested:10⁹}`；`run()` 正常返回 |
+| `test_the_second_ask_is_opened_before_the_first_is_written_down_and_the_gate_is_one_predicate` | 源码钉住：门是 `rejection_is_correctable(receipt)`；`< MAX_SYNTHESIS_ASKS` 只一处；`_create_synthesizer_intent(` 在 `record_first_ask()` 调用点之前且调用点只一处；`except BudgetExhausted`；`stop_reason=BUDGET_EXHAUSTED`；`"phase": "method_synthesis"`；事件名在 `NEW_EVENT_TYPES` |
+| `test_v3_tells_the_model_a_protocol_refusal_may_travel_in_schema_feedback` | v3 = 默认；可修正码全部出现、不可修正码一个不出现；含「拒绝码」「保留 method_id 与 method_version」「input_ports/output_ports」；v2 不含「拒绝码」、含「没有通过解码」 |
+| `test_v2_keeps_its_bytes_stays_registered_and_is_still_pinnable` | v2 sha256 `27ccb234…`、v1 `9341ab10…`；版本集合 {v1,v2,v3}；pin v2 得 v2、pin v1 得 v1、未 pin 得 v3；新请求 `role_prompt_version` = v3 |
+
+既有测试跟着改的四处：`test_evidence_saturation::test_a_refused_synthesis_round_ends_the_wait_it_caused` 原本用**未知算子**脚本「被协议拒绝」——按本片口径未知算子是可修正引用错、会被重问，
+改为未声明能力（`UNKNOWN_CAPABILITY`）并加断言；`test_synthesizer_schema_alignment` 三处：源码钉子改到新拼法（`and ordinal < MAX_SYNTHESIS_ASKS:`、
+`feedback = synthesis_schema_feedback(unreadable)`、加 `rejection_is_correctable` 门）、v2 断言改读 `METHOD_SYNTHESIZER_V2`（默认已是 v3）、示例块断言 v2 与 v3 逐字节相同、版本表加 v2；
+`test_output_port_claims.FROZEN_PROMPT_DIGESTS` 加 `METHOD_SYNTHESIZER_V2`（原 v2 摘要）并把 `METHOD_SYNTHESIZER` 改为 v3 摘要 `a38309fd…`；
+`test_hierarchical_event_flow.NEW_EVENT_TYPES` 加 `MethodSynthesisReplyRejected`。
+
+变异自证（临时改源 → 定向跑 4 个文件 72 用例 → 从留存副本 `cp` 恢复，`filecmp` 逐字节核对，未用 git checkout）：
+
+| 变异 | 文件 | 结果 |
+|---|---|---|
+| M1 `PORT_UNAVAILABLE` 挪到不可修正集合 | synthesis.py | KILLED（7 红：分类、C1 可修正、端到端采用、两次拒绝、预算[rejected]、v3 码清单） |
+| M2 `MAX_SYNTHESIS_ASKS = 3` | event_handler.py | KILLED（2 红：本片「无第三问」+ P2.3g「两次不可读」） |
+| M3 `rejection_is_correctable` 对所有 REJECTED 返回 True | synthesis.py | KILLED（3 红：混合集合、不可修正端到端、saturation 的 UNKNOWN_CAPABILITY 不重问） |
+| M4 去掉单独的 `except BudgetExhausted`（并进泛化分支） | event_handler.py | KILLED（3 红：预算 ×2 + 源码钉子） |
+| M5 第一问事件挪到开第二问**之前**写 | event_handler.py | KILLED（3 红：预算 ×2 看到 `MethodSynthesisReply*` 事件 + 源码顺序钉子） |
+| M6 v3 删掉「保留 method_id 与 method_version」 | role_templates.py | KILLED（2 红：v3 句子 + 冻结摘要） |
+
+6/6 KILLED；每个变异下其余 65–70 条保持绿。
+
+### 口径 / 兼容性
+
+- `MethodSynthesisRoundRecorded.payload` 多 `retry_refused`（恒有，通常 `""`）；新事件 `MethodSynthesisReplyRejected`；两者都只在分层 Mission 出现。
+- 合成器默认提示词 v2 → v3（v2 字节不动、可 pin）；`SynthesisRequest.to_json()["role_prompt_version"]` 随之变 → 合成意图 `context_version` 与 c7cfedd 不同（无 golden 钉它）。
+- Mission 停机新增一种如实形态：合成轮第二问预算不足 → `budget_exhausted{phase:method_synthesis}`。
+- **无新增配置项**，策略快照 digest 不变（`builtin_prompt_versions` 只读 `ROLES`，不含 method_synthesizer）；legacy 事件字节不变（改动全在 `_collect_synthesizer` 内，
+  `self._new_mode(mission)` 计数仍 18，哨兵通过）。`contracts/` 0 改动。
+
+### 结果
+
+- 新文件 15 用例全绿；`tests/orchestrator/full_target`：**2785 passed / 2 skipped**（基线 2770 / 2，+15 = 新文件 15 用例，其余计数不变）；旧模式回归 step02/05/06/07 + p34/p35：**560 passed / 13 skipped / 0 failed**（与基线逐项一致，skip 全是既有的 real-provider / pinned tokenizer）；
+  `ruff check src/agent_orchestrator tests/orchestrator/full_target` All checks passed。
+- 真实局由协调方跑；本片不跑。
+
+### 未做 / 交下一片
+
+- `Orchestrator.run()` 端到端用的是 C1 笔误在 plan 域的转写（review 多绑 `report`）；C1 **原文**走的是真 `MethodSynthesizer` + 真 `HierarchicalDispatch.apply_synthesizer_reply`（code 域，
+  `_both_lane_world`），没有把整局在 code 域 Orchestrator 上重放——那需要一个带 worker/workspace 的 code 域编排世界，超出本片。
+- `UNKNOWN_OPERATOR` 的步 2 变体（类型注册了但没 operator）与步 1 变体共码，本片按「可修正」处理；若将来目录里出现无 operator 的 PRIMITIVE 类型，应拆码或按 detail 分辨。
+- P2.3g 核验 P2-2 未动：`run()` 下 Planner 梯子与合成轮赛跑，谁后到谁命名 `planning_failure.reason`（`method_synthesis_refused` / `proposal_unreadable`），两者皆如实但不稳定；
+  「`no_applicable_method` 且合成在途时不爬梯」仍是下一片的编排策略题。
+- 请求包仍没有谓词清单，所以 `UNKNOWN_PREDICATE` / `PREDICATE_TYPE_ERROR` 只能归不可修正；加了清单可重新评估。
+- `SynthesisRequest.role_prompt_version` 默认取 `METHOD_SYNTHESIZER.prompt_version`，pin 到 v2 的部署包里仍写 v3（P2.3g 起就如此，本片未改）。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

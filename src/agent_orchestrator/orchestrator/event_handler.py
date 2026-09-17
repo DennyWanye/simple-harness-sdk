@@ -237,7 +237,11 @@ PROPOSAL_NOT_GROUNDED = "proposal_not_grounded"
 #: carries the codec's problems as ``schema_feedback`` — the same bounded repair the
 #: root reviewer gets (``MAX_ROOT_REVIEW_ASKS``) and the Task Critic gets through
 #: ``critic_schema_retry_feedback``.  A reply that was *read* and refused by the
-#: admission protocol is a conclusion and is never re-asked.
+#: admission protocol is a conclusion — unless (P2.3i) every problem on it is a
+#: correctable slip of reference or shape (``CORRECTABLE_REJECTIONS`` in
+#: ``planning.htn.synthesis``): the first real round on v2 (Grok, H-L3-C1-r0) was
+#: refused for one undeclared input port the package had spelled out, and that too
+#: is asked once more with the protocol's own lines attached.  The bound is the same.
 MAX_SYNTHESIS_ASKS = 2
 
 FAULT_POINTS = (
@@ -3993,11 +3997,24 @@ class Orchestrator:
         planning failure: the Mission's plan is untouched, the registry simply did not
         take the definition, and the reason is recorded so an operator can see whether
         the model proposed something unsafe or something unimplementable.
+
+        Two kinds of first reply earn one more ask on the same anchor, ordinal +1,
+        bounded by ``MAX_SYNTHESIS_ASKS`` (P2.3g, P2.3i): one the codec could not read
+        (``SynthesisReplyUnreadable``) and one the protocol read and refused for
+        nothing but a correctable slip (``rejection_is_correctable``).  In both the
+        second ask is opened **first** and the first ask is written down only once it
+        is — a record that says "asked again" must not precede a reservation that may
+        be refused (verification P2.3g P2-1).  A second ask the Mission cannot afford
+        ends the Mission for the budget, in the budget's own words, exactly as a
+        Planner round it cannot afford does.
         """
 
         from ..planning.htn.registry import RegistryAuthor
         from ..planning.htn.synthesis import (
             SynthesisReplyUnreadable,
+            rejection_is_correctable,
+            rejection_problems,
+            synthesis_rejection_feedback,
             synthesis_schema_feedback,
         )
 
@@ -4008,50 +4025,83 @@ class Orchestrator:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
             return
+        # What the next ask would carry, and how this ask is written down once the
+        # next one is really open.  Both stay ``None`` for a reply that is a conclusion.
+        feedback: tuple[str, ...] | None = None
+        record_first_ask: Any = None
         try:
             if result.state is not AgentTurnState.COMMITTED:
                 raise ContractError(f"synthesizer turn failed: {dict(result.error or {})}")
             receipt = new_mode.apply_synthesizer_reply(mission.id, text)
             admitted = bool(receipt.admitted)
-            problems = tuple(f"{item.code!s}: {item.detail}" for item in receipt.problems)
+            problems = rejection_problems(receipt)
             method_ref = str(receipt.method_ref.method_id)
             verdict = str(receipt.verdict)
+            if not admitted and rejection_is_correctable(receipt):
+                # P2.3i: read, refused, and every problem names a reference or shape the
+                # package already states the right value for (a port the type does not
+                # declare, a ref not offered, a link to an unknown step …).  Not a
+                # conclusion: the protocol's own lines go back as ``schema_feedback``.
+                feedback = synthesis_rejection_feedback(receipt)
+
+                def record_first_ask() -> None:
+                    new_mode.record_synthesis_reply_rejected(
+                        mission.id,
+                        goal_task_id=goal_task_id,
+                        ordinal=ordinal,
+                        method_id=method_ref,
+                        verdict=verdict,
+                        problems=problems,
+                    )
+
         except SynthesisReplyUnreadable as unreadable:
             # P2.3g: the reply could not be decoded — the registry never saw it.  That
             # is not an answer, so the same question is put once more with the codec's
-            # problems attached (``schema_feedback``), on the same anchor, ordinal +1,
-            # written down first.  Bounded at ``MAX_SYNTHESIS_ASKS``; the second
-            # unreadable reply concludes the round ``UNREADABLE`` as before.
+            # problems attached.
             admitted, problems, method_ref, verdict = False, unreadable.problems, "", "UNREADABLE"
-            if ordinal < MAX_SYNTHESIS_ASKS:
+            feedback = synthesis_schema_feedback(unreadable)
+            # The ``as`` name is unbound once the clause ends; the closure keeps the facts.
+            block_defect = unreadable.block_defect
+
+            def record_first_ask() -> None:
                 new_mode.record_synthesis_reply_unreadable(
                     mission.id,
                     goal_task_id=goal_task_id,
                     ordinal=ordinal,
-                    problems=unreadable.problems,
-                    block_defect=unreadable.block_defect,
+                    problems=problems,
+                    block_defect=block_defect,
                 )
-                self._settle_intent(intent, "FAILED")
-                self._settle_service_if_known(intent.subject_id, mission.id)
-                try:
-                    await self._create_synthesizer_intent(
-                        mission.id,
-                        goal_task_id,
-                        ordinal=ordinal + 1,
-                        schema_feedback=synthesis_schema_feedback(unreadable),
-                    )
-                except (ContractError, CommitRejected, BudgetError, RoutingUnavailable) as refused:
-                    # No second ask could be opened: the round concludes on the reply
-                    # it has, with the reason the retry was not asked written beside it.
-                    problems = (*unreadable.problems, f"retry not asked: {refused}")
-                else:
-                    self._note(
-                        f"method synthesis for {goal_task_id}: reply {ordinal} unreadable "
-                        f"({unreadable.block_defect}); asking once more with the codec's problems"
-                    )
-                    return
+
         except (ContractError, BlockError, StoreError) as error:
             admitted, problems, method_ref, verdict = False, (str(error),), "", "UNREADABLE"
+
+        retry_refused = ""
+        exhausted: BudgetExhausted | None = None
+        if feedback is not None and ordinal < MAX_SYNTHESIS_ASKS:
+            self._settle_intent(intent, "FAILED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            try:
+                await self._create_synthesizer_intent(
+                    mission.id, goal_task_id, ordinal=ordinal + 1, schema_feedback=feedback
+                )
+            except BudgetExhausted as error:
+                # The second ask reserves on the Mission's planning account like the
+                # first; an account that cannot carry it stops the Mission for the
+                # budget below, after the round it was in is concluded honestly.
+                exhausted = error
+                retry_refused = f"budget_exhausted: {error}"
+            except (ContractError, CommitRejected, BudgetError, RoutingUnavailable) as refused:
+                # No second ask could be opened: the round concludes on the reply it
+                # has, with the reason the retry was not asked in its own field.
+                retry_refused = f"{type(refused).__name__}: {refused}"
+            else:
+                record_first_ask()
+                self._note(
+                    f"method synthesis for {goal_task_id}: reply {ordinal} {verdict.lower()} "
+                    f"({problems[0][:120] if problems else ''}); asking once more with the "
+                    "problems attached"
+                )
+                return
         new_mode.record_synthesis_outcome(
             mission.id,
             goal_task_id=goal_task_id,
@@ -4061,13 +4111,39 @@ class Orchestrator:
             verdict=verdict,
             author=str(RegistryAuthor.MODEL),
             asks=ordinal,
+            retry_refused=retry_refused,
         )
         self._note(
             f"method synthesis for {goal_task_id}: "
             f"{'admitted' if admitted else 'refused'} ({'; '.join(problems)[:200]})"
+            + (f"; retry not asked: {retry_refused[:120]}" if retry_refused else "")
         )
         self._settle_intent(intent, "SETTLED" if admitted else "FAILED")
         self._settle_service_if_known(intent.subject_id, mission.id)
+        if exhausted is not None:
+            # One Mission's exhaustion is one Mission's stop (§24.1 decision 11), and
+            # the stop says what ran out — not "the synthesis was refused", which is
+            # not what happened to it.
+            self._stop_planning_round(
+                mission.id,
+                reason="budget_exhausted",
+                detail={
+                    "dimension": exhausted.dimension,
+                    "requested": exhausted.requested,
+                    "remaining": exhausted.remaining,
+                    "account": exhausted.account_id,
+                    "phase": "method_synthesis",
+                    "ordinal": ordinal + 1,
+                    "goal_task_id": goal_task_id,
+                    "scope": "global" if exhausted.account_id == GLOBAL_ACCOUNT else "mission",
+                },
+                stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+            )
+            self._note(
+                f"mission {mission.id} stopped in method_synthesis: budget_exhausted "
+                f"({exhausted.dimension})"
+            )
+            return
         await self._after_synthesis_round(mission.id, admitted=admitted)
 
     async def _after_synthesis_round(self, mission_id: str, *, admitted: bool) -> None:

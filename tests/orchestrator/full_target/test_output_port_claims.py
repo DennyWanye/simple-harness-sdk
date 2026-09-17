@@ -215,9 +215,15 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "method-synthesizer-v1",
         "9341ab10390015fb45d528d95dac0af5b29658f0ee9b70060369d607f8f0ae32",
     ),
-    "METHOD_SYNTHESIZER": (
+    "METHOD_SYNTHESIZER_V2": (
         "method-synthesizer-v2",
         "27ccb23492ef00b73404735a03f51439d2bf0eb1339a6a6b4320950ee8beaccb",
+    ),
+    # P2.3i: v3 = v2 plus "schema_feedback may carry the admission protocol's refusal
+    # lines, and here is what may change on one"; v2 keeps its bytes above.
+    "METHOD_SYNTHESIZER": (
+        "method-synthesizer-v3",
+        "a38309fdb328c929d6ddefa37ff4de294628f0f508dfad82c7a27bb1cd0e6c9c",
     ),
     "PLANNER_HIERARCHICAL_V3": (
         "planner-hierarchical-v3",

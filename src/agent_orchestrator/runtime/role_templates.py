@@ -825,7 +825,7 @@ METHOD_SYNTHESIZER_V1 = RoleTemplate(
 )
 register_template(METHOD_SYNTHESIZER_V1)
 
-METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v2"
+METHOD_SYNTHESIZER_V2_VERSION = "method-synthesizer-v2"
 
 # P2.3g.  The first real synthesis round on ``method-synthesizer-v1`` (Grok, H-L3-C1)
 # came back with a *complete* method — seven steps, an ordering, criterion links —
@@ -842,9 +842,9 @@ METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v2"
 # spellings that are **not** accepted, shows one complete block that parses, and
 # tells the model what ``schema_feedback`` in the request means.  v1 keeps its exact
 # words and stays registered (§18.5 C8), so a deployment pinned to it replays on it.
-METHOD_SYNTHESIZER = _revise(
+METHOD_SYNTHESIZER_V2 = _revise(
     METHOD_SYNTHESIZER_V1,
-    METHOD_SYNTHESIZER_VERSION,
+    METHOD_SYNTHESIZER_V2_VERSION,
     (
         "  3. composition.criterion_links 必须覆盖 required_criteria 里的每一条父要求，",
         "  3. composition.criterion_links 的 parent_criterion_id 必须逐条照抄输入 "
@@ -919,6 +919,43 @@ METHOD_SYNTHESIZER = _revise(
         "如果输入里 schema_feedback 非空，说明你上一次的回复没有通过解码：逐条改正它列出的问题，"
         "再按同一形状重新输出整块。"
         "块外不要输出任何文字。",
+    ),
+)
+register_template(METHOD_SYNTHESIZER_V2)
+
+METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v3"
+
+# P2.3i.  The first real round on v2 (Grok, H-L3-C1-r0) wrote a complete, decodable
+# six-step method whose one defect was a slip the package had spelled out — ``summarize``
+# bound ``report``, which ``code.summarize-review`` declares no input port for — and was
+# refused ``PORT_UNAVAILABLE`` with no second question.  The event handler now puts
+# such a refusal back as ``schema_feedback``, and v2's words say that field holds
+# *codec* problems only ("没有通过解码"); a model reading them would look for a
+# missing field, not a wrong port.  v3 says both kinds travel there, how to tell them
+# apart (a protocol line starts with its rejection code) and what may change on a
+# protocol refusal: the reference or shape named, same method_id and method_version.
+# Nothing about *what* may be proposed changes.  v2 keeps its exact bytes and stays
+# registered (§18.5 C8), so a deployment pinned to it replays on it.
+METHOD_SYNTHESIZER = _revise(
+    METHOD_SYNTHESIZER_V2,
+    METHOD_SYNTHESIZER_VERSION,
+    (
+        "schema_feedback（非空表示你上一次的回复没有通过解码，逐条列出问题）。\n",
+        "schema_feedback（非空表示你上一次的回复没有被接受，逐条列出问题：没有拒绝码前缀的是解码器"
+        "的问题，以拒绝码开头的——例如 PORT_UNAVAILABLE、UNKNOWN_OPERATOR、UNKNOWN_TASK_TYPE、"
+        "UNKNOWN_SCHEMA、FORM_MISMATCH、MALFORMED_DEFINITION、ORDERING_CYCLE、ROOT_COVERAGE_GAP——"
+        "是注册协议的拒绝理由原话）。\n",
+    ),
+    (
+        "如果输入里 schema_feedback 非空，说明你上一次的回复没有通过解码：逐条改正它列出的问题，"
+        "再按同一形状重新输出整块。",
+        "如果输入里 schema_feedback 非空，说明你上一次的回复没有被接受：没有拒绝码前缀的问题按 "
+        "method_shape 与上面的例子逐字段改正；以拒绝码开头的是注册协议的拒绝理由，只改正它点名的"
+        "引用或形状——步骤 arguments 里的输入端口名必须是该算子 input_ports 里声明的，"
+        "{\"op\":\"output\"} 引用的 port 必须是上游算子 output_ports 里声明的，task_type_ref、"
+        "parameter_schema_ref、output_schema_ref 必须照抄输入里的 {id, version, content_hash}，"
+        "criterion_links 与 ordering 只能引用你自己 steps 里的 local_id——其余保持不变，"
+        "保留 method_id 与 method_version，再按同一形状重新输出整块。",
     ),
 )
 register_template(METHOD_SYNTHESIZER)
@@ -1137,6 +1174,8 @@ __all__ = (
     "METHOD_SYNTHESIZER",
     "METHOD_SYNTHESIZER_V1",
     "METHOD_SYNTHESIZER_V1_VERSION",
+    "METHOD_SYNTHESIZER_V2",
+    "METHOD_SYNTHESIZER_V2_VERSION",
     "METHOD_SYNTHESIZER_VERSION",
     "ROOT_REVIEWER",
     "ROOT_REVIEWER_V1",

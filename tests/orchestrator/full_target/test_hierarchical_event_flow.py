@@ -89,6 +89,7 @@ from agent_orchestrator.orchestrator.hierarchical_dispatch import (  # noqa: E40
     PLAN_COMMIT_REFUSED,
     PLAN_INTEGRITY_FAILED,
     RECOMPILABLE_REFUSALS,
+    SYNTHESIS_REPLY_REJECTED,
     SYNTHESIS_REPLY_UNREADABLE,
     SYNTHESIS_ROUND_RECORDED,
     CompoundPhase,
@@ -1403,6 +1404,9 @@ NEW_EVENT_TYPES = frozenset(
         # the one ask the codec could not read (P2.3g).  Neither existed in legacy.
         SYNTHESIS_ROUND_RECORDED,
         SYNTHESIS_REPLY_UNREADABLE,
+        # P2.3i: the sibling for a reply the protocol read and refused for a slip the
+        # model can correct — the round goes on, this says which ask fell short.
+        SYNTHESIS_REPLY_REJECTED,
     }
 )
 

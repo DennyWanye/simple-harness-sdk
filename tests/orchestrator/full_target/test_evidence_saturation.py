@@ -520,11 +520,14 @@ def test_a_refused_synthesis_round_ends_the_wait_it_caused(tmp_path) -> None:
         test_timeout_seconds=60,
         max_planning_attempts=2,
     )
-    # Readable by the codec, refused by the admission protocol: a complete method
-    # whose only step names an operator this deployment has never registered.  P2.3g:
-    # a reply the *codec* cannot read is no longer a refusal — it is asked once more
-    # with the codec's problems attached — so this test scripts the refusal it is
-    # about, not a malformed block (see ``test_synthesizer_schema_alignment.py``).
+    # Readable by the codec, refused by the admission protocol for something the
+    # model cannot correct: a complete method whose only step needs a capability this
+    # deployment has never declared (``UNKNOWN_CAPABILITY``).  P2.3g: a reply the
+    # *codec* cannot read is no longer a refusal — it is asked once more with the
+    # codec's problems attached.  P2.3i: so is a refusal for a correctable slip (an
+    # operator the package never offered is one — ``UNKNOWN_OPERATOR``), which is why
+    # this test no longer scripts an unknown operator; it scripts the refusal that
+    # concludes a round on the spot (see ``test_synthesis_rejection_reask.py``).
     refused = method(
         "plan.nowhere",
         "plan.goal",
@@ -533,10 +536,10 @@ def test_a_refused_synthesis_round_ends_the_wait_it_caused(tmp_path) -> None:
         steps=(
             step(
                 "leaf",
-                "plan.no-such-operator",
+                "plan.leaf",
                 TaskForm.PRIMITIVE,
                 {"subject": param("subject")},
-                capabilities=("plan.read",),
+                capabilities=("plan.read", "plan.capability-nobody-declares"),
             ),
         ),
         links=(("c-root", "leaf", "c-done"),),
@@ -607,6 +610,9 @@ def test_a_refused_synthesis_round_ends_the_wait_it_caused(tmp_path) -> None:
     assert outcome["waiting"] is MissionStatus.PLANNING, "the ladder waited, as it should"
     assert outcome["synthesis"] and outcome["synthesis"][0]["admitted"] is False
     assert outcome["synthesis"][0]["verdict"] == "REJECTED", outcome["synthesis"]
-    assert outcome["synthesis"][0]["asks"] == 1, "a read-and-refused reply is not re-asked"
+    assert outcome["synthesis"][0]["asks"] == 1, (
+        "a refusal the model cannot correct is not re-asked (P2.3i)"
+    )
+    assert outcome["synthesis"][0]["problems"][0].startswith("UNKNOWN_CAPABILITY: ")
     assert outcome["status"] is MissionStatus.FAILED, "the wait ended, and it ended honestly"
     assert outcome["report"]["planning_failure"]["reason"] == "method_synthesis_refused"

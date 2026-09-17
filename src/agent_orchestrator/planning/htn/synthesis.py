@@ -69,6 +69,7 @@ from .registry import (
     AdmissionVerdict,
     MethodCandidate,
     MethodRegistry,
+    RejectionCode,
     TaskTypeCatalog,
 )
 
@@ -163,6 +164,99 @@ def synthesis_schema_feedback(error: SynthesisReplyUnreadable) -> tuple[str, ...
     return (
         *error.problems,
         "上一次的回复没有通过解码（见上）。按 method_shape 与提示词里的例子逐字段改正后，"
+        f"重新只输出一个 <{METHOD_PROPOSAL_TAG}>…</{METHOD_PROPOSAL_TAG}> 块。",
+    )
+
+
+#: P2.3i.  The admission protocol's refusals a second ask can act on: every one of
+#: them names a **reference or a shape** the model wrote wrongly and the request
+#: package already carries the right value for — a port the consuming type does not
+#: declare (``operators[].input_ports``), a task type or schema ref whose id/version/hash
+#: is not the one offered, a step spelled as the wrong form, an argument reading a
+#: parameter or a step output that does not exist, an ordering or criterion link naming
+#: an unknown step, a cyclic order, a goal criterion left uncovered.  The first real
+#: round on ``method-synthesizer-v2`` (Grok, H-L3-C1-r0) wrote a six-step method whose
+#: only defect was one such slip — ``summarize`` bound ``report``, which
+#: ``code.summarize-review`` does not declare, though the package said so — and was
+#: concluded ``REJECTED`` on the spot.
+CORRECTABLE_REJECTIONS: frozenset[RejectionCode] = frozenset(
+    {
+        RejectionCode.PORT_UNAVAILABLE,
+        RejectionCode.UNKNOWN_TASK_TYPE,
+        RejectionCode.UNKNOWN_OPERATOR,
+        RejectionCode.UNKNOWN_SCHEMA,
+        RejectionCode.FORM_MISMATCH,
+        RejectionCode.MALFORMED_DEFINITION,
+        RejectionCode.ORDERING_CYCLE,
+        RejectionCode.ROOT_COVERAGE_GAP,
+    }
+)
+
+#: The refusals a second ask is **not** opened for.  They are not slips of the pen:
+#: a claimed registry status or a self-asserted author is the §18.5 / §6.3 boundary
+#: (the prompt forbids it, the refusal is the record); a predicate the deployment does
+#: not register or types wrongly is a *precondition* the request never offered (no
+#: predicate list travels in the package, and I18 is not relaxed by asking again); a
+#: capability nobody declares is a deployment fact; a recursion with no guard and a
+#: size bound are policy limits the package does not state; ``ALREADY_REGISTERED`` is
+#: registry state, not the reply's shape.
+NON_CORRECTABLE_REJECTIONS: frozenset[RejectionCode] = frozenset(
+    {
+        RejectionCode.MODEL_CLAIMED_STATUS,
+        RejectionCode.ALREADY_REGISTERED,
+        RejectionCode.UNKNOWN_PREDICATE,
+        RejectionCode.PREDICATE_TYPE_ERROR,
+        RejectionCode.UNKNOWN_CAPABILITY,
+        RejectionCode.UNBOUNDED_RECURSION,
+        RejectionCode.SIZE_BOUND,
+    }
+)
+
+# Every code the protocol can produce is classified exactly once; a new code added to
+# the enum without a line above fails at import, which is where it should fail.
+assert CORRECTABLE_REJECTIONS.isdisjoint(NON_CORRECTABLE_REJECTIONS)
+assert CORRECTABLE_REJECTIONS | NON_CORRECTABLE_REJECTIONS == frozenset(RejectionCode), (
+    "every RejectionCode must be classified as correctable or not (P2.3i)"
+)
+
+
+def rejection_is_correctable(receipt: AdmissionReceipt) -> bool:
+    """Whether a *read and refused* reply is worth one more ask with its problems.
+
+    ``True`` only when the receipt is a ``REJECTED`` verdict and **every** problem on
+    it is in :data:`CORRECTABLE_REJECTIONS`: the protocol stops at the first failing
+    step, so the problems it lists are the whole of that step's complaint, and a
+    single one the model cannot act on (a missing capability beside a port slip) makes
+    the second ask pointless — the round then concludes on the reply it has.
+    """
+
+    if not isinstance(receipt, AdmissionReceipt):
+        raise ContractError("rejection_is_correctable expects an AdmissionReceipt")
+    if receipt.verdict is not AdmissionVerdict.REJECTED or not receipt.problems:
+        return False
+    return all(problem.code in CORRECTABLE_REJECTIONS for problem in receipt.problems)
+
+
+def rejection_problems(receipt: AdmissionReceipt) -> tuple[str, ...]:
+    """The receipt's problems as the round records them: ``CODE: detail``, verbatim."""
+
+    return tuple(f"{item.code!s}: {item.detail}" for item in receipt.problems)
+
+
+def synthesis_rejection_feedback(receipt: AdmissionReceipt) -> tuple[str, ...]:
+    """What the second ask carries after a correctable refusal (P2.3i).
+
+    The protocol's own words — code and detail, exactly as ``MethodSynthesisRoundRecorded``
+    would have recorded them — and one instruction that says which kind of refusal this
+    is and what may change: the reference or shape named, nothing else, same
+    ``method_id`` and ``method_version``.
+    """
+
+    return (
+        *rejection_problems(receipt),
+        "上一次的回复已经通过解码，但被注册协议拒绝（见上，每条以拒绝码开头）。只改正它点名的引用或形状："
+        "端口名、task_type_ref、criterion_links、ordering、arguments 都必须照抄输入 operators / "
+        "goal_signature 里声明的；保留 method_id 与 method_version，"
         f"重新只输出一个 <{METHOD_PROPOSAL_TAG}>…</{METHOD_PROPOSAL_TAG}> 块。",
     )
 
@@ -313,7 +407,9 @@ class SynthesisRequest:
     #: not declare the type (the empty-library case).
     goal_type_ref: Mapping[str, Any] | None = None
     #: P2.3g: the codec's problems with the previous reply, when this is the second
-    #: ask on the same anchor.  Empty on a first ask.
+    #: ask on the same anchor.  Empty on a first ask.  P2.3i: or the admission
+    #: protocol's problems (``CODE: detail`` lines) when the previous reply was read
+    #: and refused for something the model can correct.
     schema_feedback: tuple[str, ...] = ()
     output_tag: str = METHOD_PROPOSAL_TAG
     role_prompt_version: str = METHOD_SYNTHESIZER.prompt_version
@@ -656,8 +752,10 @@ def accept_response(
 
 
 __all__ = (
+    "CORRECTABLE_REJECTIONS",
     "DEFAULT_MAX_OPERATORS",
     "METHOD_SHAPE",
+    "NON_CORRECTABLE_REJECTIONS",
     "SYNTHESIS_AUTHOR",
     "SYNTHESIS_TERMINAL_STATUSES",
     "VALUE_CONTAINERS",
@@ -669,5 +767,8 @@ __all__ = (
     "accept_response",
     "authority_claims",
     "build_request",
+    "rejection_is_correctable",
+    "rejection_problems",
+    "synthesis_rejection_feedback",
     "synthesis_schema_feedback",
 )
