@@ -1,6 +1,6 @@
-## 未发布（0.12.1 候选） — P2.3d：Grok 验收暴露的分层闭环缺陷修复（2026-09-17）
+## 0.12.1 — P2.3d：Grok 验收暴露的分层闭环缺陷修复（2026-09-17）
 
-分支 `p2.3d-fix`，基于 `e53395c`。Grok 验收 H 臂 40 局 `mission_status = COMPLETED` 为 **0**，四类失败全部可复现、全部确定性；本段按诊断报告逐条修复。旧模式（`orchestration_semantics_version=legacy`，默认）零回归：legacy 事件字节 golden、旧函数源码 hash、`_ExplodingDispatch` 三例全绿。
+代码候选提交 b6b7700（分支 `p2.3d-fix`，基于 `e53395c`，已 ff 进 main）；发布身份以本条目所在的版本提交为准。独立审阅（需修后合）与两轮独立核验的记录在 `plans/2026-09-16-full-target/P2.3c/reviews/`；审阅处置后的真实模型冒烟再次 COMPLETED（`mission-1ac94ffc1d28e2b0`，deepseek-flash，454 097 token，journal §2f）。Grok 验收 H 臂 40 局 `mission_status = COMPLETED` 为 **0**，四类失败全部可复现、全部确定性；本段按诊断报告逐条修复。旧模式（`orchestration_semantics_version=legacy`，默认）零回归：legacy 事件字节 golden、旧函数源码 hash、`_ExplodingDispatch` 三例全绿。
 
 - **D3 终结步输出端口**：端口集合的定义由「被 `DataRequirement` 消费」扩为「被 `DataRequirement` 消费 **∪** 被 `composition.criterion_links` 引用（尤其 `finalizer_step`）」。新增 `accepted_outputs.output_ports_in_revision()`，上下文包、验收索引与 `OUTPUT_PORT_UNCLAIMED` 三条生产路径共用同一答案（另含诊断漏点的第四处 `leaf_acceptance._outputs`）。此前终结步叶子从未被告知端口、`outputs` 永远为空、根评审以 `evidence.kind=none` 判 FAIL，10 局倒在最后一米。
 - **D4 分层 Mission 不再开 legacy 管理轮**：`_request_management` 加模式分支，记新事件 `ManagementNotApplicableUnderHierarchical{SEMANTICS_IS_HIERARCHICAL, redirect: commit_plan_revision}`；不再产生 `ManagementRequested` / `ManagementDecided`，manager 轮次不再被必然失败的修复循环烧掉，`no_progress` 上限也不再作用于分层 Task（短路后不进 `_enforce_no_progress` 那条路，重复验证失败只受 `max_attempts` 约束）（L1 20 局 `management_exhausted` + L4 3 局 `no_progress`）。
