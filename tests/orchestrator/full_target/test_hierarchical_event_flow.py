@@ -1473,6 +1473,15 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     has no root ``GoalResolution`` for one to feed.  ``_advance_root_review`` and
     ``_ask_root_reviewer`` are deliberately **not** extra sites — they are reached
     only from ``_decide``, which has already asked, and are handed the answer.
+
+    P2.3d adds the sixteenth, ``_request_management``: a Manager on a hierarchical
+    Mission can only offer a legacy ``TaskGraphChange``, which ``commit_graph_change``
+    refuses unconditionally, so opening the round spends a model call and a manager
+    allowance on a question whose answer is fixed (defect D4).  Asking the mode there is
+    what keeps the legacy management loop on the Missions it can actually help.
+    ``_repair_after_root_review`` is deliberately **not** a seventeenth: like
+    ``_ask_root_reviewer`` it is reached only through ``_advance_root_review``, which has
+    already asked, and is handed the answer.
     """
 
     del tmp_path
@@ -1481,7 +1490,7 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     from agent_orchestrator.orchestrator import event_handler
 
     source = inspect.getsource(event_handler)
-    assert source.count("self._new_mode(mission)") == 15
+    assert source.count("self._new_mode(mission)") == 16
     assert "is_hierarchical(mission)" in inspect.getsource(event_handler.Orchestrator._new_mode)
 
 

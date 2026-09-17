@@ -1,0 +1,217 @@
+# SPDX-FileCopyrightText: 2026 DennyWanye
+# SPDX-License-Identifier: Apache-2.0
+
+"""P2.3d / defect D5-A: §9.1's repair branch after a root review says REJECT.
+
+Ten of the Grok acceptance run's 40 episodes ended like this:
+
+    HierarchicalRootReviewCut(4 contributions)
+    → HierarchicalRootReviewRejected{c-test-passes: FAIL, finding: "…"}
+    → RootGoalResolutionRefused{SUCCESS_EXPRESSION_NOT_PASS, REVIEW_VERDICT_NOT_ACCEPT}
+    → HierarchicalMissionStalled{hierarchical_no_dispatchable_work}
+    → MissionFailed
+
+Every leaf had been dispatched, verified and accepted; in nine of them the official
+hidden grader passed the deliverable.  ``_advance_root_review`` recorded the rejection,
+noted it, and returned False — the comment said "§9.1's decision table, never a silent
+retry", and the decision table itself had never been implemented.  A Mission's whole
+plan was decided once and a single review failure was a death sentence.
+
+The minimal branch: a **blocking** finding reopens one Planner round per plan revision,
+with the findings travelling as durable ``PlanningRejected`` feedback.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from test_htn_end_to_end import World, _accept_every_child, committed  # noqa: E402
+from test_root_review_coordinator import coordinator, review  # noqa: E402
+
+from agent_orchestrator.contracts.resolution import (  # noqa: E402
+    CriterionVerdict,
+    ReviewVerdict,
+)
+from agent_orchestrator.orchestrator.event_handler import (  # noqa: E402
+    ROOT_REVIEW_REPAIR_REASON,
+    Orchestrator,
+)
+from agent_orchestrator.runtime.assembly import OrchestratorConfig  # noqa: E402
+from agent_orchestrator.storage.htn_store import HtnStore  # noqa: E402
+from agent_orchestrator.testing.fixtures import RoleScriptedProvider  # noqa: E402
+
+NOW_MS = 2_000_000
+ROOT_CRITERION = "c-root"
+
+BLOCKER = (
+    {
+        "severity": "blocker",
+        "criterion_id": ROOT_CRITERION,
+        "detail": (
+            "c-root has no readable proof: evidence.kind=none, no artifact was "
+            "delivered on a declared output port"
+        ),
+    },
+)
+MINOR = ({"severity": "minor", "criterion_id": ROOT_CRITERION, "detail": "wording"},)
+
+
+def _rejected_world(tmp_path, *, findings, key: str) -> World:
+    """A Mission whose root review has concluded REJECT, on disk and closed."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = committed(evidence, key=key, demand=True)
+    world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
+    _accept_every_child(world)
+    coordinator(world).cut(world.mission.id, now_ms=NOW_MS)
+    review(
+        world,
+        verdict=ReviewVerdict.REJECTED,
+        verdicts={ROOT_CRITERION: CriterionVerdict.FAIL},
+        findings=findings,
+    )
+    world.store.close()
+    return world
+
+
+def _advance(world: World, evidence: Path, *, repairs: int = 1, rounds: int = 1) -> dict[str, Any]:
+    """Run ``_advance_root_review`` ``rounds`` times on a real Orchestrator."""
+
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=5,
+        max_root_review_repairs=repairs,
+        max_planning_attempts=4,
+    )
+
+    async def case() -> dict[str, Any]:
+        async with Orchestrator(config, RoleScriptedProvider({"planner": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            moved: list[bool] = []
+            for _ in range(rounds):
+                mission = loop.store.get_mission(world.mission.id)
+                assert mission is not None
+                moved.append(
+                    await loop._advance_root_review(mission, loop._new_mode(mission))
+                )
+            return {
+                "moved": moved,
+                "events": list(loop.store.list_events(world.mission.id)),
+                "intents": [
+                    item
+                    for item in loop.store.list_intents(
+                        "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                    )
+                    if item.mission_id == world.mission.id and item.kind == "plan"
+                ],
+                "status": loop.store.get_mission(world.mission.id).status,
+                "next_ordinal": loop._next_planning_ordinal(world.mission.id),
+            }
+
+    return asyncio.run(case())
+
+
+@pytest.fixture
+def blocked(tmp_path):
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair")
+    return world, Path(tmp_path) / "evidence"
+
+
+def test_a_blocking_finding_reopens_one_planner_round(blocked) -> None:
+    """The branch that did not exist.
+
+    **Mutation**: return False from ``_repair_after_root_review`` unconditionally and
+    the Mission is back to the ten lost episodes — rejection recorded, nothing left to
+    dispatch, idle stall.
+    """
+
+    world, evidence = blocked
+    outcome = _advance(world, evidence)
+    assert outcome["moved"] == [True], "a repair round is progress, not idleness"
+    # The fixture commits its first revision through ``apply_planner_reply`` rather than
+    # through a Planner intent, so ordinal 1 is still free here; what matters is that a
+    # *free* one is taken, because the ordinal is the intent's creation key and reusing
+    # a spent one would hand back the old intent and dispatch nothing.
+    assert [item.config["ordinal"] for item in outcome["intents"]] == [1]
+    assert outcome["next_ordinal"] == 2
+
+
+def test_the_findings_travel_to_the_planner_as_durable_feedback(blocked) -> None:
+    """Asking again without saying what was wrong is the silent retry §9.1 forbids."""
+
+    world, evidence = blocked
+    outcome = _advance(world, evidence)
+    recorded = [
+        item
+        for item in outcome["events"]
+        if item.type == "PlanningRejected"
+        and item.payload.get("reason") == ROOT_REVIEW_REPAIR_REASON
+    ]
+    assert len(recorded) == 1
+    detail = recorded[0].payload["detail"]
+    assert detail["repair_round"] == 1
+    assert detail["plan_revision"] == 1
+    assert [item["severity"] for item in detail["findings"]] == ["blocker"]
+    assert "no readable proof" in detail["findings"][0]["detail"]
+
+
+def test_a_second_cycle_on_the_same_revision_does_not_ask_again(blocked) -> None:
+    """The bound is per plan revision, so a Mission cannot circle here."""
+
+    world, evidence = blocked
+    outcome = _advance(world, evidence, rounds=3)
+    assert outcome["moved"] == [True, False, False]
+    assert len(outcome["intents"]) == 1
+    assert (
+        sum(
+            1
+            for item in outcome["events"]
+            if item.type == "PlanningRejected"
+            and item.payload.get("reason") == ROOT_REVIEW_REPAIR_REASON
+        )
+        == 1
+    )
+
+
+def test_a_minor_finding_is_not_a_request_for_a_new_plan(tmp_path) -> None:
+    """A reviewer that rejected over wording is not asking for the plan to change.
+
+    Re-planning on that would be this loop deciding the review was wrong, which is the
+    silent retry the decision table exists to prevent.
+    """
+
+    world = _rejected_world(tmp_path, findings=MINOR, key="p23d-repair-minor")
+    outcome = _advance(world, Path(tmp_path) / "evidence")
+    assert outcome["moved"] == [False]
+    assert outcome["intents"] == []
+
+
+def test_no_findings_at_all_is_not_a_request_for_a_new_plan(tmp_path) -> None:
+    world = _rejected_world(tmp_path, findings=(), key="p23d-repair-none")
+    outcome = _advance(world, Path(tmp_path) / "evidence")
+    assert outcome["moved"] == [False]
+    assert outcome["intents"] == []
+
+
+def test_the_bound_is_configuration_and_zero_switches_the_branch_off(tmp_path) -> None:
+    """``max_root_review_repairs=0`` restores the behaviour the defect describes."""
+
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-off")
+    outcome = _advance(world, Path(tmp_path) / "evidence", repairs=0)
+    assert outcome["moved"] == [False]
+    assert outcome["intents"] == []
+
+
+def test_the_config_refuses_a_negative_bound() -> None:
+    with pytest.raises(ValueError, match="max_root_review_repairs"):
+        OrchestratorConfig(evidence_root=Path("/tmp/none"), max_root_review_repairs=-1)

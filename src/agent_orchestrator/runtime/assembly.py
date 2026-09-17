@@ -96,6 +96,14 @@ class OrchestratorConfig:
     # that spends the Mission account every cycle, so the bound is configuration and
     # not a constant buried in the coordinator.
     max_root_review_cuts: int = DEFAULT_MAX_CUTS_PER_REVISION
+    # P2.3d / defect D5-A: how many times ONE plan revision may answer a *blocking*
+    # root-review rejection by asking the Planner again (§9.1's minimal branch).  The
+    # Grok acceptance run had no such branch at all — ``REVIEW_REJECTED`` was recorded,
+    # announced and then returned False, so 10 episodes whose leaves had all passed
+    # went straight to an idle stall and ``NO_DISPATCHABLE_WORK``.  One round is the
+    # default because the repair is a whole new plan revision and a second one on the
+    # same revision would be the same question asked twice.
+    max_root_review_repairs: int = 1
     lease_seconds: float = 60.0
     sdk_lease_ttl_seconds: float | None = None  # D3-10': SDK Run lease; default lease_seconds / 2
     stall_seconds: float = 180.0
@@ -191,6 +199,8 @@ class OrchestratorConfig:
             raise ValueError("max_planning_attempts must be >= 1")
         if self.max_root_review_cuts < 1:
             raise ValueError("max_root_review_cuts must be >= 1")
+        if self.max_root_review_repairs < 0:
+            raise ValueError("max_root_review_repairs must be >= 0")
         if self.min_task_tokens is not None and (
             isinstance(self.min_task_tokens, bool) or self.min_task_tokens < 0
         ):
@@ -274,6 +284,7 @@ class OrchestratorConfig:
             "candidates_per_task": self.candidates_per_task,
             "max_planning_attempts": self.max_planning_attempts,
             "max_root_review_cuts": self.max_root_review_cuts,
+            "max_root_review_repairs": self.max_root_review_repairs,
             "lease_seconds": self.lease_seconds,
             "sdk_lease_ttl_seconds": self.sdk_lease_ttl_seconds,
             "stall_seconds": self.stall_seconds,

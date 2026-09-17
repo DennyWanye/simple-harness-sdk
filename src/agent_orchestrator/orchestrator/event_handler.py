@@ -211,6 +211,13 @@ from .resolution_commits import eligible_root_receipts
 
 logger = logging.getLogger("agent_orchestrator")
 
+#: P2.3d / defect D5-A.  The ``PlanningRejected`` reason a root-review repair round
+#: carries.  It is a planning rejection rather than a new event type on purpose: the
+#: rejection ledger is what ``_planning_rejections`` hands to the next proposal, so
+#: recording it here is what makes the reviewer's findings reach the Planner at all,
+#: and the per-revision bound is counted off the same rows.
+ROOT_REVIEW_REPAIR_REASON = "root_review_rejected"
+
 FAULT_POINTS = (
     "after_agent_created",
     "after_submit",
@@ -4943,7 +4950,7 @@ class Orchestrator:
             self._note(f"dynamic graph disabled: no management for {task.id} ({trigger})")
             return None
         subject = f"{mission.id}:manager:{trigger}"
-        if self._new_mode(current_mission) is not None:
+        if self._new_mode(mission) is not None:
             # P2.3d / defect D4.  A Manager on a hierarchical Mission can only produce a
             # legacy ``TaskGraphChange``, and ``commit_graph_change`` refuses every one
             # of them (``SEMANTICS_IS_HIERARCHICAL``).  Opening the round anyway spends a
@@ -6296,7 +6303,12 @@ class Orchestrator:
         if state.status is RootReviewStatus.REVIEW_REJECTED:
             # §9.1's decision table, never a silent retry.  The record is already
             # written and announced by ``record_review``; this loop does not get to
-            # ask the same question again with the same anchor.
+            # ask the same question again with the same anchor.  What it *may* do —
+            # P2.3d / defect D5-A — is hand the blocking findings back to the Planner
+            # once per plan revision, which is the table's "content defect → a new
+            # attempt against the same duty" branch expressed at the plan level.
+            if await self._repair_after_root_review(mission, new_mode, state):
+                return True
             self._note(f"mission {mission.id}: {state.detail}")
             return False
         if state.needs_cut:
@@ -6318,6 +6330,111 @@ class Orchestrator:
             # package already out for review is not asked about twice.
             return await self._ask_root_reviewer(mission, coordinator, state.package)
         return False
+
+    async def _repair_after_root_review(
+        self, mission: Mission, new_mode: HierarchicalDispatch, state: Any
+    ) -> bool:
+        """§9.1's minimal repair branch: one more Planner round on blocking findings.
+
+        P2.3d / defect D5-A.  Before this, a root review that concluded REJECT was the
+        end of the Mission: ``record_review`` wrote the record, announced
+        :data:`~.root_review.ROOT_REVIEW_REJECTED`, and the loop returned False.  There
+        was no re-planning, no further work and no route by which the finding reached
+        anybody — the Mission went idle and stopped with
+        ``hierarchical_no_dispatchable_work``.  Ten episodes of the Grok acceptance run
+        ended that way with every leaf accepted and, in nine of them, a deliverable the
+        official grader passed.
+
+        Three things keep this from becoming the silent retry §9.1 forbids:
+
+        * only a **blocker** finding opens it.  A reviewer that rejected over minor
+          limitations is not asking for a new plan, and re-planning on that would be
+          this loop deciding the review was wrong;
+        * the findings travel as a durable ``PlanningRejected`` record, which is what
+          ``_planning_rejections`` feeds into the next proposal — the Planner is told
+          what the reviewer said, not merely asked again;
+        * the bound is **per plan revision** (``max_root_review_repairs``, default 1).
+          A repair produces a new revision, so a Mission cannot circle here: the same
+          revision is never re-planned twice, and a Mission out of repairs falls
+          through to the idle stall exactly as before.
+        """
+
+        if self._config.max_root_review_repairs < 1:
+            return False
+        package = getattr(state, "package", None)
+        if package is None:
+            return False
+        findings = self._root_review_findings(mission.id, str(package.package_id))
+        blocking = [
+            item for item in findings if str(item.get("severity", "")).lower() == "blocker"
+        ]
+        if not blocking:
+            return False
+        active = new_mode.semantics().active_plan_revision(mission.id)
+        revision = 0 if active is None else int(active.revision)
+        used = self._root_review_repairs(mission.id, revision)
+        if used >= int(self._config.max_root_review_repairs):
+            self._note(
+                f"mission {mission.id}: root review rejected and plan revision {revision} has "
+                f"already been re-planned {used} time(s) (max_root_review_repairs="
+                f"{int(self._config.max_root_review_repairs)})"
+            )
+            return False
+        ordinal = self._next_planning_ordinal(mission.id)
+        self.commit.record_planning_rejected(
+            mission.id,
+            ordinal=ordinal,
+            reason=ROOT_REVIEW_REPAIR_REASON,
+            detail={
+                "plan_revision": revision,
+                "package_id": str(package.package_id),
+                "repair_round": used + 1,
+                "max_root_review_repairs": int(self._config.max_root_review_repairs),
+                "findings": blocking[:16],
+            },
+        )
+        self._note(
+            f"mission {mission.id}: root review rejected with {len(blocking)} blocking "
+            f"finding(s); asking the Planner again (ordinal {ordinal}, revision {revision})"
+        )
+        return await self._try_planner_intent(mission.id, ordinal=ordinal)
+
+    def _root_review_findings(self, mission_id: str, package_id: str) -> list[dict[str, Any]]:
+        """The findings the reviewer filed against this package, newest record wins."""
+
+        from .root_review import ROOT_REVIEW_REJECTED
+
+        for event in reversed(self.store.list_events(mission_id)):
+            if event.type != ROOT_REVIEW_REJECTED:
+                continue
+            if str(event.payload.get("package_id", "")) != package_id:
+                continue
+            return [dict(item) for item in event.payload.get("findings", []) or []]
+        return []
+
+    def _root_review_repairs(self, mission_id: str, revision: int) -> int:
+        """Repair rounds already opened for this plan revision."""
+
+        return sum(
+            1
+            for event in self.store.list_events(mission_id)
+            if event.type == "PlanningRejected"
+            and event.payload.get("reason") == ROOT_REVIEW_REPAIR_REASON
+            and int((event.payload.get("detail") or {}).get("plan_revision", -1)) == int(revision)
+        )
+
+    def _next_planning_ordinal(self, mission_id: str) -> int:
+        """One past the highest ordinal any planning round of this Mission has used.
+
+        The ordinal *is* the planner intent's creation key (``…:planner:<n>``), so the
+        next free one is found by asking for each in turn — reusing a spent ordinal
+        would return the old intent and the repair round would never be dispatched.
+        """
+
+        ordinal = 1
+        while self.store.get_intent_for_subject(f"{mission_id}:planner:{ordinal}") is not None:
+            ordinal += 1
+        return ordinal
 
     async def _ask_root_reviewer(
         self, mission: Mission, coordinator: Any, package: Any
