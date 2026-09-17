@@ -33,6 +33,7 @@
 - **提示词**：只加 `root-reviewer-v2`（`_revise` 自 v1，说明新字段；硬约束 1 补「证据在 excerpt.text、叶子 PASS 只对其承担的根准则有效、covered_by 为空判 false」，新增 1b「修订号小于根是正常形态」）；v1 保留可 pin，sha256 钉在测试里。
 - 测试：`tests/orchestrator/full_target/test_root_review_evidence.py` 27 条（C3 原包夹具钉缺陷、摘录/截断/二进制/预算/篡改、叶子准则、承诺人、修订号、提示词冻结、**按证据判的脚本化评审员端到端到 COMPLETED** + 对照组 REJECTED、4 条变异全部 KILLED、I05 钉子）。full_target **2746 + 2 skip**（上一段 2719，+27）；旧模式回归 1 failed / 1854 passed / 20 skipped（唯一红仍是已知的 p33 `test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged`，与基线逐项一致，零新增失败）；ruff 改动文件全清；mypy 改动文件 0 条。
 - 口径：根评审员看到的 JSON 变了（新字段、改名），`context_version` 因而不同；runner FREEZE-candidate 需重生成（methods.json）；契约变更请求 +1（`CriterionLink.evidence_port`，可选、默认退化为现行为）。
+- **迁移口径（核验 P1-1）**：`code.fix-by-patch` / `code.fix-by-revert` / `code.fix-by-assessed-revert` 的 `method_version` **1 → 2**（criterion_links 是契约字节，`register_method` 对同 (id, version) 不同字节抛 `StoreConflict`）。已装过旧 code 域库的持久化 store 无需迁移：旧 `@1` 行保留（旧 mission 的 method_ref / plan revision 仍按原字节读回），新世界只准入并提供 `@2`，两版并存；点名 `@1` 的新提案按 §7.3 未准入拒绝。runner 的 FREEZE-candidate / 题单里引用 `code.fix-*@1` 的地方须改为 `@2`。测试 +4（旧库再装不炸 / 两版并存且规划取 @2 / 版本号钉住 / Worker 上下文块经 `_decide` 接线，核验变异 M6 已杀）；full_target **2770 passed / 2 skipped（核验基线 2765 / 3 skipped，收集数 2768 → 2772，+4；本机少一条环境性 skip）**。
 
 ## 0.12.1 — P2.3d：Grok 验收暴露的分层闭环缺陷修复（2026-09-17）
 

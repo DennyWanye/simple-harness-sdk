@@ -3073,7 +3073,7 @@ Planner 的 `planner-hierarchical-v1` 原文写着「如果当前目标缺一个
 
 ### 结果
 
-- `tests/orchestrator/full_target` **2746 passed + 2 skip**（基线 2719 + 2，本片 +27）；既有 570 条邻近套件
+- `tests/orchestrator/full_target` **2746 passed + 2 skip**（基线 2719 + 2，本片 +27）；核验处置后（合并 c202dec 之上，+4）**2770 passed / 2 skipped（核验基线 2765 / 3 skipped，收集数 2768 → 2772，+4；本机少一条环境性 skip）**；既有 570 条邻近套件
   （root_review ×2 / end_to_end / deployment_wiring / seed_methods / finalizer_ports / resolution_commits / port_claims）在改动后先跑一遍全绿——
   删掉 `requirement_refs` 回退没有碰到任何既有断言。
 - 旧模式回归：1 failed / 1854 passed / 20 skipped（唯一红仍是已知的 p33 `test_legacy_check_ast_and_default_retrieval_bytes_are_unchanged`，与基线逐项一致，零新增失败）。
@@ -3089,6 +3089,47 @@ Planner 的 `planner-hierarchical-v1` 原文写着「如果当前目标缺一个
   （HANDOFF §2 第 9 条已有此项）。`patch` 步不再被链接引用，但其 `patch` 端口仍被 verify 的 DataRequirement 消费，端口集合不变。
 - Worker 提示词**未改**（任务书限定只加 root-reviewer 版本）：`carried_root_criteria` 块以数据形式自述
   （`note` + 每条 `evidence_requirement`），`worker-hierarchical-v2` 的词不变。
+
+### 核验处置（`reviews/核验-P2.3h-c9adf5b-合并c202dec-2026-09-17.md`，结论「修后可合」；在合并提交 c202dec 之上修）
+
+- **P1-1（已修）**：三个 `code.fix-*` 方法改了 `criterion_links`（契约字节）但 `method_version` 仍为 1，
+  `MethodContract.method_ref().content_hash` 随之变化，`HtnStore.register_method` 对同 (id, version) 不同字节抛
+  `StoreConflict`——任何装过旧 code 域库的持久化 store 在 P2.3h 下 `build_planning_world` 直接异常（核验员脚本复现）。
+  修法：`code.fix-by-patch` / `fix-by-revert` / `fix-by-assessed-revert` 的 `method_version` **1 → 2**，其余方法不动。
+  为什么是升版本而不是别的：HTN 契约里方法的身份就是 `(method_id, method_version, content_hash)`，注册表按
+  `(id, version)` 幂等、按 hash 拒冲突，「改了定义就换版本」正是 `register_method` 拒绝信息里写明的规则；
+  `MethodContract` 没有 supersedes/predecessor 字段（`basis_refs` 是证据引用），要表达「@2 取代 @1」得改 contracts/，
+  本片不改。效果：旧 store 里的 `@1` 行原样保留（旧 mission 的 `MethodInstanceDraft.method_ref` / plan revision 仍能按
+  `(id, 1)` 读回原字节，回放 hash 一致），新世界的注册表只准入文件里的 `@2`，`publish_methods` 把 `@2` 写进同一个 store，
+  两版并存；规划只被提供 `@2`，一个点名 `@1` 的提案被编译器按 §7.3「未准入」拒绝（`CompilationRefused`，循环里落
+  `PlanningRejected`）。引用核对：`src` 内没有代码按 `code.fix-*@1` 取方法；`role_templates.py:529-532` 的
+  `planner-hierarchical-v3` 提示词示例里写着 `"id":"code.fix-by-patch","version":1`——那是冻结提示词里的**格式示例**，
+  不是库引用，字节不能动（digest 已冻结），示例的语义不受版本号影响；测试侧 `test_htn_deployment_wiring._refine_text`
+  加 `version` 参数，`_both_lane_world` 改提 `@2`；`shared_goal_index` 按目标类型工作、不引用方法版本；Grok runner 不在本仓库。
+  测试（先红后绿，红在 `StoreConflict`）：`test_the_changed_fix_methods_carry_a_new_version`、
+  `test_a_store_holding_the_old_code_library_still_builds_the_new_world`（同一 store 先装 8b8466d 形态的旧库——由出厂文件
+  改回 version 1 + 旧链接重建，不依赖 git 深度——再装新库不炸；`@1`/`@2` 并存且 hash 不同；世界只提供 `@2`）、
+  `test_planning_on_such_a_store_takes_version_two_and_refuses_version_one`（`_both_lane_world` 的 store 先种旧库，
+  提交的计划引用 `@2`，点名 `@1` 的提案被拒）。
+- **P2-1（已修）**：Worker 上下文块接线无测试、变异 M6 存活。补
+  `test_a_linked_leaf_is_handed_its_carried_root_criteria_and_an_unlinked_one_is_not`：用 `_linked_world`（链接挂在
+  第一个可派发步骤 probe）真跑 `_decide`，断言 worker intent 的 message 里 `## carried_root_criteria` 段
+  `== carried_root_criteria_for(...)`；共享夹具的 leaf 不带链接则该段缺席。把 `if carried:` 改成 `if False and carried:`
+  后该测试红（本机验证，改后已逐字节恢复）。
+- **P2-4（口径更正）**：第 4 条「变异自证」（修订语义置空）只断言变异生效，不杀任何东西；真正杀死该变异的是
+  `test_the_revision_numbers_are_explained…`（核验员源码变异 M8）。上文「4 条变异全部 KILLED」应读作 **3 条自证 + 1 条由既有断言覆盖**。
+- 核验数字：合并后 full_target 2765 + 3 skip；核验员源码变异 8 KILLED / 1 SURVIVED（M6，本次已杀）。
+
+### 未做 / 交下一片（核验 P2-2、P2-3、P2-5）
+
+- P2-2：`covered_by` / `carries_root_criteria` 只按 criterion_id 聚合、不带 `root_task_id`，递归方法（`review-changes-recursively` /
+  `resolve-entity-recursively`）下嵌套层同名准则的链接会并入根的 `covered_by`。修法：只收 `parent_task_id == 根 task_id` 的链接，
+  条目加 `root_task_id`。今天种子方法的链接全落在 primitive 步骤且根层单一，未触发。
+- P2-3：`carries_root_criteria[].leaf_review_verdict` 是验证层门控的确定性盖章（`criteria_for` 给每条叶子准则同一组
+  `required_check_ids`），不是对 `evidence_requirement` 的判断；v2 提示词应加一句「leaf_review_verdict 只表示验证层通过，
+  evidence_requirement 仍须从 excerpt 判」或改名 `leaf_gate_verdict`（改提示词要开 v3）。
+- P2-5：`excerpt_of` 经 `read_verified` 整文件读入再截断（哈希复核需要全量）；可用 `artifact.size_bytes` 预筛，超过阈值直接
+  `omitted` + size。
 
 ## 3. 旧模式 golden 是否变
 

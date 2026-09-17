@@ -947,3 +947,217 @@ def test_the_root_resolution_still_needs_the_reviewers_pass(c3: CodeWorld) -> No
     assert outcome.committed is False
     assert c3.semantics.adopted_goal_resolution(c3.mission.id, CODE_ROOT_DUTY) is None
     assert ROOT_DUTY == CODE_ROOT_DUTY
+
+
+# ======================================================================================
+# 7. Verification round (核验-P2.3h-c9adf5b): P1-1 method versions, P2-1 context wiring
+# ======================================================================================
+#
+# P1-1.  The three ``code.fix-*`` methods changed their ``criterion_links`` — which are
+# contract bytes, so ``MethodContract.method_ref().content_hash`` moved — while
+# ``method_version`` stayed at 1.  ``HtnStore.register_method`` refuses a second
+# definition under one ``(id, version)`` ("a changed definition needs a new version"),
+# so any persistent store that had installed the old code library could no longer
+# build a PlanningWorld at all.  The methods are now version 2; the old rows stay
+# where they are, a store that holds both is legal, and planning is offered @2 only.
+
+OLD_LINKS = {
+    "code.fix-by-patch": ("patch", "the patch names the defect it addresses"),
+    "code.fix-by-revert": ("revert", "the revert names the commit it undoes"),
+    "code.fix-by-assessed-revert": (
+        "revert",
+        "the revert names the commit it undoes and the assessment that justified it",
+    ),
+}
+FIX_METHODS = tuple(OLD_LINKS)
+
+
+def _old_seed_root(tmp_path) -> Path:
+    """The code library as it was at 8b8466d: the fix methods at version 1 with
+    ``c-change-explained`` hung on the code-delivering step.  Rebuilt from the shipped
+    files rather than read out of git, so the test does not depend on history depth."""
+
+    import shutil
+
+    from agent_orchestrator.planning.htn.seed_methods import SEED_ROOT
+
+    root = Path(tmp_path) / "old-seed"
+    shutil.copytree(SEED_ROOT, root)
+    path = root / "code" / "methods.json"
+    methods = json.loads(path.read_text())
+    for method in methods:
+        if method["method_id"] in OLD_LINKS:
+            method["method_version"] = 1
+            step, requirement = OLD_LINKS[method["method_id"]]
+            for link in method["composition"]["criterion_links"]:
+                if link["parent_criterion_id"] == "c-change-explained":
+                    link["child_step"] = step
+                    link["evidence_requirement"] = requirement
+    path.write_text(json.dumps(methods, indent=2, ensure_ascii=False) + "\n")
+    return root
+
+
+def test_the_changed_fix_methods_carry_a_new_version() -> None:
+    from agent_orchestrator.planning.htn.seed_methods import SEED_ROOT
+
+    methods = {
+        item["method_id"]: item
+        for item in json.loads((SEED_ROOT / "code" / "methods.json").read_text())
+    }
+    for method_id in FIX_METHODS:
+        assert methods[method_id]["method_version"] == 2, method_id
+    for method_id, method in methods.items():
+        if method_id not in FIX_METHODS:
+            assert method["method_version"] == 1, f"{method_id} did not change"
+
+
+def test_a_store_holding_the_old_code_library_still_builds_the_new_world(tmp_path) -> None:
+    """P1-1, the repro: old library, then the shipped one, on one store."""
+
+    from agent_orchestrator.planning.htn.seed_methods import SEED_ROOT
+    from agent_orchestrator.planning.htn.world import build_planning_world
+    from agent_orchestrator.storage.htn_store import HtnStore
+    from agent_orchestrator.storage.store import Store
+
+    semantics = HtnStore(Store.open(Path(tmp_path) / "shared.sqlite3"))
+    build_planning_world(
+        "m-old", domains=("code",), root=_old_seed_root(tmp_path), semantics=semantics
+    )
+    world = build_planning_world("m-new", domains=("code",), root=SEED_ROOT, semantics=semantics)
+    for method_id in FIX_METHODS:
+        old = semantics.get_method(method_id, 1).contract
+        new = semantics.get_method(method_id, 2).contract
+        assert old.method_ref().content_hash != new.method_ref().content_hash
+        links = {item.parent_criterion_id: item for item in new.composition.criterion_links}
+        assert links["c-change-explained"].child_step == "verify"
+        offered = [item for item in world.registry.method_refs() if item.method_id == method_id]
+        assert [int(item.version) for item in offered] == [2], (
+            "the world offers the shipped definition and only that one"
+        )
+    stored = {
+        (item.contract.method_id, int(item.contract.method_version))
+        for item in semantics.list_methods()
+    }
+    assert {(method_id, 1) for method_id in FIX_METHODS} <= stored
+    assert {(method_id, 2) for method_id in FIX_METHODS} <= stored
+
+
+def test_planning_on_such_a_store_takes_version_two_and_refuses_version_one(tmp_path) -> None:
+    """The store behind ``_both_lane_world`` is seeded with the old library first; the
+    committed ``code.fix-by-patch`` plan then names @2, and a proposal naming @1 —
+    stored, but not offered — is refused rather than compiled against old bytes."""
+
+    from test_htn_deployment_wiring import _refine_text
+
+    from agent_orchestrator.orchestrator.plan_commits import PlanPrincipal
+    from agent_orchestrator.planning.htn.compiler import CompilationRefused
+    from agent_orchestrator.planning.htn.world import build_planning_world
+    from agent_orchestrator.storage.htn_store import HtnStore
+    from agent_orchestrator.storage.store import Store
+
+    seeded = Store.open(Path(tmp_path) / "db.sqlite3")  # the path ``_mission`` opens
+    build_planning_world(
+        "m-old", domains=("code",), root=_old_seed_root(tmp_path), semantics=HtnStore(seeded)
+    )
+    seeded.close()
+    world = CodeWorld(tmp_path)
+    instances = world.semantics.list_method_instances(world.mission.id)
+    assert [
+        (str(item.method_ref.method_id), int(item.method_ref.version)) for item in instances
+    ] == [("code.fix-by-patch", 2)]
+    assert world.semantics.get_method("code.fix-by-patch", 1) is not None, "the old row is kept"
+    # @1 is stored but was never admitted into this world's registry, so the compiler
+    # refuses it the way it refuses any unadmitted method (§7.3) — the loop's collector
+    # turns that into ``PlanningRejected``; here the refusal itself is the assertion.
+    with pytest.raises(CompilationRefused, match="unregistered"):
+        world.dispatch.apply_planner_reply(
+            world.mission.id,
+            _refine_text("code.fix-by-patch", version=1),
+            principal=PlanPrincipal("manager-1", "mission", 0),
+            command_id="cmd-old-version",
+        )
+
+
+def _task_of_intent(intent: Any) -> str:
+    return str(intent.subject_id).rsplit(":attempt-", 1)[0]
+
+
+def _decided_intents(tmp_path, build_world):
+    """Drive one real ``_decide`` over a world built at ``tmp_path/evidence`` and return
+    the worker intents it created, with the loop's own store still open."""
+
+    import asyncio
+
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator
+    from agent_orchestrator.runtime.assembly import OrchestratorConfig
+    from agent_orchestrator.storage.htn_store import HtnStore
+    from agent_orchestrator.testing.fixtures import RoleScriptedProvider
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = build_world(evidence)
+    world.store.close()
+    config = OrchestratorConfig(evidence_root=evidence, max_concurrency=1, test_timeout_seconds=5)
+
+    async def case():
+        async with Orchestrator(config, RoleScriptedProvider({"worker": []})) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            assert mission is not None
+            await loop._decide(mission)
+            intents = [
+                item
+                for item in loop.store.list_intents(
+                    "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
+                )
+                if item.mission_id == world.mission.id and item.kind == "attempt"
+            ]
+            new_mode = loop._new_mode(mission)
+            # An attempt intent's subject is ``<task_id>:attempt-<n>``; the task id is
+            # not repeated in ``config``.
+            carried = {
+                _task_of_intent(item): new_mode.carried_root_criteria_for(
+                    mission.id, _task_of_intent(item)
+                )
+                for item in intents
+            }
+            return intents, carried
+
+    return asyncio.run(case())
+
+
+def test_a_linked_leaf_is_handed_its_carried_root_criteria_and_an_unlinked_one_is_not(
+    tmp_path,
+) -> None:
+    """P2-1 (verification mutant M6): the block reaches the Worker through ``_decide``.
+
+    ``_linked_world`` hangs ``c-root`` on the first dispatchable step, so its intent
+    must carry the section; the shared fixture's ``leaf`` carries nothing and must
+    not.  Disable the wiring in ``event_handler`` and the first assertion fails.
+    """
+
+    from test_finalizer_output_ports import _linked_world
+    from test_output_port_claims import _content, _section
+
+    intents, carried = _decided_intents(
+        tmp_path / "linked", lambda root: _linked_world(root, key="p23h-carried-linked")
+    )
+    assert intents, "the probe leaf is demanded and gets an intent"
+    task_id = _task_of_intent(intents[0])
+    assert carried[task_id], "the fixture's first leaf really is criterion-linked"
+    message = _content(intents[0])
+    section = _section(message, "carried_root_criteria")
+    assert section["data_not_instruction"] is True
+    assert section["version"] == "carried-root-criteria-v1"
+    assert section["criteria"] == [dict(item) for item in carried[task_id]]
+    assert section["criteria"][0]["root_criterion_id"] == ROOT_CRITERION
+    assert section["criteria"][0]["leaf_criterion_id"] == "c-done"
+    assert "evidence_requirement" in section["note"]
+
+    intents, carried = _decided_intents(
+        tmp_path / "plain", lambda root: committed(root, key="p23h-carried-plain", demand=True)
+    )
+    assert intents
+    assert carried[_task_of_intent(intents[0])] == ()
+    assert "## carried_root_criteria" not in _content(intents[0])

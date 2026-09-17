@@ -1070,7 +1070,8 @@ def _both_lane_world(tmp_path):
     dispatch = HierarchicalDispatch(service.store, service, planning=world)
     outcome = dispatch.apply_planner_reply(
         mission.id,
-        _refine_text("code.fix-by-patch"),
+        # P2.3h: the fix methods moved to version 2 (their criterion_links changed).
+        _refine_text("code.fix-by-patch", version=2),
         principal=PlanPrincipal("manager-1", "mission", 0),
         command_id="cmd-a",
     )
@@ -1108,10 +1109,10 @@ def _say(world, semantics, mission_id: str, predicate: str, arguments: dict) -> 
     semantics.insert_observation(mission_id, observation.record)
 
 
-def _refine_text(method_id: str) -> str:
+def _refine_text(method_id: str, version: int = 1) -> str:
     from agent_orchestrator.testing.fixtures import plan_revision_proposal_step
 
-    reference = ref(method_id)
+    reference = ref(method_id, version)
     return plan_revision_proposal_step(
         proposal_id="prop-1",
         expected_plan_revision=0,
