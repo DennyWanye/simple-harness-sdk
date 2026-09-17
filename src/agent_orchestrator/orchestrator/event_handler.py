@@ -1235,6 +1235,21 @@ class Orchestrator:
             return self._provider_admissions[profile_id]
         return self._provider_admission
 
+    def _release_unknown_grants(self, intent: DispatchIntent) -> None:
+        """Drop HELD grants for this intent so a re-hand-off is not refused by them.
+
+        P2.3l / N5.  Hierarchical only in effect: a legacy Mission never reaches the
+        re-hand-off / give-up path that calls this.  No-op when the deployment has
+        no ``ProviderBudgetGuard``.
+        """
+
+        guard = self._admission_for(self.profile_of(intent))
+        if guard is None:
+            return
+        guard.release_held_grants(
+            intent_id=intent.intent_id, reason="provider_outcome_unknown"
+        )
+
     def _service_config(self, decision: RoutingDecision) -> dict[str, Any]:
         config: dict[str, Any] = {
             "runtime_profile_id": decision.profile_id,
@@ -2868,6 +2883,22 @@ class Orchestrator:
             self._note(f"task {task.id}: acceptance refused ({error})")
             return
         self._note(f"task {task.id}: acceptance {receipt.acceptance_id} recorded")
+        # P2.3l / N7: a last gating child of a nested compound just accepted.  Advance
+        # the typed phase (so it reads composition_review) and form the inner
+        # GoalResolution in this cycle — otherwise ORDER successors stay WAITING_ORDER
+        # and the stall confirmation fires first (H-L4-M3-r0).
+        try:
+            new_mode.advance_compound_phases(mission.id)
+            from .composition_review import CompositionAcceptanceAssembly
+
+            CompositionAcceptanceAssembly(
+                self.store,
+                self.commit,
+                dispatch=new_mode,
+                issued_by=self._owner,
+            ).resolve_ready(mission.id)
+        except (GraphIntegrityError, ContractError, StoreError) as error:
+            self._note(f"task {task.id}: inner composition review deferred ({error})")
 
     async def _create_synthesizer_intent(
         self,
@@ -3936,8 +3967,20 @@ class Orchestrator:
                 "synthesis round is still out, so the ladder waits for its answer"
             )
         elif mission.status is MissionStatus.PLANNING:
+            # P2.3l / N5: a Planner round that never reached a model (transport
+            # unknown, 0 tokens) is not a planning failure — the Planner was never
+            # heard.  ``runtime_unavailable`` is the existing stop reason for a
+            # model service that stayed down.
+            stop = (
+                MissionStopReason.RUNTIME_UNAVAILABLE
+                if reason == "provider_outcome_unknown"
+                else MissionStopReason.PLANNING_FAILED
+            )
             self.commit.fail_planning(
-                mission.id, reason=reason, detail={"attempts": ordinal, **dict(detail)}
+                mission.id,
+                reason=reason,
+                detail={"attempts": ordinal, **dict(detail)},
+                stop_reason=stop,
             )
         else:
             # P2.3d: a Mission that already holds a committed plan is not killed by a
@@ -6610,6 +6653,7 @@ class Orchestrator:
             assert intent.agent_id is not None
             self.assembled.gateway.unbind(intent.agent_id)
             await self._cancel_turn(intent)  # advisory: the waiting run has no loop to stop
+            self._release_unknown_grants(intent)
             self.commit.rehandoff_service_intent(
                 intent.intent_id,
                 owner=self._owner,
@@ -6646,6 +6690,7 @@ class Orchestrator:
         from ..planning.htn.registry import RegistryAuthor
 
         role = str(intent.config.get("role", ""))
+        self._release_unknown_grants(intent)
         self._import_usage(intent)  # facts of the executor that did answer, if any
         self._settle_intent(intent, "FAILED")
         self._settle_service_if_known(intent.subject_id, mission.id)
@@ -7016,6 +7061,24 @@ class Orchestrator:
         # projection and the Resolutions, never from a sweep of ``TaskStatus`` — and
         # the root review does not run until every gating child has been accepted.
         new_mode = self._new_mode(mission)
+        if new_mode is not None:
+            # P2.3l / N7: form inner GoalResolutions before asking who is ready to
+            # dispatch.  ORDER successors of a nested compound stay WAITING_ORDER
+            # until the compound is ACCEPTED, which only a GoalResolution can say.
+            try:
+                new_mode.advance_compound_phases(mission.id)
+                from .composition_review import CompositionAcceptanceAssembly
+
+                CompositionAcceptanceAssembly(
+                    self.store,
+                    self.commit,
+                    dispatch=new_mode,
+                    issued_by=self._owner,
+                ).resolve_ready(mission.id)
+            except (GraphIntegrityError, ContractError, StoreError) as error:
+                self._note(
+                    f"mission {mission.id}: inner composition review deferred ({error})"
+                )
         try:
             settled = (
                 new_mode.root_review_ready(mission.id)

@@ -787,6 +787,37 @@ class ProviderBudgetGuard:
         )
         return overrun
 
+    def release_held_grants(
+        self, *, intent_id: str, reason: str = "provider_outcome_unknown"
+    ) -> int:
+        """Release HELD grants for one intent so a later admission is not refused by them.
+
+        P2.3l / N5.  After the bounded unknown-outcome wait the request is treated as
+        confirmed-not-started for *grant* accounting: the SDK invocation stays
+        UNKNOWN (the truth — it may have reached the model) but the grant no longer
+        occupies a slot or the subject's spent envelope.  Called immediately before
+        a service-intent re-hand-off, and again when the round is given up.
+        """
+
+        del reason
+        released = 0
+        with self.store.transaction():
+            rows = self.store.connection.execute(
+                "SELECT * FROM provider_token_grants"
+                " WHERE intent_id=? AND state IN ('RESERVED','HANDED_OFF','UNKNOWN')",
+                (intent_id,),
+            ).fetchall()
+            for row in rows:
+                ticket = ProviderAdmissionTicket(
+                    row["invocation_id"],
+                    row["handoff_ordinal"],
+                    row["wire_hash"],
+                    row["fingerprint"],
+                )
+                self._update(ticket, "RELEASED")
+                released += 1
+        return released
+
     def recover(self, uow) -> None:
         # Read and fence in Orch -> SDK order; no remote reconciliation under this lock.
         overrun = False
@@ -800,9 +831,19 @@ class ProviderBudgetGuard:
                 if binding is None:
                     continue  # another pool's database is not negative evidence
                 record = uow.read_effective_provider_invocation(row["invocation_id"])
+                ticket = ProviderAdmissionTicket(
+                    row["invocation_id"],
+                    row["handoff_ordinal"],
+                    row["wire_hash"],
+                    row["fingerprint"],
+                )
                 if record is not None:
                     turn = uow.read_agent_turn(row["turn_id"])
                     intent = self.store.get_intent(row["intent_id"])
+                    rehanded = intent is not None and (
+                        intent.agent_id != row["agent_id"]
+                        or intent.expected_turn_id != row["turn_id"]
+                    )
                     if (
                         record.invocation_id != row["invocation_id"]
                         or record.run_id.value != binding.run_id
@@ -817,13 +858,15 @@ class ProviderBudgetGuard:
                         or intent.subject_id != row["subject_id"]
                         or intent.mission_id != row["mission_id"]
                     ):
+                        # P2.3l / N5: re-hand-off rewrites the live intent onto a new
+                        # executor.  The abandoned grant is no longer this pool's live
+                        # authority — releasing it is the bounded-wait answer, not a
+                        # TTL guess, and denying recover here used to lock every later
+                        # admission as authority_rejected.
+                        if rehanded:
+                            self._update(ticket, "RELEASED")
+                            continue
                         raise _deny("recovery SDK/intent/grant identities differ")
-                ticket = ProviderAdmissionTicket(
-                    row["invocation_id"],
-                    row["handoff_ordinal"],
-                    row["wire_hash"],
-                    row["fingerprint"],
-                )
                 if record is not None and str(record.state) in {"succeeded", "failed"}:
                     overrun = self._observe_in_transaction(ticket, record=record) or overrun
                 elif record is not None and record.handoff_attempt >= row["handoff_ordinal"]:

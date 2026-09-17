@@ -948,11 +948,19 @@ class ResolutionCommitsMixin:
                 )
             delivery = self._check_delivery(semantics, command)
             withdrawn = bool(account.has_admitted_demand)
+            shared = (not command.is_mission_root) and _duty_has_other_occurrences(
+                semantics, command
+            )
             try:
-                semantics.insert_goal_resolution(resolution, adopted=True)
+                # P2.3l / N7: an inner compound that ``refines_parent`` shares the
+                # parent's duty.  Adopting and SATISFYing that duty here would close
+                # the root (and every sibling) the moment the nested compound
+                # resolved.  The resolution is still stored — ORDER keys on
+                # ``goal_task_id`` — but it is not the duty's adopted conclusion.
+                semantics.insert_goal_resolution(resolution, adopted=not shared)
             except StoreError as error:
                 raise ResolutionCommitRejected("RESOLUTION_CONFLICT", str(error)) from error
-            if withdrawn:
+            if withdrawn and not shared:
                 # TG decision 9: withdrawing the demand ends a *share*, not the duty.
                 # The open-duty CHECK refuses SATISFIED while a demand still hangs on
                 # it, so releasing the share is part of resolving the duty.  P2.3c
@@ -976,12 +984,15 @@ class ResolutionCommitsMixin:
                         "purpose": str(command.purpose),
                     },
                 )
-            satisfied = duties.set_lifecycle(
-                command.mission_id,
-                ObligationId(resolution.obligation_id),
-                ObligationLifecycle.SATISFIED,
-                resolution_ref=str(resolution.resolution_id),
-            )
+            if shared:
+                satisfied = account
+            else:
+                satisfied = duties.set_lifecycle(
+                    command.mission_id,
+                    ObligationId(resolution.obligation_id),
+                    ObligationLifecycle.SATISFIED,
+                    resolution_ref=str(resolution.resolution_id),
+                )
             payload = {
                 "command_id": command.command_id,
                 "resolution_id": str(resolution.resolution_id),
@@ -1007,7 +1018,7 @@ class ResolutionCommitsMixin:
                 ),
                 "delivery_receipt_id": delivery,
                 "witness_id": witness.witness_id,
-                "demand_withdrawn": withdrawn,
+                "demand_withdrawn": bool(withdrawn and not shared),
                 "intent_hash": intent,
                 "read_set_hash": content_hash_of(command.read_set.to_json()),
                 "source": dict(command.source),
@@ -1703,6 +1714,27 @@ class ResolutionCommitsMixin:
             f"reached {sorted(stages)}. A Mission is not complete because a leaf finished "
             "(§6.3, §8.1)",
         )
+
+
+def _duty_has_other_occurrences(
+    semantics: HtnStore, command: CommitGoalResolutionCommand
+) -> bool:
+    """Whether this duty is still owed by another live occurrence (P2.3l / N7).
+
+    A ``refines_parent`` inner compound shares the parent's obligation.  Concluding
+    *that occurrence* must not SATISFY the shared duty while siblings (or the
+    parent) still have work on it.
+    """
+
+    active = semantics.active_plan_revision(command.mission_id)
+    if active is None:
+        return False
+    duty = str(command.resolution.obligation_id)
+    task_id = str(command.resolution.goal_task_id)
+    return any(
+        str(spec.obligation_id) == duty and str(spec.task_id) != task_id
+        for spec in semantics.list_plan_memberships(command.mission_id, int(active.revision))
+    )
 
 
 def root_duty_closure(

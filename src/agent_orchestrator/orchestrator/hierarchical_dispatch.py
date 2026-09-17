@@ -1132,6 +1132,15 @@ class HierarchicalDispatch:
         # An Acceptance names a *task*, so an occurrence counts as accepted when the
         # task it instantiates has a CURRENT Acceptance under the same duty.  A
         # revoked or superseded Acceptance is not one (§11.5).
+        # P2.3l / N7: a compound never gets an Acceptance (leaf_acceptance refuses
+        # it).  Its conclusion is a GoalResolution *of that task*.  Keying on the
+        # duty would mark every REFINES_PARENT sibling ACCEPTED the moment the
+        # inner compound resolved — and SATISFY the shared root duty too early.
+        resolved_tasks = {
+            str(item.goal_task_id)
+            for item in semantics.list_goal_resolutions(mission_id)
+            if str(item.verdict) == "ACCEPT"
+        }
         accepted = {
             (str(item.task_id), str(item.obligation_id))
             for item in semantics.list_acceptances(mission_id)
@@ -1139,6 +1148,9 @@ class HierarchicalDispatch:
         }
         outcomes: dict[OccurrenceId, OccurrenceOutcome] = {}
         for spec in network.occurrences:
+            if str(spec.task_id) in resolved_tasks:
+                outcomes[spec.occurrence_id] = OccurrenceOutcome.ACCEPTED
+                continue
             if (str(spec.task_id), str(spec.obligation_id)) in accepted:
                 outcomes[spec.occurrence_id] = OccurrenceOutcome.ACCEPTED
                 continue
@@ -2116,7 +2128,21 @@ class HierarchicalDispatch:
                 occurrence_id=str(root),
             )
         instance = network.adopted_instance_for(root)
-        contributions = self.root_contributions(mission_id)
+        # Direct children of the adopted root method, not every Acceptance in the
+        # Mission.  Nested leaves share a REFINES_PARENT duty with the inner
+        # compound; quoting them as root contributions made
+        # COMPOUND_FACTS_CONTRADICT_STORE (P2.3l / N7).
+        contributions: dict[str, tuple[str, ...]] = {}
+        for child in network.adopted_children(root):
+            usable = tuple(
+                str(item.acceptance_id)
+                for item in semantics.list_acceptances(
+                    mission_id, obligation_id=str(child.obligation_id)
+                )
+                if str(item.validity) == "CURRENT"
+            )
+            if usable:
+                contributions[str(child.occurrence_id)] = usable
         return RootResolutionInputs(
             reason="",
             occurrence_id=str(root),

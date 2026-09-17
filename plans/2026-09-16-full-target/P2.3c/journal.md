@@ -3595,6 +3595,33 @@ legacy 事件字节 golden（`test_a_legacy_mission_produces_identical_event_byt
 
 回归（修后）：full_target **2848 passed / 2 skipped**（核验基线 4022da9 = 2835 / 3；本机少一条环境性 skip 即 2836 / 2，+12 新测试：tree +4、read-only +5、user-goal +3）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；`ruff check src/agent_orchestrator tests/orchestrator/full_target` 全清；`_new_mode(mission)` 仍 19 处；legacy 事件字节 golden 不变。
 
+## 2n. P2.3l：Grok 第 2 批 L4 的两个 P0——UNKNOWN grant 锁死重交接（N5）、非根 compound 无 composition 决议（N7）（2026-09-17，分支 `p2.3l-provider-grant-composition`，基 4a446f3）
+
+输入：`impl/Grok验收-第2批L4诊断-2026-09-17.zh-CN.md` §N5 / §N7；真实局只读 `H-L4-M3-r2/r3`（N5）、`H-L4-M3-r0`（N7）的 `orchestrator.db`（复制到会话 scratchpad 查询，证据目录零写入）。`contracts/` 零改动；不加配置项；`_new_mode` 判定点仍 19 处（新接线挂在既有 `_decide` / `_accept_hierarchical_leaf` 站点上）；无新提示词。
+
+### N5（P0）· Provider UNKNOWN grant 把后续规划锁死
+
+- **现象**：M3-r2/r3 Planner 第 1 次交接 `provider_error_after_handoff`（0.25 s 内 state=unknown，0 token）→ P2.3f 等 300 s → `ServiceIntentRehandedOff` → 此后每次 admission `authority_rejected`（`upper-bound-request-plus-prior-output-v1`）→ 3 次 `PlanningRejected(proposal_unreadable)` → `planning_failed`。tokens=0，`unknown_usage_calls=1`，`budget_conserved=false`（5 万 reserved 卡住）。同一 worker 前两局已成功跑 ~130 万 tokens，不是 API key。
+- **根因**：P2.3f 重交接改写同一 intent 的 `agent_id` / `expected_turn_id`，但 `provider_token_grants` 仍 HELD=UNKNOWN。下一次 `ProviderBudgetGuard.acquire` 先跑 `recover()`，把**活** intent 与旧 grant 的 agent/turn 对身份，对不上就 `_deny("recovery SDK/intent/grant identities differ")`，默认 `reason_code=authority_rejected`。P2.3f 测试未装 token estimator，走 `LocalProviderAdmission`，从未碰到这条。`fail_planning` 默认 `planning_failed`，0 token 的传输失败被写成规划失败。
+- **修法**：
+  1. `ProviderBudgetGuard.release_held_grants(intent_id=)`：把该 intent 上 HELD 的 grant 标 `RELEASED`（SDK invocation 仍 UNKNOWN，这是实话）。重交接前与 give-up 时各调一次。
+  2. `recover()`：intent 已被重交接改写时 **RELEASE 旧 grant 并 continue**，不再把整次 recover 打成 `authority_rejected`。
+  3. `_planning_rejected(reason=provider_outcome_unknown)` 且 Mission 仍 PLANNING → `fail_planning(..., stop_reason=RUNTIME_UNAVAILABLE)`（已有停机码：模型服务一直不可用）。give-up 先释放 grant 再 `_settle_service_if_known`，预留收口，守恒等式成立。
+- **测试**（`test_provider_grant_rehandoff.py`，2 条，先红后绿）：①装 `ProviderBudgetGuard`（fixture estimator），第一次 `ProviderTransportError`、第二次正常 → `planner_calls==2`、`PlanRevisionCommitted`、grant 无 UNKNOWN、守恒成立（修前红：calls=1、grant 停 UNKNOWN）；②两次未知、`max_planning_attempts=1` → `FAILED` / `runtime_unavailable` / `planning_failure.reason=provider_outcome_unknown`、HELD grant 为空、`reserved=0`、守恒成立。
+- **变异**：M1 去掉显式收回 + recover 仍 deny → 1 failed（calls=1）；M2 `stop_reason` 仍 `PLANNING_FAILED` → 1 failed。均 KILLED（从留存副本恢复，不用 git checkout）。
+- **未做**：Host 对 `planning_failed`+0 token 写 `exception-trace.txt`（诊断建议 c，runner 侧）；`PlanningRejected` 把 mappingproxy `str()` 截成 `'authority_'` 的可读性（grant 释放后这条路不再走）；把 `unknown_usage_calls` 在「确认未到达模型」时清零——SDK 侧 grant 已 RELEASED，runner 包装层的计数仍是 Host 的。
+
+### N7（P0）· 非根 compound 的 composition_review 没有决议路径
+
+- **现象**：M3-r0 `code.fix-by-assessed-revert` → assess compound 由 `code.assess-by-reading` 细化，facts+reproduce 都 `AcceptanceCommitted` 后 assess 进 `composition_review`；无评审员、无 GoalResolution；revert `WAITING_ORDER`；`MissionFailed{no_dispatchable_work}`。
+- **根因**：`next_compound_phase` 在子叶 ACCEPTED 后停在 `composition_review`，只记事件。根 `MISSION_FINAL` 有 `RootReviewCoordinator`；非根没有。`occurrence_outcomes` 只认 CURRENT Acceptance，compound 永不被验收（`leaf_acceptance` 拒绝 compound），ORDER 看不到 ACCEPTED。
+- **修法与选择理由**：选「按契约已定义的 composition acceptance 规则形成子 GoalResolution」，**不**复用根评审协调器走模型评审员。理由：①`leaf_acceptance` 已写明 compound 由 children's acceptances 经 `commit_goal_resolution` 满足，never by a review of its own（§6.3）；②子叶 TASK_CONTENT 已过独立 Critic，AER I05 在叶子层成立，composition 是对这些已验收贡献的合取；③复用根评审员会给每个非根 compound 一次模型调用，而 `COMPOUND_TOKENS=0`、`PARENT_COMPOUND_TASK` 账户未接线；④系统不自填 PASS：`ReviewRecord` 只转录子叶官方评审已判定的准则，缺子验收写 UNKNOWN，公式拒 ACCEPT；评审员 id 是 `composition-reviewer`，不在 producer_agent_ids 里。实现：新文件 `orchestrator/composition_review.py`（`CompositionAcceptanceAssembly.resolve_ready`）；`_decide` 与 `_accept_hierarchical_leaf` 在既有 `_new_mode` 站点上调用（哨兵仍 19）；`occurrence_outcomes` 按 **goal_task_id** 认 GoalResolution（不能按义务——`refines_parent` 会把兄弟和根一起标成 ACCEPTED）；`commit_goal_resolution` 对共享义务的非根决议 **不 adopt、不 SATISFY、不撤 demand**（否则 M3 的 assess 一决议就关掉 obl-root，revert 永远 NOT_SELECTED）；根决议的 `contributing_occurrence_ids` 改为只报根方法的**直接**孩子（否则内层叶混进 contributions，`COMPOUND_FACTS_CONTRADICT_STORE`）。
+- **测试**（`test_nested_compound_composition.py`，2 条）：①夹具钉缺陷形状：assess=`composition_review`、revert=`WAITING_ORDER`；②真 `run()` 端到端：两层方法（根 → 子 compound → 叶 → ORDER 后继），修前红 `no_dispatchable_work`，修后 `COMPLETED`（内层+根各一条 `GoalResolutionCommitted`，worker 被派发，根评审员判定 ACCEPT）。
+- **变异**：M3 `resolve_ready` 直接 `return ()` → e2e 红回 `no_dispatchable_work` / `WAITING_ORDER`；M4 `occurrence_outcomes` 不认 `goal_task_id` 上的 GoalResolution → 同形红。均 KILLED。
+- **未做**：真实模型上跑通 M3（assess → revert → verify）；给非根 compound 走模型评审员（若未来 `independent_review_required` 要单独一次 COMPOSITION 模型调用，需给 PARENT_COMPOUND_TASK 账户接线并抬 `COMPOUND_TOKENS`）；N6 decomposition_witness（Host 回执，本片范围外）。
+
+回归：`PYTHONPATH=src` 确认指向本 worktree。full_target **2852 passed / 2 skipped**（用户基线 2847/3、HANDOFF P2.3k 2848/2；净 +4 新测试，本机少 1 条环境性 skip）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**（与基线逐项一致）；`uv run ruff check src/agent_orchestrator tests/orchestrator/full_target` 全清。本片新增 4 条测试；`_new_mode` 仍 19；无新事件、无新提示词、无新配置项。legacy 事件 golden 与旧函数 hash 未动。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
