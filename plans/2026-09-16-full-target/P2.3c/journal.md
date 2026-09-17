@@ -3620,7 +3620,16 @@ legacy 事件字节 golden（`test_a_legacy_mission_produces_identical_event_byt
 - **变异**：M3 `resolve_ready` 直接 `return ()` → 真 `run()` 红回 `FAILED / no_dispatchable_work`、revert `WAITING_ORDER`（从 `/tmp/p23l-composition_review.py.bak` 恢复，不用 git checkout）；M4 `occurrence_outcomes` 不认 `goal_task_id` 上的 GoalResolution → 同形红。均 KILLED。
 - **未做**：真实模型上跑通 M3（assess → revert → verify）；给非根 compound 走模型评审员（若未来 `independent_review_required` 要单独一次 COMPOSITION 模型调用，需给 PARENT_COMPOUND_TASK 账户接线并抬 `COMPOUND_TOKENS`）；N6 decomposition_witness（Host 回执，本片范围外）。
 
-回归：`PYTHONPATH=src` 确认指向本 worktree。full_target **2852 passed / 2 skipped**（用户基线 2847/3、HANDOFF P2.3k 2848/2；净 +4 新测试，本机少 1 条环境性 skip）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**（与基线逐项一致）；`uv run ruff check src/agent_orchestrator tests/orchestrator/full_target` 全清。本片新增 4 条测试；`_new_mode` 仍 19；无新事件、无新提示词、无新配置项。legacy 事件 golden 与旧函数 hash 未动。
+### 核验处置（`reviews/核验-P2.3l-6453573-2026-09-17.md`，修后可合）
+
+独立核验两条 **P1** 必须在合并前修（主因 N5/N7 不回滚）：
+
+- **P1-1 N5 用量不诚实**：释放 UNKNOWN grant 后 `usage_facts` 跳过 UNKNOWN、`recover()` 在 observe 之前 RELEASE、give-up 按 0 token settle。修法：UNKNOWN 调用写入 `imported_usage.unknown=1`（不是 0）；`import_usage` 允许 unknown→known 覆盖；`recover()` 对已改写 intent 若 SDK 已 succeeded/failed 先 observe 再 RELEASE，且不再把 RELEASED 拨回 UNKNOWN；give-up / 服务意图 `settle_subject_known` 只结算已知事实、预留释放、未知行留在账本。守恒口径：`remaining+reserved+settled==pool`，未知 token 不进 settled 直到对上账。测试 +2。变异：去掉 UNKNOWN 行 → give-up 账本空，KILLED。
+- **P1-2 N7 / AER I05**：删 `_child_covers` 「任意 PASS 即覆盖」fallback；缺 `leaf_criterion_id` 映射的父准则 UNKNOWN，带具名 `composition_criterion_uncovered`，不形成 ACCEPT 决议；`_accepted_children` / `_accepted_occurrences` 按子 occurrence 自己的 `task_id` 取 CURRENT Acceptance（共享义务不再混入兄弟）；compound 子目标以 live GoalResolution 计贡献；`occurrence_outcomes` 只认 `validity==CURRENT` 且 ACCEPT 见证 `scope_epoch` 仍等于当前 epoch 的 GoalResolution。测试 +3（含杀死核验 M5）。变异：恢复 fallback → `_child_covers(..., "c-reproduced")` 变 True，KILLED。
+
+P2 未做：见核验报告 §4（`runtime_unavailable` 不键 0 token、种子 `independent_review_required` 未走模型、composition 公式拒表现为 stall、`PlanningRejected` mappingproxy 截断）。
+
+回归：full_target **2857 passed / 2 skipped**（核验基线 2851/3，+5 P1 测试；本机少 1 条环境 skip）；旧模式 / ruff 见提交。`_new_mode` 仍 19；无新事件、无新提示词、无新配置项。
 
 ## 3. 旧模式 golden 是否变
 

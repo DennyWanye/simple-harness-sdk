@@ -202,3 +202,124 @@ def test_persistent_provider_unknown_stops_as_runtime_unavailable_and_releases_t
     assert outcome["conservation"]["reserved"] == 0, outcome["conservation"]
     assert outcome["conservation"]["held_reservations"] == [], outcome["conservation"]
     assert outcome["conservation"]["open_reservations"] == [], outcome["conservation"]
+
+
+def _usage_rows(loop: Orchestrator, mission_id: str) -> list[dict[str, Any]]:
+    return [dict(row) for row in loop.commit.ledger.costs_report(mission_id)["usage"]]
+
+
+def _unknown_imported(loop: Orchestrator, subject_id: str) -> int:
+    row = loop.store.connection.execute(
+        "SELECT COUNT(*) FROM imported_usage WHERE subject_id=? AND unknown=1",
+        (subject_id,),
+    ).fetchone()
+    return int(row[0])
+
+
+def test_give_up_keeps_unknown_calls_on_the_ledger_and_does_not_settle_them_as_zero(
+    tmp_path,
+) -> None:
+    """P1-1: releasing the grant is not permission to write the call as 0 tokens.
+
+    Conservation still holds (remaining + reserved + settled == pool) with the
+    unknown rows sitting beside settled facts, not inside them.
+    """
+
+    world, _adopt, evidence = blocker._plain_world(tmp_path, key="p23l-n5-unknown-kept")
+    provider = RoleScriptedProvider({"planner": [_transport_loss, _transport_loss]})
+
+    async def case() -> dict[str, Any]:
+        async with _open_loop(evidence, provider, max_planning_attempts=1) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission_id = world.mission.id
+            await loop._try_planner_intent(mission_id, ordinal=1)
+            returned = await blocker._run_until_done_or(loop, seconds=10.0)
+            subject = f"{mission_id}:planner:1"
+            return {
+                "returned": returned,
+                "usage": _usage_rows(loop, mission_id),
+                "unknown_imported": _unknown_imported(loop, subject),
+                "has_unknown": loop.commit.ledger.has_unknown_usage(subject),
+                "conservation": _conservation(loop, mission_id),
+                "known_tokens": loop.commit.ledger.usage_for(subject)[0]
+                if hasattr(loop.commit.ledger, "known_usage_for")
+                else None,
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["returned"] is True
+    assert outcome["unknown_imported"] >= 1, (
+        "UNKNOWN invocations must land on imported_usage with unknown=1, "
+        f"not vanish into a 0 settle: {outcome['usage']}"
+    )
+    assert any(int(row["unknown"]) == 1 for row in outcome["usage"]), outcome["usage"]
+    assert all(
+        int(row["input_tokens"]) + int(row["output_tokens"]) == 0 or int(row["unknown"]) == 0
+        for row in outcome["usage"]
+        if int(row["unknown"]) == 1
+    ), outcome["usage"]
+    assert outcome["conservation"]["holds"] is True, outcome["conservation"]
+    assert outcome["conservation"]["reserved"] == 0, outcome["conservation"]
+    assert outcome["conservation"]["held_reservations"] == [], outcome["conservation"]
+
+
+def test_a_later_reconciled_unknown_call_is_imported_and_conservation_still_holds(
+    tmp_path,
+) -> None:
+    """P1-1: an unknown imported_usage row is overwritten when the call is later known.
+
+    Conservation (remaining + reserved + settled == pool) still holds; the unknown
+    count drops to 0 and the usage_ref carries the reconciled tokens.
+    """
+
+    from agent_orchestrator.governance.budgets import UsageFact
+
+    world, _adopt, evidence = blocker._plain_world(tmp_path, key="p23l-n5-reconcile")
+    provider = RoleScriptedProvider({"planner": [_transport_loss, _transport_loss]})
+    tokens = 5000
+
+    async def case() -> dict[str, Any]:
+        async with _open_loop(evidence, provider, max_planning_attempts=1) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission_id = world.mission.id
+            await loop._try_planner_intent(mission_id, ordinal=1)
+            returned = await blocker._run_until_done_or(loop, seconds=10.0)
+            subject = f"{mission_id}:planner:1"
+            before = _usage_rows(loop, mission_id)
+            unknown_refs = [
+                row["usage_ref"] for row in before if int(row["unknown"]) == 1
+            ]
+            assert unknown_refs, before
+            loop.commit.import_usage(
+                subject,
+                mission_id,
+                [
+                    UsageFact(ref, tokens - 1, 1, None, unknown=False)
+                    for ref in unknown_refs
+                ],
+            )
+            return {
+                "returned": returned,
+                "before": before,
+                "usage": _usage_rows(loop, mission_id),
+                "conservation": _conservation(loop, mission_id),
+                "unknown_imported": _unknown_imported(loop, subject),
+                "known_tokens": loop.commit.ledger.known_usage_for(subject)[0],
+            }
+
+    outcome = asyncio.run(case())
+    assert outcome["returned"] is True, outcome
+    assert outcome["unknown_imported"] == 0, outcome["usage"]
+    n_unknown = sum(1 for row in outcome["before"] if int(row["unknown"]) == 1)
+    assert outcome["known_tokens"] == tokens * n_unknown, outcome["usage"]
+    charged = [
+        row
+        for row in outcome["usage"]
+        if int(row["input_tokens"]) + int(row["output_tokens"]) == tokens
+        and int(row["unknown"]) == 0
+    ]
+    assert charged, outcome["usage"]
+    assert outcome["conservation"]["holds"] is True, outcome["conservation"]
+    assert outcome["conservation"]["reserved"] == 0, outcome["conservation"]

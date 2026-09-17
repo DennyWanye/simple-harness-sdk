@@ -722,7 +722,9 @@ class ProviderBudgetGuard:
     def _observe_in_transaction(self, ticket, *, record) -> bool:
         """Record actual usage; the caller raises only after its transaction commits."""
         row = self._row(ticket)
-        if row is None or row["state"] in {"SETTLED", "OVERRUN", "RELEASED"}:
+        if row is None or row["state"] in {"SETTLED", "OVERRUN"}:
+            return False
+        if row["state"] == "RELEASED" and row["actual_tokens"] is not None:
             return False
         if record is None:
             return False  # no evidence that a different pool's call never started
@@ -761,7 +763,7 @@ class ProviderBudgetGuard:
             return False
         actual = _usage(record) if state in {"succeeded", "failed"} else None
         if actual is None:
-            if row["state"] != "UNKNOWN":
+            if row["state"] in HELD and row["state"] != "UNKNOWN":
                 self._update(ticket, "UNKNOWN")
             return False
         total = sum(actual)
@@ -825,6 +827,7 @@ class ProviderBudgetGuard:
             rows = self.store.connection.execute(
                 "SELECT * FROM provider_token_grants"
                 " WHERE state IN ('RESERVED','HANDED_OFF','UNKNOWN')"
+                " OR (state='RELEASED' AND actual_tokens IS NULL)"
             ).fetchall()
             for row in rows:
                 binding = uow.read_agent_binding(row["agent_id"])
@@ -864,7 +867,20 @@ class ProviderBudgetGuard:
                         # TTL guess, and denying recover here used to lock every later
                         # admission as authority_rejected.
                         if rehanded:
-                            self._update(ticket, "RELEASED")
+                            # P2.3l P1-1: a rewritten intent is not a deny, but a
+                            # succeeded/failed record must be observed before the
+                            # grant is dropped, or a later charge is lost.
+                            if record is not None and str(record.state) in {
+                                "succeeded",
+                                "failed",
+                            }:
+                                overrun = (
+                                    self._observe_in_transaction(ticket, record=record)
+                                    or overrun
+                                )
+                            current = self._row(ticket)
+                            if current is not None and current["state"] in HELD:
+                                self._update(ticket, "RELEASED")
                             continue
                         raise _deny("recovery SDK/intent/grant identities differ")
                 if record is not None and str(record.state) in {"succeeded", "failed"}:
@@ -880,7 +896,7 @@ class ProviderBudgetGuard:
                         and str(resolution.outcome) == "confirmed_not_started"
                     ):
                         self._update(ticket, "RELEASED")
-                    elif row["state"] != "UNKNOWN":
+                    elif row["state"] in HELD and row["state"] != "UNKNOWN":
                         self._update(ticket, "UNKNOWN")
                 elif row["state"] == "RESERVED":
                     # Do not release a live competing owner's pre-handoff grant.

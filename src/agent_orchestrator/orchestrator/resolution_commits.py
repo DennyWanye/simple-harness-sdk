@@ -1503,6 +1503,15 @@ class ResolutionCommitsMixin:
         """
 
         found: dict[str, tuple[str, ...]] = {}
+        active = semantics.active_plan_revision(mission_id)
+        members = (
+            {
+                str(spec.occurrence_id): str(spec.task_id)
+                for spec in semantics.list_plan_memberships(mission_id, int(active.revision))
+            }
+            if active is not None
+            else {}
+        )
         for child in children:
             duty = ObligationId(str(child.obligation_id))
             if not duties.exists(mission_id, duty):
@@ -1510,13 +1519,24 @@ class ResolutionCommitsMixin:
             account = duties.account(mission_id, duty)
             if account.lifecycle in CLOSED_DUTY_LIFECYCLES:
                 continue
+            task_id = members.get(str(child.occurrence_id))
             usable = tuple(
                 str(item.acceptance_id)
                 for item in semantics.list_acceptances(mission_id, obligation_id=str(duty))
                 if item.validity in USABLE_ACCEPTANCE_VALIDITY
+                and (task_id is None or str(item.task_id) == task_id)
             )
             if usable:
                 found[str(child.occurrence_id)] = usable
+                continue
+            if any(
+                str(item.goal_task_id) == task_id
+                and str(item.verdict) == "ACCEPT"
+                and str(item.validity) == "CURRENT"
+                for item in semantics.list_goal_resolutions(mission_id)
+            ):
+                # A nested compound contributes its GoalResolution, not an Acceptance.
+                found[str(child.occurrence_id)] = ()
         return found
 
     def _check_reads(

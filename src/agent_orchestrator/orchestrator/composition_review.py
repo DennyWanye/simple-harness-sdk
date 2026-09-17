@@ -96,6 +96,7 @@ from .resolution_commits import (
 COMPOSITION_REVIEW_POLICY = "hierarchical-composition-review-v1"
 COMPOSITION_REVIEWER = "composition-reviewer"
 COMPOSITION_LOCAL_CRITERION = "c-composition"
+COMPOSITION_UNCOVERED = "composition_criterion_uncovered"
 REVIEWER_ACCESS = WorkspaceAccess.READ_ONLY
 
 
@@ -254,14 +255,15 @@ class CompositionAcceptanceAssembly:
         self, mission_id: str, gating: Sequence[Any]
     ) -> dict[str, tuple[str, ...]]:
         semantics = self.semantics
+        view = self.dispatch.read(mission_id)
         found: dict[str, tuple[str, ...]] = {}
         for binding in gating:
+            spec = view.network.occurrence(binding.occurrence_id)
+            task_id = str(spec.task_id)
             usable = tuple(
                 str(item.acceptance_id)
-                for item in semantics.list_acceptances(
-                    mission_id, obligation_id=str(binding.obligation_id)
-                )
-                if str(item.validity) == "CURRENT"
+                for item in semantics.list_acceptances(mission_id)
+                if str(item.validity) == "CURRENT" and str(item.task_id) == task_id
             )
             if usable:
                 found[str(binding.occurrence_id)] = usable
@@ -492,6 +494,11 @@ class CompositionAcceptanceAssembly:
                 if self._child_covers(mission_id, accepted[child_key], link.leaf_criterion_id):
                     verdict = CriterionVerdict.PASS
                     break
+            limitations = (
+                (COMPOSITION_UNCOVERED,)
+                if verdict is CriterionVerdict.UNKNOWN
+                else ()
+            )
             outcomes.append(
                 CriterionOutcome(
                     criterion_id=name,
@@ -501,6 +508,7 @@ class CompositionAcceptanceAssembly:
                         if verdict is CriterionVerdict.PASS
                         else CheckExecution.NOT_RUN
                     ),
+                    limitations=limitations,
                 )
             )
         del occurrence_id
@@ -526,14 +534,6 @@ class CompositionAcceptanceAssembly:
                 continue
             by_id = {str(item.criterion_id): item.verdict for item in record.criteria}
             if by_id.get(str(leaf_criterion_id)) is CriterionVerdict.PASS:
-                return True
-            # A leaf that records only ``c-leaf-verified`` still independently
-            # accepted the work the link named; restating that ACCEPT is not filling
-            # PASS on the parent's behalf.
-            if (
-                str(leaf_criterion_id) not in by_id
-                and CriterionVerdict.PASS in by_id.values()
-            ):
                 return True
         del mission_id
         return False

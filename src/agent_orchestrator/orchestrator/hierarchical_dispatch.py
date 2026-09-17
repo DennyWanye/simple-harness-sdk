@@ -1118,6 +1118,25 @@ class HierarchicalDispatch:
             legacy_status="" if task is None else str(task.status),
         )
 
+    def _goal_resolution_is_live(self, mission_id: str, item: Any) -> bool:
+        """P2.3l P1-2: ORDER only sees a CURRENT GoalResolution whose witness epoch stands."""
+
+        if str(item.verdict) != "ACCEPT":
+            return False
+        if str(item.validity) != "CURRENT":
+            return False
+        epoch = int(self.semantics().epoch(mission_id, "mission"))
+        for witness in self.semantics().list_validity_witnesses(mission_id):
+            if (
+                witness.purpose is WitnessPurpose.ACCEPT
+                and witness.consumer_ref.kind is TypedRefKind.TASK
+                and str(witness.consumer_ref.id) == str(item.goal_task_id)
+                and witness.decision is WitnessDecision.USABLE
+                and int(witness.scope_epoch) == epoch
+            ):
+                return True
+        return False
+
     def occurrence_outcomes(
         self, mission_id: str, network: TaskNetworkSnapshot
     ) -> dict[OccurrenceId, OccurrenceOutcome]:
@@ -1139,7 +1158,7 @@ class HierarchicalDispatch:
         resolved_tasks = {
             str(item.goal_task_id)
             for item in semantics.list_goal_resolutions(mission_id)
-            if str(item.verdict) == "ACCEPT"
+            if self._goal_resolution_is_live(mission_id, item)
         }
         accepted = {
             (str(item.task_id), str(item.obligation_id))
@@ -2134,15 +2153,24 @@ class HierarchicalDispatch:
         # COMPOUND_FACTS_CONTRADICT_STORE (P2.3l / N7).
         contributions: dict[str, tuple[str, ...]] = {}
         for child in network.adopted_children(root):
+            child_spec = network.occurrence(child.occurrence_id)
+            task_id = str(child_spec.task_id)
             usable = tuple(
                 str(item.acceptance_id)
                 for item in semantics.list_acceptances(
                     mission_id, obligation_id=str(child.obligation_id)
                 )
-                if str(item.validity) == "CURRENT"
+                if str(item.validity) == "CURRENT" and str(item.task_id) == task_id
             )
             if usable:
                 contributions[str(child.occurrence_id)] = usable
+                continue
+            if any(
+                str(item.goal_task_id) == task_id
+                and self._goal_resolution_is_live(mission_id, item)
+                for item in semantics.list_goal_resolutions(mission_id)
+            ):
+                contributions[str(child.occurrence_id)] = ()
         return RootResolutionInputs(
             reason="",
             occurrence_id=str(root),

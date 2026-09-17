@@ -316,14 +316,22 @@ class BudgetLedger:
 
     # ------------------------------------------------------------ usage facts
     def import_usage(self, *, subject_id: str, mission_id: str, facts: Sequence[UsageFact]) -> int:
-        """Copy usage facts from the SDK ledger; each ``usage_ref`` lands at most once."""
+        """Copy usage facts from the SDK ledger; each ``usage_ref`` lands at most once.
+
+        An ``unknown=1`` row is the exception: a later known fact for the same
+        ``usage_ref`` overwrites it (P2.3l P1-1).  A known row stays append-only.
+        """
 
         imported = 0
         for fact in facts:
             cursor = self._store.connection.execute(
                 "INSERT INTO imported_usage(usage_ref,subject_id,mission_id,input_tokens,output_tokens,"
                 "cost_micros,unpriced,unknown,imported_at) VALUES (?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(usage_ref) DO NOTHING",
+                " ON CONFLICT(usage_ref) DO UPDATE SET"
+                " input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,"
+                " cost_micros=excluded.cost_micros, unpriced=excluded.unpriced,"
+                " unknown=excluded.unknown, imported_at=excluded.imported_at"
+                " WHERE imported_usage.unknown=1 AND excluded.unknown=0",
                 (
                     fact.usage_ref,
                     subject_id,
@@ -352,6 +360,26 @@ class BudgetLedger:
         cost = None if unpriced or row[1] is None else int(row[1])
         return tokens, cost, unpriced
 
+    def known_usage_for(self, subject_id: str) -> tuple[int, int | None, bool]:
+        """Like :meth:`usage_for`, but unknown rows do not count as a 0-token charge."""
+
+        row = self._store.connection.execute(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0), SUM(cost_micros), MAX(unpriced)"
+            " FROM imported_usage WHERE subject_id = ? AND unknown = 0",
+            (subject_id,),
+        ).fetchone()
+        tokens = int(row[0])
+        unpriced = bool(row[2])
+        cost = None if unpriced or row[1] is None else int(row[1])
+        return tokens, cost, unpriced
+
+    def imported_unknown_count(self, subject_id: str) -> int:
+        row = self._store.connection.execute(
+            "SELECT COUNT(*) FROM imported_usage WHERE subject_id = ? AND unknown = 1",
+            (subject_id,),
+        ).fetchone()
+        return int(row[0])
+
     def has_unknown_usage(self, subject_id: str) -> bool:
         row = self._store.connection.execute(
             "SELECT COUNT(*) FROM imported_usage WHERE subject_id = ? AND unknown = 1",
@@ -378,6 +406,41 @@ class BudgetLedger:
             # ORCH §12.2: an UNKNOWN charge keeps the reservation occupied until reconciled.
             raise BudgetError(f"{subject_id} has an unknown provider charge; reservation held")
         tokens, cost, unpriced = self.usage_for(subject_id)
+        settled_cost = 0 if cost is None else cost
+        for snapshot in self._chain(reservation["account_id"]):
+            self._apply(
+                snapshot.account_id,
+                reserved_tokens=-int(reservation["reserved_tokens"]),
+                reserved_cost_micros=-int(reservation["reserved_cost_micros"]),
+                reserved_tool_calls=-int(reservation.get("reserved_tool_calls") or 0),
+                settled_tokens=tokens,
+                settled_cost_micros=settled_cost,
+                settled_tool_calls=int(tool_calls),
+                unpriced_settlements=1 if unpriced else 0,
+            )
+        self._store.connection.execute(
+            "UPDATE budget_reservations SET state = 'SETTLED', settled_tokens = ?, settled_cost_micros = ?,"
+            " settled_tool_calls = ?, unpriced = ?, updated_at = ? WHERE subject_id = ?",
+            (tokens, cost, int(tool_calls), 1 if unpriced else 0, self._store.now, subject_id),
+        )
+        settled = self.reservation(subject_id)
+        assert settled is not None
+        return settled
+
+    def settle_known(self, *, subject_id: str, tool_calls: int = 0) -> dict[str, Any]:
+        """Release the reservation crediting only known facts; unknown rows stay.
+
+        P2.3l P1-1: a service-intent give-up / re-hand-off must not write an
+        UNKNOWN call as 0 tokens, and must not keep the 50k reservation occupied
+        after the grant was released.
+        """
+
+        reservation = self.reservation(subject_id)
+        if reservation is None:
+            raise BudgetError(f"no reservation for {subject_id}")
+        if reservation["state"] == "SETTLED":
+            return reservation
+        tokens, cost, unpriced = self.known_usage_for(subject_id)
         settled_cost = 0 if cost is None else cost
         for snapshot in self._chain(reservation["account_id"]):
             self._apply(

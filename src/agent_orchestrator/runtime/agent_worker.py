@@ -145,17 +145,35 @@ class AgentBridge:
             settled=state in {AgentTurnState.COMMITTED, AgentTurnState.FAILED},
         )
 
-    def usage_facts(self, *, agent_id: str) -> list[UsageFact]:
-        """Cost facts from the SDK invocation ledger (D10'): one fact per invocation."""
+    def usage_facts(
+        self, *, agent_id: str, include_unknown: bool = False
+    ) -> list[UsageFact]:
+        """Cost facts from the SDK invocation ledger (D10'): one fact per invocation.
+
+        ``include_unknown`` is off by default: a CLAIMED/UNKNOWN call is not a
+        final 0, and occupying the append-only ``usage_ref`` used to lose a later
+        charge.  Hierarchical service-intent give-up (P2.3l P1-1) opts in: the
+        ledger now overwrites an ``unknown=1`` row when the call is later known.
+        """
 
         facts = []
         for original in self._runtime.uow.list_provider_invocations(RunId(agent_id)):
             record = self._runtime.uow.read_effective_provider_invocation(original.invocation_id)
             assert record is not None
+            if str(record.state) == "unknown":
+                if include_unknown:
+                    facts.append(
+                        UsageFact(
+                            f"provider-invocation:{record.invocation_id}",
+                            0,
+                            0,
+                            None,
+                            unknown=True,
+                        )
+                    )
+                continue
             if str(record.state) not in {"succeeded", "failed"}:
-                # CLAIMED is not a call; provisional/UNKNOWN is not a final 0.
-                # Inserting it here would occupy the append-only usage identity
-                # and permanently lose a later reconciled charge.
+                # CLAIMED is not a call; provisional is not a final 0.
                 continue
             usage = record.usage_json if isinstance(record.usage_json, Mapping) else {}
             tokens = usage.get("usage") if isinstance(usage, Mapping) else None

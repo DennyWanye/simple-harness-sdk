@@ -204,6 +204,7 @@ from .action_commits import (
 from .commit_service import (
     GLOBAL_ACCOUNT,
     REFINEMENT_REQUESTED,
+    SERVICE_INTENT_REHANDED_OFF,
     CommitRejected,
     CommitService,
     MissionSpec,
@@ -3872,10 +3873,38 @@ class Orchestrator:
     def _settle_intent(self, intent: DispatchIntent, state: str) -> None:
         self.commit.settle_intent(intent.intent_id, state)
 
+    def _service_agent_ids(self, intent: DispatchIntent) -> list[str]:
+        """Every executor this subject ever had, including abandoned re-hand-offs."""
+
+        agents: list[str] = []
+        seen: set[str] = set()
+        for event in self.store.list_events(intent.mission_id):
+            if event.type != SERVICE_INTENT_REHANDED_OFF:
+                continue
+            if event.payload.get("subject_id") != intent.subject_id:
+                continue
+            previous = event.payload.get("previous_agent_id")
+            if isinstance(previous, str) and previous and previous not in seen:
+                seen.add(previous)
+                agents.append(previous)
+        if isinstance(intent.agent_id, str) and intent.agent_id not in seen:
+            agents.append(intent.agent_id)
+        return agents
+
     def _import_usage(self, intent: DispatchIntent) -> None:
-        assert intent.agent_id is not None
-        facts = self.bridge_for(intent).usage_facts(agent_id=intent.agent_id)
-        self.commit.import_usage(intent.subject_id, intent.mission_id, facts)
+        agents = self._service_agent_ids(intent)
+        if not agents:
+            return
+        mission = self.store.get_mission(intent.mission_id)
+        include_unknown = mission is not None and is_hierarchical(mission)
+        bridge = self.bridge_for(intent)
+        facts = []
+        for agent_id in agents:
+            facts.extend(
+                bridge.usage_facts(agent_id=agent_id, include_unknown=include_unknown)
+            )
+        if facts:
+            self.commit.import_usage(intent.subject_id, intent.mission_id, facts)
 
     def _reimport_unsettled(self, mission: Mission) -> None:
         """D3-6': LOST / TIMED_OUT / SUPERSEDED / CANCELLED Attempts whose reservation is
@@ -3906,7 +3935,16 @@ class Orchestrator:
         self, subject_id: str, mission_id: str, task_id: str | None = None
     ) -> None:
         with self.store.transaction():
+            unknown_imported = self.commit.ledger.imported_unknown_count(subject_id) > 0
             unknown = self.commit.ledger.has_unknown_usage(subject_id)
+        mission = self.store.get_mission(mission_id)
+        hierarchical = mission is not None and is_hierarchical(mission)
+        if unknown_imported and hierarchical:
+            # P2.3l P1-1: credit known facts, release the reservation, keep the
+            # unknown rows.  Legacy still holds the reservation (ORCH §12.2).
+            self.commit.settle_subject_known(subject_id, mission_id, task_id=task_id)
+            self._note(f"{subject_id}: known usage settled; unknown calls remain on the ledger")
+            return
         if unknown:
             self._note(f"{subject_id}: unknown provider charge, reservation held")
             return
