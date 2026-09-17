@@ -2640,6 +2640,26 @@ uv run --frozen --no-sync --group dev --extra local-capacity \
   真正烧额度的是 manager 收集路径末尾的 `_enforce_no_progress`，短路后分层 Task
   不再进这条路，重复验证失败只受 `max_attempts` 约束。
 
+## 2f. 审阅处置后的真实冒烟：再次 **COMPLETED**（2026-09-17，6c282a8）
+
+§2e 指出 §2d 那次跑在审阅前代码上。审阅处置提交（`d465c4f`…`6c282a8`）之后由协调方
+在 DeepSeek 官方端点重跑一次，命令与 §2d 相同，证据目录
+`.local-test-evidence/2026-09-17/htn-smoke-p23d-r2/`。
+
+| 项 | 值 |
+| --- | --- |
+| Mission | `mission-1ac94ffc1d28e2b0` |
+| 终态 | **COMPLETED**（`verification_passed`） |
+| 模型 | `deepseek-flash` |
+| Worker 模板 | `worker-hierarchical-v2`（P1-2 之后的当前指针） |
+| plan_revisions / 重开轮 | 1 / 0，`proposal_unreadable=false` |
+| `accepted_outputs` | facts / diagnosis / patch / **report** |
+| 结算 token | 454 097（上限 600 000；比 §2d 多，attempt 重试更多，未细查） |
+| 用时 | 178 s |
+
+结论：审阅处置后的代码在真实模型上仍闭环；D5-A/P0-1 的分支本局未触发（根评审一刀 ACCEPT），
+其覆盖以离线测试为准。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
