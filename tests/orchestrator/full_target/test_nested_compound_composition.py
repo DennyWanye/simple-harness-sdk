@@ -42,7 +42,10 @@ from agent_orchestrator.contracts.htn import TaskForm  # noqa: E402
 from agent_orchestrator.contracts.state_machines import MissionStopReason  # noqa: E402
 from agent_orchestrator.graph.eligibility import ReadinessReason  # noqa: E402
 from agent_orchestrator.orchestrator.event_handler import Orchestrator  # noqa: E402
-from agent_orchestrator.orchestrator.hierarchical_dispatch import CompoundPhase  # noqa: E402
+from agent_orchestrator.orchestrator.hierarchical_dispatch import (  # noqa: E402
+    ROOT_REVIEW_CUT,
+    CompoundPhase,
+)
 from agent_orchestrator.orchestrator.resolution_commits import (  # noqa: E402
     GOAL_RESOLUTION_COMMITTED,
 )
@@ -237,20 +240,7 @@ def _run(world: World, tmp_path, *, cycles: int = 80) -> dict[str, Any]:
         async with Orchestrator(config, provider, poll_interval=0.02) as loop:
             world.env.semantics = HtnStore(loop.store)
             loop.install_hierarchical(planning=world.env)
-            from agent_orchestrator.contracts.state_machines import TERMINAL_MISSION
-
-            for _ in range(cycles):
-                progressed = await loop._cycle()
-                await asyncio.sleep(0.02)
-                mission = loop.store.get_mission(world.mission.id)
-                if mission is not None and mission.status in TERMINAL_MISSION:
-                    break
-                if not progressed and not loop._has_inflight():
-                    await loop._record_hierarchical_stall()
-                    await loop._confirm_and_stop_stalled()
-                    mission = loop.store.get_mission(world.mission.id)
-                    if mission is not None and mission.status in TERMINAL_MISSION:
-                        break
+            await asyncio.wait_for(loop.run(max_cycles=cycles), timeout=60)
             mission = loop.store.get_mission(world.mission.id)
             assert mission is not None
             events = list(loop.store.list_events(world.mission.id))
@@ -314,15 +304,15 @@ def test_the_fixture_really_parks_the_successor_on_waiting_order(tmp_path) -> No
 
 
 def test_a_two_level_plan_runs_to_completed_after_the_inner_compound_resolves(tmp_path) -> None:
-    """True ``run()``.  Before the fix this is ``no_dispatchable_work``; after, COMPLETED.
+    """True ``Orchestrator.run()``.  Before the fix this is ``no_dispatchable_work``.
 
-    The inner leaf is already accepted (the M3-r0 moment).  The successor must be
-    dispatched, the inner GoalResolution must stand, and the root MISSION_FINAL
-    review must still be a reviewer judgement — the system does not fill PASS.
+    Path pinned: inner leaf already accepted (the M3-r0 moment) → inner compound
+    composition resolution → ORDER successor (revert) dispatched → root
+    MISSION_FINAL reviewer ACCEPT → COMPLETED.  The system does not fill PASS.
     """
 
     world = _world(tmp_path, key="p23l-n7-e2e")
-    outcome = _run(world, tmp_path)
+    outcome = _run(world, tmp_path, cycles=400)
     assert outcome["status"] is MissionStatus.COMPLETED, (
         f"{outcome['status']} / {outcome['stop_reason']}: {outcome['report']} "
         f"types={outcome['types']} readiness={outcome['readiness']} "
@@ -332,7 +322,10 @@ def test_a_two_level_plan_runs_to_completed_after_the_inner_compound_resolves(tm
     root = [item for item in outcome["resolutions"] if item.get("is_mission_root") is True]
     assert inner, f"the inner compound formed no GoalResolution: {outcome['resolutions']}"
     assert root, f"the root never resolved: {outcome['resolutions']}"
-    assert outcome["roles"].get("worker") >= 1, outcome["roles"]
+    assert outcome["roles"].get("worker") >= 1, (
+        f"the ORDER successor was never dispatched: {outcome['roles']}"
+    )
     assert outcome["roles"].get("root_reviewer") == 1, outcome["roles"]
+    assert ROOT_REVIEW_CUT in outcome["types"], outcome["types"]
     assert "MissionFailed" not in outcome["types"]
     assert outcome["stop_reason"] != str(MissionStopReason.NO_DISPATCHABLE_WORK)
