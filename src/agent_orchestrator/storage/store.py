@@ -767,6 +767,10 @@ class Store:
             {
                 "state": intent.state,
                 "version": intent.version,
+                # P2.3f: a re-hand-off of a service intent needs a *new* executor, and
+                # the executor is created idempotently from this key.  Every other
+                # writer leaves it as it was, so the column is written unchanged there.
+                "creation_key": intent.creation_key,
                 "expected_turn_id": intent.expected_turn_id,
                 "agent_id": intent.agent_id,
                 "receipt_json": None

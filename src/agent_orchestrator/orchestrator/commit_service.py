@@ -165,6 +165,16 @@ REFINEMENT_REQUESTED = "HierarchicalRefinementRequested"
 #: out of its root resolution and never out of a sweep of Task statuses (§6.3, §8.1).
 HIERARCHICAL_JUDGMENT_REFUSED = "HierarchicalJudgmentRefused"
 
+#: P2.3f.  A hierarchical Mission's service intent (Planner, MethodSynthesizer, root
+#: reviewer, Critic) whose executor turn was left waiting on a Provider hand-off with
+#: an *unknown* outcome was handed off once more — same subject, same reservation, a
+#: new executor.  The runtime records the unknown invocation honestly and by design
+#: settles nothing for it (the request may have reached the model), and nothing in
+#: the orchestration loop resolved that wait: the intent stayed SUBMITTED until the
+#: caller's deadline.  Durable so the bound ("once") survives a restart and an
+#: operator can see which turn was abandoned and which one answered.
+SERVICE_INTENT_REHANDED_OFF = "ServiceIntentRehandedOff"
+
 SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
 
 ACTOR_SYSTEM = "system"
@@ -3336,7 +3346,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             self._emit(
                 "AgentCreated",
                 intent.mission_id,
-                key=intent.subject_id,
+                key=self._intent_event_key(intent),
                 attempt_id=intent.subject_id if intent.kind == "attempt" else None,
                 payload={
                     "agent_id": agent_id,
@@ -3345,6 +3355,98 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 },
             )
             return updated
+
+    @staticmethod
+    def _intent_event_key(intent: DispatchIntent) -> str:
+        """The idempotency key of an intent's AgentCreated / InputSubmitted record.
+
+        P2.3f: a re-handed-off service intent creates a second executor for the same
+        subject, and the record of that second creation must not be swallowed by the
+        first one's key.  Only an intent whose ``creation_key`` carries the re-hand-off
+        suffix gets the widened key — every intent written before this slice, and every
+        legacy intent after it, keeps ``subject_id`` byte for byte.
+        """
+
+        marker = f"{intent.subject_id}:rehandoff:"
+        if intent.creation_key.startswith(marker):
+            return intent.creation_key
+        return intent.subject_id
+
+    def rehandoff_service_intent(
+        self,
+        intent_id: str,
+        *,
+        owner: str,
+        lease_seconds: float,
+        reason: str,
+        detail: Mapping[str, Any],
+    ) -> DispatchIntent:
+        """Hand a SUBMITTED service intent off once more, to a new executor (P2.3f).
+
+        The subject, the reservation and the frozen request bytes are unchanged; what
+        changes is the executor: ``creation_key`` gets a ``:rehandoff:<n>`` suffix so
+        the runtime creates a fresh Agent instead of idempotently returning the one
+        whose turn is stuck, and the intent goes back to CLAIMED so the ordinary
+        dispatch path creates and submits it.  The abandoned turn is named in the
+        event; its provider invocation stays UNKNOWN in the runtime ledger, which is
+        the truth, and the reservation is only settled when no charge is unknown.
+
+        Never for an ``attempt`` intent: a Worker turn has a workspace and a
+        selection, and its recovery is the Attempt state machine's business.
+        """
+
+        with self._store.transaction():
+            intent = self._require_intent(intent_id)
+            if intent.kind == "attempt":
+                raise CommitRejected("a Worker intent is not re-handed off by this path")
+            if intent.state != "SUBMITTED":
+                raise CommitRejected(
+                    f"intent {intent_id} is {intent.state}; only a SUBMITTED turn is re-handed off"
+                )
+            ordinal = self.rehandoffs_of(intent.subject_id, intent.mission_id) + 1
+            now = self._store.now
+            updated = DispatchIntent(
+                **{
+                    **intent.to_json(),
+                    "state": "CLAIMED",
+                    "version": intent.version + 1,
+                    "creation_key": f"{intent.subject_id}:rehandoff:{ordinal}",
+                    "expected_turn_id": None,
+                    "agent_id": None,
+                    "receipt": None,
+                    "lease_owner": owner,
+                    "lease_expires_at": now + lease_seconds,
+                    "replays": intent.replays + 1,
+                }
+            )
+            self._store.update_intent(updated, expected_version=intent.version)
+            self._emit(
+                SERVICE_INTENT_REHANDED_OFF,
+                intent.mission_id,
+                key=f"{intent.subject_id}:{ordinal}",
+                payload={
+                    "intent_id": intent.intent_id,
+                    "kind": intent.kind,
+                    "subject_id": intent.subject_id,
+                    "role": str(intent.config.get("role", "")) or None,
+                    "rehandoff": ordinal,
+                    "previous_agent_id": intent.agent_id,
+                    "previous_turn_id": intent.expected_turn_id,
+                    "reason": reason,
+                    "detail": dict(detail),
+                },
+            )
+            return updated
+
+    def rehandoffs_of(self, subject_id: str, mission_id: str) -> int:
+        """How many times this subject's turn was re-handed off (read off the log)."""
+
+        return sum(
+            1
+            for event in self._store.list_events(mission_id)
+            if event.type == SERVICE_INTENT_REHANDED_OFF
+            and event.payload.get("subject_id") == subject_id
+        )
 
     def record_submitted(self, intent_id: str, *, receipt: Mapping[str, Any]) -> DispatchIntent:
         """Save the real SDK receipt; the Attempt becomes RUNNING (§25.2 start)."""
@@ -3385,7 +3487,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 self._emit(
                     "InputSubmitted",
                     intent.mission_id,
-                    key=intent.subject_id,
+                    key=self._intent_event_key(intent),
                     payload={"receipt": dict(receipt), "kind": intent.kind},
                 )
             return updated

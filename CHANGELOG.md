@@ -5,8 +5,15 @@
 - **根因（编排循环，不是 runtime、不是代理）**：`_request_method_synthesis` 每个周期都跑；合成轮在途期间 `goals_needing_method` 仍返回该目标（`synthesis_round_recorded` 只在回复被收集后才为真），`create_service_intent` 按 subject 幂等地把**已存在**的意图原样返回，方法把这当成 `progressed=True`。有进展的周期不 sleep，进程内 bridge 的 await 也不真正挂起，于是 `run()` 以每周期约 2.85 ms 把 `max_cycles=10 000` 的预算烧完（≈28.5 s），runtime 的回合任务在此期间一直饿着（两个回合的 `runtime.preflight` 时间戳恰好是 `run()` 返回的那一瞬），最后走 `max_cycles` 出口返回——而 `_has_inflight()` 从未被问到。
 - **修法**：`_request_method_synthesis` 在创建前先查 `get_intent_for_subject`，已有意图的目标直接跳过、不计进展（问一次是上限，等待不是进展；subject 拼法收拢到 `_synthesizer_subject`）；`run()` 每个有进展的周期后 `await asyncio.sleep(0)`，让连续进展的循环也把控制权交给 runtime 的回合任务。`_has_inflight` / profile 归属 / 合成等待逻辑 / runtime handoff 均无缺陷，未改。
 - 测试（`tests/orchestrator/full_target/test_run_loop_inflight_planning.py`，2 条，先红后绿）：①提供者全部挂在闸门上、两意图同时在途时 `run(max_cycles=120)` 1 s 内不得返回、两回合必须已到达提供者，开闸后两意图各自结算、`PlanRevisionCommitted`、Mission 不停在 PLANNING（去掉合成守卫时仍红，变异 KILLED）；②纯 `run()` 端到端：planner:1 被拒、合成方法准入、planner:2 采用，三个意图各有 `IntentSettled`，有进展的周期 < 60（修前 400/400 烧尽且零结算）。
-- 真实复现：见 `plans/2026-09-16-full-target/P2.3c/journal.md` 第四部分 §2g。
-- 测试计数：`tests/orchestrator/full_target` **2712 + 2 skip**（上一段 2710）；旧模式回归零新增失败；ruff 全清；`mypy src/agent_orchestrator` 17（基线）。
+- 真实复现：见 `plans/2026-09-16-full-target/P2.3c/journal.md` 第四部分 §2g。修后同一开局两个意图各自结算（`PlanningRejected{proposal_not_grounded}` + `MethodSynthesisRoundRecorded{UNREADABLE}`），随后暴露下一条（P2.3f）。
+
+**P2.3f：plan/critic/synthesizer 意图的 provider 阻塞不得挂满期限。** planner:2 交接 0.2 s 后传输失败；runtime 如实记 `provider_error_after_handoff` → invocation UNKNOWN → run `waiting{provider_outcome_unknown}`（设计如此：请求可能已到模型），而编排侧没有裁决者——`_observe_liveness` 对 plan 意图只看 `exists`、Critic runner 只看 `result is None`——意图 SUBMITTED 挂到 runner 1800 s 超时。
+
+- 修法（只对分层 Mission）：同一 provider 阻塞持续 `min(stall_seconds, 300)` s → `CommitService.rehandoff_service_intent`：同 subject、同预留、同请求字节，`creation_key` 换成 `{subject}:rehandoff:{n}`（runtime 按 creation_key 幂等创建 agent，换 key 才是新执行器），状态回 CLAIMED 走普通 dispatch，记新事件 **`ServiceIntentRehandedOff`**（`previous_agent_id/previous_turn_id/reason/detail`）。上限 1 次（`MAX_SERVICE_REHANDOFFS`，从事件表读）。再次未知 → 按角色收口：planner `PlanningRejected{provider_outcome_unknown}` 由梯子决定（下一级或 `fail_planning`）；method_synthesizer `MethodSynthesisRoundRecorded{admitted:false, verdict:UNANSWERED}` + `_after_synthesis_round` → `method_synthesis_refused`；root_reviewer `HierarchicalRootReviewUnreadable`；critic 交回 `_run_critic` 既有「did not answer within the wait window」路径。`_run_critic` 的等待循环抽成 `_await_service_turn`。
+- 预算：旧执行器的 invocation 在 runtime 账本保持 UNKNOWN、不导入；只有回答过的执行器进 `imported_usage`。
+- 事件键：重交接后的 `AgentCreated`/`InputSubmitted` 幂等键改用带后缀的 creation_key（否则被第一次的键吞掉）；旧 intent 与 legacy 意图键不变。`store.update_intent` 多写 `creation_key` 列。**无新增配置项**（策略快照 digest 不变）。
+- 测试：`test_service_intent_provider_blocker.py` 7 条（planner 重交接后成功 / 两次未知走梯子 / synthesizer UNANSWERED / critic 重交接后回答 / critic 两次交回 runner / 上限取小 / legacy 不动）；`NEW_EVENT_TYPES` 加 `ServiceIntentRehandedOff`，「一个判定点」哨兵 18。
+- 测试计数：`tests/orchestrator/full_target` **2719 + 2 skip**（上一段 2710，P2.3e +2，P2.3f +7）；旧模式回归 1 failed / 1854 passed / 20 skipped（唯一红仍是已知的 p33 AST 断言，零新增失败）；ruff 全清；`mypy src/agent_orchestrator` 17（基线）。
 
 ## 0.12.1 — P2.3d：Grok 验收暴露的分层闭环缺陷修复（2026-09-17）
 

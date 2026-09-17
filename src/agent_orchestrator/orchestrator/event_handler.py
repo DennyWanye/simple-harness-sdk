@@ -254,6 +254,19 @@ RECONCILE_EVERY_CYCLES = 50  # D7-5': UNKNOWN actions are asked about again whil
 #: still ACTIVE and its stall recorded, which is an answer to the caller rather than a
 #: verdict about the Mission.
 MAX_STALL_CARRY_ONS = 2
+#: P2.3f: how long a hierarchical Mission's service turn (Planner, MethodSynthesizer,
+#: root reviewer, Critic) may sit on a Provider hand-off whose outcome is *unknown*
+#: before the loop acts — the smaller of ``stall_seconds`` and this ceiling.  The
+#: runtime is right not to settle such an invocation (the request may have reached
+#: the model), and it is equally right that a Mission does not spend its whole
+#: deadline on one question nobody can answer: the loop hands the same request off
+#: once more, and if that is unknown too it ends the round through the role's own
+#: failure door.
+MAX_SERVICE_BLOCKER_SECONDS = 300.0
+#: One re-hand-off per subject.  A second executor asking the same question is a
+#: retry; a third is a loop that spends the Mission account on a Provider that is
+#: down, which is what the deadline exists to end.
+MAX_SERVICE_REHANDOFFS = 1
 # step 9 (plan D9-3'): the whitelisted items a deployment configuration also names — a
 # difference from the ACTIVE version is recorded as drift (the version still governs)
 CONFIG_DERIVED = frozenset(
@@ -378,6 +391,11 @@ class Orchestrator:
         #: revision: a successful refinement moves the revision on, and one that
         #: fails leaves it where it was, so the same question is never asked twice.
         self._refinement_rounds: dict[str, int] = {}
+        #: P2.3f: when this process first saw a service turn blocked on an unknown
+        #: Provider outcome, per ``intent_id:replays``.  In memory on purpose: the
+        #: bound is a *wait*, and a restarted process starting the wait again costs at
+        #: most one more window; the re-hand-off itself is durable (the event).
+        self._service_blocked_since: dict[str, float] = {}
         self._poll = poll_interval
         self._critic_wait = (
             config.turn_deadline_seconds if critic_wait_seconds is None else critic_wait_seconds
@@ -3541,7 +3559,12 @@ class Orchestrator:
         )
         if intent.kind == "plan":
             if liveness.exists:
-                return False
+                # P2.3f: an existing turn is still "ours to wait for" — unless it is
+                # waiting on a Provider hand-off nobody can resolve, which is the one
+                # wait this loop ends itself (a re-hand-off, then the role's failure
+                # door).  Everything else about a plan turn — slow, queued, mid-call —
+                # is the executor's business and is not timed here.
+                return (await self._resolve_provider_blocked_service(intent, liveness)) is not None
             self._import_usage(intent)
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, intent.mission_id)
@@ -6029,30 +6052,9 @@ class Orchestrator:
                                   else self.commit.selection_deadline(attempt_id))
             deadline = min(self.store.now + self._critic_wait,
                            selection_deadline if selection_deadline is not None else float("inf"))
-            while intent.state in {"PENDING", "CLAIMED", "AGENT_CREATED"}:
-                if not await self._dispatch(intent):  # another owner holds the claim (P1-8)
-                    if self.store.now >= deadline:
-                        raise ContractError("critic intent is claimed elsewhere; wait window over")
-                    await asyncio.sleep(self._poll)
-                refreshed = self.store.get_intent(intent.intent_id)
-                assert refreshed is not None
-                intent = refreshed
-            assert intent.agent_id and intent.expected_turn_id
-            result = None
-            while self.store.now < deadline:
-                if self._critic_subject_stopped(intent):
-                    # The cycle's after-stop collector owns cancellation and cost
-                    # settlement from here, including after a process restart.
-                    await self._collect_after_stop(intent)
-                    raise CommitRejected("Critic subject stopped during verification")
-                result = await self.bridge_for(intent).result(
-                    agent_id=intent.agent_id, turn_id=intent.expected_turn_id
-                )
-                if result is not None:
-                    break
-                if attempt_id is not None:
-                    self._hold_lease(attempt_id)  # P1-3: keep the lease while the Critic thinks
-                await asyncio.sleep(self._poll)
+            intent, result = await self._await_service_turn(
+                intent, deadline, attempt_id=attempt_id
+            )
             if self._critic_subject_stopped(intent):
                 await self._collect_after_stop(intent)
                 raise CommitRejected("Critic subject stopped before verdict collection")
@@ -6111,6 +6113,235 @@ class Orchestrator:
             return verdict
         assert last_error is not None
         raise last_error
+
+    async def _await_service_turn(  # type: ignore[no-untyped-def]
+        self, intent: DispatchIntent, deadline: float, *, attempt_id: str | None
+    ):
+        """Dispatch a Critic intent and wait for its turn (the Critic runner's loop).
+
+        Returns ``(intent, result)``; ``result`` is ``None`` when the wait window
+        closed — or, P2.3f, when the turn was waiting on an unknown Provider outcome,
+        was re-handed off once and was unknown again — and the caller's own
+        "did not answer" door takes it from there.  Raises ``CommitRejected`` when the
+        Critic's subject stopped meanwhile (the after-stop collector owns it then).
+        """
+
+        intent = await self._dispatch_until_submitted(intent, deadline)
+        result = None
+        while self.store.now < deadline:
+            if self._critic_subject_stopped(intent):
+                # The cycle's after-stop collector owns cancellation and cost
+                # settlement from here, including after a process restart.
+                await self._collect_after_stop(intent)
+                raise CommitRejected("Critic subject stopped during verification")
+            assert intent.agent_id and intent.expected_turn_id
+            result = await self.bridge_for(intent).result(
+                agent_id=intent.agent_id, turn_id=intent.expected_turn_id
+            )
+            if result is not None:
+                break
+            # P2.3f: a Critic turn waiting on an unknown Provider outcome is not "the
+            # Critic thinking"; it is a question nobody is answering.  Same bound and
+            # same two steps as a Planner turn — re-hand-off once, then the caller's
+            # own "did not answer" door (``result is None``).
+            liveness = await self.bridge_for(intent).liveness(
+                agent_id=intent.agent_id, turn_id=intent.expected_turn_id
+            )
+            outcome = await self._resolve_provider_blocked_service(intent, liveness)
+            if outcome == "rehandoff":
+                refreshed = self.store.get_intent(intent.intent_id)
+                assert refreshed is not None
+                intent = await self._dispatch_until_submitted(refreshed, deadline)
+                continue
+            if outcome == "give_up":
+                break
+            if attempt_id is not None:
+                self._hold_lease(attempt_id)  # P1-3: keep the lease while the Critic thinks
+            await asyncio.sleep(self._poll)
+        return intent, result
+
+    async def _dispatch_until_submitted(
+        self, intent: DispatchIntent, deadline: float
+    ) -> DispatchIntent:
+        """Drive one service intent through create + submit (the Critic runner's loop)."""
+
+        while intent.state in {"PENDING", "CLAIMED", "AGENT_CREATED"}:
+            if not await self._dispatch(intent):  # another owner holds the claim (P1-8)
+                if self.store.now >= deadline:
+                    raise ContractError("critic intent is claimed elsewhere; wait window over")
+                await asyncio.sleep(self._poll)
+            refreshed = self.store.get_intent(intent.intent_id)
+            assert refreshed is not None
+            intent = refreshed
+        assert intent.agent_id and intent.expected_turn_id
+        return intent
+
+    # ------------------------------------------- P2.3f: unknown Provider outcomes
+    @property
+    def _service_blocker_limit(self) -> float:
+        return min(float(self._config.stall_seconds), MAX_SERVICE_BLOCKER_SECONDS)
+
+    @staticmethod
+    def _provider_blocked(liveness: Liveness) -> bool:
+        """The turn is waiting on a Provider hand-off whose outcome is unknown.
+
+        Only the run's own *wait blocker* of kind ``provider`` counts.  The bridge also
+        reports ``provider_slot_wait`` (queued behind the concurrency limit) and
+        ``provider_response_wait`` (a call that is genuinely in progress) as
+        ``blocked``; both are the executor making progress and neither is timed here.
+        """
+
+        blocker = liveness.blocker
+        return (
+            liveness.exists
+            and not liveness.settled
+            and isinstance(blocker, Mapping)
+            and str(blocker.get("kind", "")) == "provider"
+        )
+
+    async def _resolve_provider_blocked_service(
+        self, intent: DispatchIntent, liveness: Liveness
+    ) -> str | None:
+        """End the one wait the executor cannot end: a hand-off with an unknown outcome.
+
+        P2.3f, found by the P2.3e probe episode.  The runtime hands a request off, the
+        transport fails 0.2 s later, and — correctly — the invocation is settled
+        UNKNOWN rather than FAILED: the request may have reached the model, and
+        replaying it blindly would be a second charge for the same question.  The run
+        then waits for a reconciliation observation that this deployment has nobody to
+        make, and the intent stayed SUBMITTED until the caller's deadline (1800 s in
+        the acceptance runner) with the Mission at PLANNING and nothing written down.
+
+        The loop's answer is bounded and durable: after :attr:`_service_blocker_limit`
+        seconds on the same blocker, the request is handed off **once more** to a new
+        executor (:data:`MAX_SERVICE_REHANDOFFS`, recorded as
+        ``ServiceIntentRehandedOff``); if that one is unknown too, the round ends
+        through the role's own failure door — a Planner round is rejected with
+        ``provider_outcome_unknown`` and the ladder decides, a MethodSynthesizer round
+        is recorded ``UNANSWERED`` and the synthesis wait ends, a root review is
+        recorded unreadable, and a Critic turn is handed back to its runner's own
+        "did not answer" path.  The abandoned turn's charge stays unknown in the
+        runtime ledger and keeps the reservation held, which is the honest count.
+
+        Hierarchical Missions only.  A legacy Mission's Planner and Critic paths are
+        pinned byte for byte by the recovery matrix and the event goldens, and the
+        acceptance programme that needs this is the hierarchical one; widening it is a
+        decision about the legacy path that this slice does not make.
+
+        Returns ``None`` (keep waiting), ``"rehandoff"`` (a new executor is about to
+        be dispatched) or ``"give_up"`` (the round was ended, or — for a Critic — is
+        the runner's to end).
+        """
+
+        key = f"{intent.intent_id}:{intent.replays}"
+        if not self._provider_blocked(liveness):
+            self._service_blocked_since.pop(key, None)
+            return None
+        mission = self.store.get_mission(intent.mission_id)
+        if mission is None or mission.status in TERMINAL_MISSION:
+            return None
+        new_mode = self._new_mode(mission)
+        if new_mode is None:
+            return None  # legacy: the executor's wait is the executor's, unchanged
+        now = self.store.now
+        since = self._service_blocked_since.get(key)
+        if since is None:
+            self._service_blocked_since[key] = now
+            self._note(
+                f"{intent.subject_id}: turn {intent.expected_turn_id} is waiting on an unknown "
+                f"Provider outcome; acting in {self._service_blocker_limit:.0f}s"
+            )
+            return None
+        waited = now - since
+        if waited < self._service_blocker_limit:
+            return None
+        self._service_blocked_since.pop(key, None)
+        detail = {
+            "waited_seconds": round(waited, 3),
+            "limit_seconds": self._service_blocker_limit,
+            "blocker": dict(liveness.blocker or {}),
+        }
+        done = self.commit.rehandoffs_of(intent.subject_id, intent.mission_id)
+        if done < MAX_SERVICE_REHANDOFFS:
+            assert intent.agent_id is not None
+            self.assembled.gateway.unbind(intent.agent_id)
+            await self._cancel_turn(intent)  # advisory: the waiting run has no loop to stop
+            self.commit.rehandoff_service_intent(
+                intent.intent_id,
+                owner=self._owner,
+                lease_seconds=self._config.lease_seconds,
+                reason="provider_outcome_unknown",
+                detail=detail,
+            )
+            self._note(
+                f"{intent.subject_id}: unknown Provider outcome for {waited:.0f}s; handed off "
+                f"once more (re-hand-off {done + 1} of {MAX_SERVICE_REHANDOFFS})"
+            )
+            return "rehandoff"
+        if intent.kind == "critic":
+            self._note(
+                f"{intent.subject_id}: unknown Provider outcome again after {done} re-hand-off(s); "
+                "the Critic runner ends the wait"
+            )
+            return "give_up"
+        await self._give_up_blocked_plan_intent(
+            intent, mission, new_mode, detail={**detail, "rehandoffs": done}
+        )
+        return "give_up"
+
+    async def _give_up_blocked_plan_intent(
+        self,
+        intent: DispatchIntent,
+        mission: Mission,
+        new_mode: HierarchicalDispatch,
+        *,
+        detail: Mapping[str, Any],
+    ) -> None:
+        """The second unknown outcome ends the round through the role's own door."""
+
+        from ..planning.htn.registry import RegistryAuthor
+
+        role = str(intent.config.get("role", ""))
+        self._import_usage(intent)  # facts of the executor that did answer, if any
+        self._settle_intent(intent, "FAILED")
+        self._settle_service_if_known(intent.subject_id, mission.id)
+        self._note(
+            f"{intent.subject_id}: unknown Provider outcome again after "
+            f"{detail.get('rehandoffs')} re-hand-off(s); the round ends"
+        )
+        if role == "method_synthesizer":
+            goal_task_id = str(intent.config.get("goal_task_id", ""))
+            new_mode.record_synthesis_outcome(
+                mission.id,
+                goal_task_id=goal_task_id,
+                admitted=False,
+                problems=(
+                    f"provider_outcome_unknown after {detail.get('rehandoffs')} re-hand-off(s)",
+                ),
+                method_id="",
+                verdict="UNANSWERED",
+                author=str(RegistryAuthor.MODEL),
+            )
+            await self._after_synthesis_round(mission.id, admitted=False)
+            return
+        if role == "root_reviewer":
+            coordinator = self._root_review(mission, new_mode)
+            package_id = str(intent.config.get("review_package_id", ""))
+            try:
+                package = coordinator.semantics.get_review_package(package_id)
+            except StoreError as error:
+                self._note(f"root review re-hand-off names no stored package ({error})")
+                return
+            coordinator.record_unreadable(
+                mission.id,
+                package,
+                detail=f"provider_outcome_unknown after {detail.get('rehandoffs')} re-hand-off(s)",
+                reviewer_turn_id=intent.expected_turn_id or "",
+            )
+            return
+        await self._planning_rejected(
+            intent, reason="provider_outcome_unknown", detail=dict(detail)
+        )
 
     # --------------------------------------------------------------- decide
     async def _defer_for_profile(

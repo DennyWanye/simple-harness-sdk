@@ -77,6 +77,7 @@ from agent_orchestrator.orchestrator import hierarchical_dispatch as module  # n
 from agent_orchestrator.orchestrator.commit_service import (  # noqa: E402
     MANAGEMENT_NOT_APPLICABLE,
     REFINEMENT_REQUESTED,
+    SERVICE_INTENT_REHANDED_OFF,
     CommitService,
     MissionSpec,
 )
@@ -1395,6 +1396,7 @@ NEW_EVENT_TYPES = frozenset(
         ROOT_REVIEW_CUT_BUDGET_SPENT,
         MANAGEMENT_NOT_APPLICABLE,
         REFINEMENT_REQUESTED,
+        SERVICE_INTENT_REHANDED_OFF,
     }
 )
 
@@ -1492,6 +1494,12 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     not refined is a hierarchical notion with no legacy counterpart, and asking the mode
     there is what keeps the extra Planner round off a Mission that has no plan revisions
     at all (defect D5-B).
+
+    P2.3f adds the eighteenth, ``_resolve_provider_blocked_service``: a service turn
+    waiting on a Provider hand-off whose outcome is unknown is re-handed off once and
+    then ended through its role's failure door — on a hierarchical Mission.  A legacy
+    Mission's Planner and Critic waits are pinned by the recovery matrix and the event
+    goldens, and asking the mode there is what keeps them exactly as they were.
     """
 
     del tmp_path
@@ -1500,7 +1508,7 @@ def test_the_event_handler_asks_the_mode_before_consulting_the_assembly(tmp_path
     from agent_orchestrator.orchestrator import event_handler
 
     source = inspect.getsource(event_handler)
-    assert source.count("self._new_mode(mission)") == 17
+    assert source.count("self._new_mode(mission)") == 18
     assert "is_hierarchical(mission)" in inspect.getsource(event_handler.Orchestrator._new_mode)
 
 

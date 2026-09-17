@@ -2774,6 +2774,72 @@ planner:2 在合成轮结算后 `1789615904.06` 交接到提供者，**0.2 s** �
 - 建议下一片（P2.3f 候选）：①对 `RecoveryKind.PROVIDER` 阻塞的 plan/critic 类意图，编排循环在 `stall_seconds` 内无解决时视作 `planner_turn_missing` 同级的可判定失败并按梯子处理（或按 `retryable=True` 重新交接一次，`rehandoff_count` 字段已存在）；②Grok 代理侧连续第三次调用即时失败的原因要在 Host 通路上查（前两次 121 s / 163 s 均成功），H 臂全量重跑前先探针确认。
 
 
+## 2h. P2.3f：plan/critic/synthesizer 类意图的 provider 阻塞不得挂满期限（2026-09-17，同分支 `p2.3e-run-exit`）
+
+### 现象（§2g 真实复现那一局的后半段）
+
+planner:2 在 `1789615904.06` 交接到提供者，0.2 s 后传输层抛异常。runtime 的处理**是对的**：`ProviderTransportError` / `ProviderTimeoutError` 不在 `_DEFINITE_PROVIDER_FAILURES` 里（`execution/dispatch.py` L228），因为请求可能已经到达模型，盲目重放等于同一个问题记两次账；于是调用记 `provider_error_after_handoff`、invocation 状态 UNKNOWN、run 进 `waiting` 并挂一条 `RecoveryKind.PROVIDER` 的 wait blocker，等一份 `ProviderReconciliationObservation`（`providers/reconciliation.py`）。而这条通路上**没有人做这件事**：
+
+- `_observe_liveness` 对 `plan` 意图只看 `liveness.exists`（存在即等），从不看 `blocked`/`blocker`；
+- Critic 由 `_run_critic` 内联等待，只看 `result is None` 直到 `critic_wait_seconds`（runner 传 1799 s）；
+- `run()` 的 `actions.reconcile()` 只管 action 交接，不管 provider。
+
+于是意图保持 SUBMITTED，`_has_inflight()` 为真，`run()` 正确地等到 runner 的 `asyncio.timeout(1800)`，Mission 停在 PLANNING（有事件，但没有终态）。
+
+### 根因（一句话）
+
+**runtime 把交接后的传输失败如实记成「结果未知」并等待裁决，而编排循环对 plan/critic 意图没有任何裁决者——只等 `exists`，不看 `blocker`。**
+
+### 修法
+
+三个文件，+364/−27（含 P2.3e 的 27 行；本片净增约 +340）：
+
+1. `orchestrator/event_handler.py`
+   - 常量 `MAX_SERVICE_BLOCKER_SECONDS = 300.0`、`MAX_SERVICE_REHANDOFFS = 1`（L265–269）；有效上限 `_service_blocker_limit = min(stall_seconds, 300)`（L6181）。**不加配置项**：加字段会改 `OrchestratorConfig.to_json()` / 策略快照 digest，任务书给了「或 min(stall_seconds, 300)」的选项，取后者，零字节影响。
+   - `_provider_blocked(liveness)`（L6185）：只认 run 自己的 wait blocker（`blocker.kind == "provider"`）；bridge 报的 `provider_slot_wait`（排队等槽）与 `provider_response_wait`（调用进行中）也算 `blocked`，但那是执行器在推进，不计时。
+   - `_resolve_provider_blocked_service(intent, liveness)`（L6202）：首次看到阻塞记 `since`（进程内 `_service_blocked_since`，键 `intent_id:replays`；等待是有界的，重启最多再等一窗，重交接本身是 durable 事件）；超过上限且 `rehandoffs_of(subject) < 1` → `gateway.unbind` 旧 agent、advisory `cancel_turn`、`commit.rehandoff_service_intent(...)` → 返回 `"rehandoff"`；再次未知 → critic 返回 `"give_up"` 交回 runner；plan 类走 `_give_up_blocked_plan_intent`。**只对分层 Mission**（`_new_mode(mission) is not None`，第 18 处判定点，哨兵计数已改 18）。
+   - `_give_up_blocked_plan_intent`（L6292）：`_import_usage`（只导入回答过的执行器的事实）→ 意图 FAILED → `_settle_service_if_known` → 按角色：planner → `_planning_rejected(reason="provider_outcome_unknown", detail={waited_seconds, limit_seconds, blocker, rehandoffs})`（梯子决定：下一级或 `fail_planning`）；`method_synthesizer` → `record_synthesis_outcome(admitted=False, verdict="UNANSWERED")` + `_after_synthesis_round(False)`（→ 梯子已尽则 `method_synthesis_refused`）；`root_reviewer` → `coordinator.record_unreadable(detail="provider_outcome_unknown …")`（与回合 FAILED 同门）。
+   - `_observe_liveness` plan 分支（L3567）：`exists` 时改为问 `_resolve_provider_blocked_service`，其余路径不变。
+   - `_run_critic` 的 dispatch+等待循环抽成 `_await_service_turn(intent, deadline, attempt_id)`（L6117）+ `_dispatch_until_submitted`（L6163），等待循环每次 poll 查一次 liveness：`"rehandoff"` → 重新 dispatch 后继续等；`"give_up"` → `result=None` 走既有「critic did not answer within the wait window」路径（unbind + cancel + ContractError，意图保持 SUBMITTED 给 after-stop 收集）。
+2. `orchestrator/commit_service.py`
+   - 新事件 `SERVICE_INTENT_REHANDED_OFF = "ServiceIntentRehandedOff"`（L176），payload：`intent_id, kind, subject_id, role, rehandoff, previous_agent_id, previous_turn_id, reason, detail`。
+   - `rehandoff_service_intent(intent_id, owner, lease_seconds, reason, detail)`（L3375）：只接受 kind≠attempt 且 SUBMITTED；同 subject、同预留、同请求字节；`creation_key = "{subject}:rehandoff:{n}"`（runtime 按 creation_key 幂等创建 agent，换 key 才是新执行器）、`agent_id/expected_turn_id/receipt` 清空、状态回 CLAIMED、`replays+1`；后面走普通 `_dispatch`。
+   - `rehandoffs_of(subject, mission)`（L3441）从事件表读次数（bound 是 durable 的）。
+   - `_intent_event_key(intent)`（L3360）：`creation_key` 带 `:rehandoff:` 后缀时 AgentCreated/InputSubmitted 的幂等键用 creation_key，否则仍是 `subject_id`——旧 intent 与 legacy 一个字节不变；重交接后的第二次 AgentCreated/InputSubmitted 因此**不会**被第一次的键吞掉（测试断言 `AgentCreated` 两条）。
+3. `storage/store.py` `update_intent`（L773）：CAS 更新多写 `creation_key`（其它写者写回原值）。
+
+### 预算口径
+
+旧执行器的 invocation 在 runtime 账本里保持 UNKNOWN（`has_unknown_charge` 为真），`usage_facts` 只导入 succeeded/failed 的调用，所以 `_import_usage` 只记回答过的那次；测试断言 planner:1 的 `BudgetReleased.settled_tokens == 150`（脚本化 usage 100+50，一次调用）。`unknown_usage_calls`（runner 侧 MeteredProvider 计数）不受本片影响——它数的是提供者包装层没拿到 usage 的调用，重交接后仍会如实为 1（第一次）。
+
+### 测试（`tests/orchestrator/full_target/test_service_intent_provider_blocker.py`，7 条）
+
+脚本步骤 `_transport_loss` 抛真的 `ProviderTransportError`（落进 `dispatch.py` L658 的 `except BaseException` 分支 → `provider_error_after_handoff` → `run.waiting{provider_outcome_unknown}`），`stall_seconds=0.3`。
+
+| 测试 | 断言 | 变异（resolver 恒返回 None）|
+| --- | --- | --- |
+| `test_a_planner_turn_blocked_on_an_unknown_outcome_is_rehanded_off_once_and_answers` | `run()` 10 s 内返回；`ServiceIntentRehandedOff` 1 条（reason、blocker.kind、waited≥0.3）；planner 调用 2 次；`creation_key` 以 `:rehandoff:1` 结尾；`AgentCreated` 2 条；`PlanRevisionCommitted`；意图 SETTLED；runtime 两个执行器的 invocation 状态 = {unknown, succeeded}；旧执行器 `has_unknown_charge`；`settled_tokens == 150` | 红 |
+| `test_a_second_unknown_outcome_ends_the_planner_round_through_the_ladder` | `max_planning_attempts=1`：`PlanningRejected{provider_outcome_unknown, detail.rehandoffs=1}` → Mission FAILED，`planning_failure.reason == provider_outcome_unknown`，无在途意图，调用恰 2 次 | 红 |
+| `test_a_synthesizer_blocked_twice_is_recorded_unanswered_and_ends_the_wait` | 饱和世界，planner 两级被拒后梯子等合成轮；合成轮两次未知 → `MethodSynthesisRoundRecorded{admitted:false, verdict:UNANSWERED}` → Mission FAILED `method_synthesis_refused` | 红 |
+| `test_a_critic_turn_blocked_on_an_unknown_outcome_is_rehanded_off_and_answers` | 直接调 `_await_service_turn`：返回 COMMITTED 结果，critic 调用 2 次，重交接事件 kind=critic，意图仍 SUBMITTED（runner 收集），用时 < 5 s | 红 |
+| `test_a_critic_blocked_twice_is_handed_back_to_the_runners_did_not_answer_path` | 30 s 窗口内 < 5 s 返回 `(intent, None)`，意图 SUBMITTED，重交接 1 次，调用 2 次 | 红 |
+| `test_the_bound_is_the_smaller_of_stall_seconds_and_the_ceiling` | 120 → 120；1800 → 300 | 绿（钉常量） |
+| `test_a_legacy_mission_is_not_rehanded_off` | legacy Mission 同样的传输丢失、等 6 倍上限：无重交接事件、意图 SUBMITTED、调用 1 次、`run()` 仍在等 | 绿（钉不变量） |
+
+变异结果：5 红 2 绿，与设计一致。`test_hierarchical_event_flow.py` 的 `NEW_EVENT_TYPES` 加入 `SERVICE_INTENT_REHANDED_OFF`（legacy 事件集合与之 disjoint 的断言仍过），「一个判定点」哨兵 17 → 18。
+
+### 口径说明（任务书第 2 条）
+
+- `_observe_liveness` 对 plan 意图**只看 `exists`**：存在即等，不看状态、不看阻塞、不计时（D6' 的 stall 计时只作用于 attempt）。本片保留这一口径，只在 `exists` 之内多问一句「是不是 provider 未知阻塞」；慢调用（`provider_response_wait`）与排队（`provider_slot_wait`）仍不计时。
+- 为什么按「分层 Mission」而不是「hierarchical 意图」二选一：Critic 意图没有 role 字段可辨，planner 意图在两种模式下拼法相同，能稳定区分的是 Mission 的 `orchestration_semantics_version`；且 legacy 的 Planner/Critic 等待行为被 step02 恢复矩阵与事件 golden 逐字节钉住，而需要这条修复的验收程序只有分层臂。
+- 旧执行器的 run 在 execution.db 里保持 `waiting`（本进程退出时被 `__aexit__` 取消记账），不再有人读它；`cancel_turn` 对等待中的 run 只是 advisory（没有循环可停），这是已知的、可接受的残留。
+
+### 结果
+
+- 新增 7 条全绿；邻近套件（event_flow / saturation / run_loop / root_review ×2 / step02 恢复矩阵 / p35 queued_planner_cancel）230 passed。
+- `tests/orchestrator/full_target` 2719 + 2 skip；旧模式回归 1 failed / 1854 passed / 20 skipped（唯一红仍是已知的 p33 AST 断言，零新增失败）；ruff 改动文件全清（仓库遗留 4 条不变）；`mypy src/agent_orchestrator` 17（基线）。
+- 真实局由协调方跑（任务书第 3 条），本片不跑。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
