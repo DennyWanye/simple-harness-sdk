@@ -93,3 +93,31 @@ plans/llm-native-htn/H1/journal-A2a.md                               (新增)
 ```
 
 未改 `contracts/` 下任何其它文件；未 push / stash / checkout / reset；未读密钥。
+
+---
+
+## 七、第 1 轮处置（核验：修后可合）
+
+**依据：** `plans/llm-native-htn/H1/reviews/核验-H1-A2a-2026-09-18.md`（独立核验结论：无 P0，1 条 P1 测试缺口）。
+
+**P1（canonical 值未钉死）：** 核验用 12 个变异测试本片实现；其中 M7（`canonical_decision_json` 去掉 `sort_keys`）与 M12（`canonical_decision_hash` 改成 `sha256(json + "x")`）**存活**——因为原测试只做了「两个自身结果相等 / 不相等」与 `!= ""` 这类弱断言，没有任何与独立基准的**等值**断言，`§15` 明确定义的输出物没有被真正钉住。
+
+**修复（只改测试，不动实现）：** 在 `tests/orchestrator/full_target/test_planning_decision_envelope.py` 增加两个测试，全部以字面量/独立实现为准：
+
+- `test_canonical_decision_json_matches_an_independent_canonicalisation`：用一个固定的 `CANONICAL_SAMPLE`，断言 `canonical_decision_json(envelope)` 等于**独立实现**（标准库 `json.dumps(..., sort_keys=True, separators=(",", ":"))`）的结果。M7 下必红。
+- `test_canonical_decision_json_and_hash_are_pinned_literals`：断言 `canonical_decision_json` 等于逐字节钉死的字面量 `CANONICAL_SAMPLE_JSON`，`canonical_decision_hash` 等于字面量 `CANONICAL_SAMPLE_HASH`（`22111ad0…9af72`），并用 `hashlib.sha256(CANONICAL_SAMPLE_JSON)` 独立复算。M12 下必红。
+- 顺带把 P2-2 的弱断言 `canonical_decision_hash(e1) != ""` 换成 `len(...) == 64`。
+
+**变异复验（先红后绿）：** 在上述测试存在的前提下重跑 M7、M12，二者均 **KILLED**（M7：2 failed, 93 passed；M12：1 failed, 94 passed）；恢复实现后 targeted 全绿（见下）。实现文件 sha256 与处置前一致（`6d2bcc25…ed8b40`）。
+
+**测试（原样粘贴）：**
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_contract.py tests/orchestrator/full_target/test_planning_decision_envelope.py -q -p no:cacheprovider
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+...                                                                      [100%]
+147 passed in 0.09s
+```
+
+**未做项：** 与本片一致（H1-A2b 的 Schema/黄金样例/打包；H1-F/H1-H 的准入与事件接线）。

@@ -15,6 +15,9 @@ H1-A2b; nothing here reads or writes those files.
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from agent_orchestrator.contracts.models import ContractError
@@ -704,6 +707,63 @@ def test_propose_method_payload_negatives(payload: dict) -> None:
 # --------------------------------------------------------------------------------------
 
 
+# A fixed, fully specified sample and the exact bytes / digest §15 requires.  The
+# values are pinned literally so no mutation of the canonicalisation (dropping
+# ``sort_keys``, hashing something other than the canonical bytes) can slide past.
+CANONICAL_SAMPLE = {
+    "schema_version": 1,
+    "decision_type": "REFINE",
+    "subject_key": "subject-root",
+    "rationale": "pick the registered method",
+    "reason_refs": [{"kind": "task", "id": "t-1", "semantic_revision": 1, "content_hash": HASH_A}],
+    "assumptions": [],
+    "payload": {
+        "method_ref": {
+            "kind": "method",
+            "id": "code.fix",
+            "semantic_revision": 2,
+            "content_hash": HASH_A,
+        },
+        "bindings": {"target": "x"},
+    },
+    "uncertainties": [],
+    "alternatives": [],
+    "replan_triggers": [],
+}
+CANONICAL_SAMPLE_JSON = (
+    '{"alternatives":[],"assumptions":[],"decision_type":"REFINE",'
+    '"payload":{"bindings":{"target":"x"},"method_ref":{"content_hash":"' + HASH_A + '",'
+    '"id":"code.fix","kind":"method","semantic_revision":2}},'
+    '"rationale":"pick the registered method",'
+    '"reason_refs":[{"content_hash":"' + HASH_A + '","id":"t-1","kind":"task",'
+    '"semantic_revision":1}],"replan_triggers":[],"schema_version":1,'
+    '"subject_key":"subject-root","uncertainties":[]}'
+)
+CANONICAL_SAMPLE_HASH = "22111ad0105becc45cb57da4fded387b87557bd880ea1d1a3bda29249a49af72"
+
+
+def _independent_canonical_json(value: object) -> str:
+    # Deliberately not the module helper: sorted keys, compact separators, no
+    # whitespace, exactly what §15 defines.
+    return json.dumps(
+        value, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=True
+    )
+
+
+def test_canonical_decision_json_matches_an_independent_canonicalisation() -> None:
+    envelope = PlanningDecisionEnvelopeV1.from_json(CANONICAL_SAMPLE)
+    assert canonical_decision_json(envelope) == _independent_canonical_json(envelope.to_json())
+
+
+def test_canonical_decision_json_and_hash_are_pinned_literals() -> None:
+    envelope = PlanningDecisionEnvelopeV1.from_json(CANONICAL_SAMPLE)
+    assert canonical_decision_json(envelope) == CANONICAL_SAMPLE_JSON
+    assert canonical_decision_hash(envelope) == CANONICAL_SAMPLE_HASH
+    assert (
+        hashlib.sha256(CANONICAL_SAMPLE_JSON.encode("utf-8")).hexdigest() == CANONICAL_SAMPLE_HASH
+    )
+
+
 def test_canonical_json_and_hash_ignore_object_key_order() -> None:
     left = _envelope("REFINE", REFINE_PAYLOAD, assumptions=_assumptions(1))
     # Same content, different top-level and nested insertion order.
@@ -714,7 +774,8 @@ def test_canonical_json_and_hash_ignore_object_key_order() -> None:
     e2 = PlanningDecisionEnvelopeV1.from_json(right)
     assert canonical_decision_json(e1) == canonical_decision_json(e2)
     assert canonical_decision_hash(e1) == canonical_decision_hash(e2)
-    assert canonical_decision_hash(e1) != ""
+    # A real digest, not a placeholder or empty string.
+    assert len(canonical_decision_hash(e1)) == 64
 
 
 def test_canonical_hash_depends_on_array_order() -> None:
