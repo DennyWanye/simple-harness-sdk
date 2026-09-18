@@ -46,23 +46,30 @@ def overlay_bound_producer_files(
     *,
     seed_paths: Collection[str],
     artifacts_by_producer: Mapping[str, Sequence[Artifact]],
+    read_only_producers: Collection[str] = (),
 ) -> list[UpstreamInput]:
     """The manifest entries plus each bound producer's accepted seed-path files.
 
     Producers the manifest did not name contribute nothing — that is the
     ORDER-only case §24.1 decision 4 already holds.  A path already in the
     manifest is left as the port document; a later producer does not override it.
+    P2.3u P2-1: new ``tests/`` files from a read-only producer stay off the
+    consumer baseline (only a write-step tests port should pre-lay tests).
     """
 
     occupied = {item.path: item for item in inputs}
     extra: dict[str, UpstreamInput] = {}
     seed = set(seed_paths)
+    read_only = set(read_only_producers)
     for item in inputs:
         for artifact in artifacts_by_producer.get(item.task_id, ()):
             if artifact.path in occupied or artifact.path in extra:
                 continue
-            if artifact.path not in seed and not _is_test_artifact(artifact.path):
-                continue
+            if artifact.path not in seed:
+                if not _is_test_artifact(artifact.path):
+                    continue
+                if item.task_id in read_only:
+                    continue
             extra[artifact.path] = UpstreamInput(
                 item.task_id,
                 artifact.path,

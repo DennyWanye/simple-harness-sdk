@@ -32,6 +32,7 @@
 - **兜底**：P2.3m 同哈希事后检查保留。
 - **提示词**：本片登记 `worker-hierarchical-v3`（不能改已有文件；需要改动时在报告里写明建议）。与 P2.3t 同名冲突，合后 v3 钉 t 的字节，默认 **`worker-hierarchical-v4`** 两句话都在；v1–v3 字节不动、digest 登记。
 - 测试：`test_read_only_leaf_write_guard.py` 9 + 冻结 +1；4 变异 KILLED。full_target **2921 passed / 2 skipped**（基线 2911/2，+10）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2w。
+- **核验处置**（`核验-P2.3u-1a6b320`，修后可合）：快照与 `read_only_rewrites.initial` 共用 `read_only_existing_paths` / `_read_only_initial`（retry 可重写自己的 REPORT.md）；连拒 3 次 `read_only_leaf_kept_writing`；快照 `WorkspaceError` fail-closed；只读叶新写 `tests/` 不进 overlay。+8 测试；full_target **2948/2**。
 
 **P2.3q：修复轮复用已验收只读叶、空 Planner 短路、合成方法宽度硬上限、拒绝理由分字段。** 分支 `p2.3q-repair-reuse-and-synthesis-shortcut`，基 d360750；版本号不动。第 4 批 4 局全部撞调用/attempt 上限：retire+refine 整网重铺（C2-r0 `funded_now=10`）、开局与修复轮空 Planner、10 叶合成方法、C1-r1 把只读取消说成 `rejected_by_root_review`。
 

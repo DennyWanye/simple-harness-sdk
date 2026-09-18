@@ -351,6 +351,37 @@ def test_overlay_places_new_test_files_that_are_not_on_the_seed() -> None:
     assert TESTS_PATH in {item.path for item in overlay}
 
 
+def test_overlay_drops_new_tests_written_by_a_read_only_leaf() -> None:
+    """P2.3u P2-1: a read-only leaf's new tests/ files must not pre-lay downstream."""
+
+    from agent_orchestrator.artifacts.bound_workspace import overlay_bound_producer_files
+    from agent_orchestrator.artifacts.versioning import UpstreamInput
+    from agent_orchestrator.contracts.models import Artifact
+
+    producer = "task-verify"
+    inputs = [UpstreamInput(producer, "REPORT.md", "a" * 64, "artifact-report")]
+    tests = Artifact(
+        id="artifact-tests",
+        mission_id="m",
+        task_id=producer,
+        attempt_id=f"{producer}:1",
+        type="file",
+        path=TESTS_PATH,
+        version=1,
+        content_hash="b" * 64,
+        size_bytes=8,
+        produced_by="w",
+        storage_uri="",
+    )
+    overlay = overlay_bound_producer_files(
+        inputs,
+        seed_paths={"metrics/collector.py"},
+        artifacts_by_producer={producer: [tests]},
+        read_only_producers={producer},
+    )
+    assert TESTS_PATH not in {item.path for item in overlay}
+
+
 def test_added_tests_evidence_is_detected_from_c1_wording() -> None:
     assert evidence_requires_added_tests(
         "tests covering the user goal must be added or turned from red to green and pass"

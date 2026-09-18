@@ -47,8 +47,12 @@ from agent_orchestrator.contracts.state_machines import MissionStopReason  # noq
 from agent_orchestrator.governance.policies import effective_tools  # noqa: E402
 from agent_orchestrator.orchestrator.commit_service import mission_account  # noqa: E402
 from agent_orchestrator.orchestrator.event_handler import Orchestrator  # noqa: E402
+from agent_orchestrator.orchestrator.occurrence_tasks import (  # noqa: E402
+    read_only_existing_paths,
+)
 from agent_orchestrator.runtime.assembly import OrchestratorConfig  # noqa: E402
 from agent_orchestrator.runtime.tool_gateway import (  # noqa: E402
+    MAX_READ_ONLY_EXISTING_REJECTIONS,
     WORKER_TOOLS,
     WorkspaceBinding,
     WorkspaceToolGateway,
@@ -362,6 +366,28 @@ def _run(world: _CodeWorld, tmp_path, provider: RoleScriptedProvider) -> dict[st
                 root = loop.assembled.workspaces.root / verify_attempts[0].id / COLLECTOR
                 if root.is_file():
                     collector_bytes = root.read_text(encoding="utf-8")
+            verify_records = []
+            for attempt in verify_attempts:
+                report_path = loop.assembled.workspaces.root / attempt.id / REPORT
+                collector_path = loop.assembled.workspaces.root / attempt.id / COLLECTOR
+                verify_records.append(
+                    {
+                        "id": attempt.id,
+                        "retry_of": attempt.retry_of,
+                        "status": str(attempt.status),
+                        "failure": dict(attempt.failure or {}),
+                        "report": (
+                            report_path.read_text(encoding="utf-8")
+                            if report_path.is_file()
+                            else ""
+                        ),
+                        "collector": (
+                            collector_path.read_text(encoding="utf-8")
+                            if collector_path.is_file()
+                            else ""
+                        ),
+                    }
+                )
             return {
                 "status": mission.status,
                 "stop_reason": mission.stop_reason,
@@ -374,6 +400,8 @@ def _run(world: _CodeWorld, tmp_path, provider: RoleScriptedProvider) -> dict[st
                 "patch_id": patch_id,
                 "refused_writes": refused,
                 "collector_bytes": collector_bytes,
+                "verify_records": verify_records,
+                "gateway": list(loop.assembled.gateway.calls),
                 "roles": dict(provider.by_role),
             }
 
@@ -469,3 +497,263 @@ def test_a_legacy_binding_without_read_only_existing_still_writes(tmp_path) -> N
     result = _write(gateway, "run-1", "a.md", "new\n")
     assert result.error_code is None, result
     assert workspaces.get("attempt-1", writable=False).read_text("a.md") == "new\n"
+
+
+# ======================================================================================
+# 7. P2.3u verification P1-1: retry snapshot is seed ∪ overlay, not the copied tree
+# ======================================================================================
+
+
+def test_read_only_existing_paths_is_seed_union_overlay_not_retry_outputs() -> None:
+    """The gateway snapshot is the same set ``read_only_rewrites`` uses as ``initial``."""
+
+    paths = read_only_existing_paths(
+        {"metrics/collector.py": SEED_COLLECTOR, "tests/t.py": "x"},
+        ("metrics/collector.py", "applied.patch"),
+        (),
+    )
+    assert "REPORT.md" not in paths
+    assert "metrics/collector.py" in paths
+    assert "applied.patch" in paths
+    assert "tests/t.py" in paths
+
+
+def test_a_retry_workspace_may_rewrite_its_own_report_but_not_seed(tmp_path) -> None:
+    """Verification reproduction: previous tree has seed + REPORT.md; retry create
+    copies both; the snapshot must still let the leaf rewrite REPORT.md."""
+
+    workspaces = WorkspaceManager(tmp_path / "ws")
+    first = workspaces.create("attempt-1", seed={COLLECTOR: SEED_COLLECTOR})
+    first.write_text(REPORT, "# round 1\n")
+    workspaces.create(
+        "attempt-2", seed={COLLECTOR: SEED_COLLECTOR}, previous=first.root
+    )
+    existing = read_only_existing_paths({COLLECTOR: SEED_COLLECTOR}, (), ())
+    gateway = WorkspaceToolGateway(workspaces)
+    gateway.bind(
+        "run-2",
+        WorkspaceBinding(
+            "attempt-2",
+            "work",
+            True,
+            WORKER_TOOLS,
+            read_only_existing=existing,
+        ),
+    )
+    rewritten = _write(gateway, "run-2", REPORT, "# round 2\n")
+    assert rewritten.error_code is None, rewritten
+    assert workspaces.get("attempt-2", writable=False).read_text(REPORT) == "# round 2\n"
+    blocked = _write(gateway, "run-2", COLLECTOR, NEW_COLLECTOR)
+    assert blocked.error_code == "read_only_existing_file", blocked
+    assert workspaces.get("attempt-2", writable=False).read_text(COLLECTOR) == SEED_COLLECTOR
+
+
+class _RewriteReportOnRetry:
+    """First verify writes REPORT.md; retry rewrites it and tries to patch source."""
+
+    def __init__(self) -> None:
+        self._queues: dict[str, list[Any]] = {}
+        self.verify_attempts = 0
+
+    def __call__(self, request: Any) -> Any:
+        from agent_orchestrator.testing.fixtures import package_of as _package_of
+
+        package = _package_of(request)
+        attempt_id = str((package.get("attempt") or {}).get("attempt_id") or "")
+        if attempt_id not in self._queues:
+            self._queues[attempt_id] = self._script(package)
+        queue = self._queues[attempt_id]
+        if not queue:
+            raise AssertionError(f"worker script exhausted for {attempt_id}")
+        step = queue.pop(0)
+        if callable(step) and not isinstance(step, (str, tuple)):
+            return step(request)
+        return step
+
+    def _script(self, package: dict[str, Any]) -> list[Any]:
+        goal = str((package.get("task_contract") or {}).get("goal") or "")
+        if "read the repository" in goal:
+            return _write_and_envelope(
+                [("facts.json", '{"tests": ["tests/test_public_collector.py"]}')],
+                ["facts.json"],
+                {"facts": "facts.json"},
+            )
+        if "reproduce" in goal:
+            return _write_and_envelope(
+                [("diagnosis.md", "# diagnosis\nconcurrent record loses counts\n")],
+                ["diagnosis.md"],
+                {"diagnosis": "diagnosis.md"},
+            )
+        if "apply a patch" in goal:
+            return _write_and_envelope(
+                [
+                    (COLLECTOR, PATCHED_COLLECTOR),
+                    ("applied.patch", "--- a/metrics/collector.py\n+++ b/metrics/collector.py\n"),
+                    (REPORT, "# patch\nlocked collector.record\n"),
+                ],
+                [COLLECTOR, "applied.patch", REPORT],
+                {"patch": "applied.patch"},
+            )
+        if "run the test suite" in goal:
+            self.verify_attempts += 1
+            report = f"# verify round {self.verify_attempts}\n"
+            boom = "tests/test_boom.py"
+            if self.verify_attempts == 1:
+                return _write_and_envelope(
+                    [
+                        (REPORT, report),
+                        (boom, "def test_boom():\n    assert False\n"),
+                    ],
+                    [REPORT],
+                    {"report": REPORT},
+                )
+            return [
+                ("workspace_write_file", {"path": COLLECTOR, "content": NEW_COLLECTOR}),
+                *_write_and_envelope(
+                    [
+                        (REPORT, report),
+                        (boom, "def test_boom():\n    assert True\n"),
+                    ],
+                    [REPORT],
+                    {"report": REPORT},
+                ),
+            ]
+        raise AssertionError(f"unexpected leaf goal: {goal!r}")
+
+
+def test_a_read_only_retry_after_verification_failed_may_rewrite_its_report(
+    tmp_path,
+) -> None:
+    """P1-1: first verify writes REPORT.md then fails code_test (verification_failed);
+    retry still rewrites REPORT.md and still cannot rewrite seed/overlay source."""
+
+    world = _world(tmp_path, key="p23u-retry-report")
+    worker = _RewriteReportOnRetry()
+    provider = RoleScriptedProvider(
+        {
+            "worker": [worker] * 40,
+            "critic": [critic_step(verdict="PASS", criteria_met=True)] * 16,
+            "root_reviewer": [_accepting_reviewer],
+        }
+    )
+    outcome = _run(world, tmp_path, provider)
+    records = outcome["verify_records"]
+    assert records[1]["retry_of"] == records[0]["id"], records
+    assert "# verify round 2" in records[1]["report"], records[1]["report"]
+    assert NEW_COLLECTOR not in records[1]["collector"]
+    assert records[1]["collector"] in {PATCHED_COLLECTOR, SEED_COLLECTOR, ""}
+    report_refused = [
+        call
+        for call in outcome["refused_writes"]
+        if str((call.get("arguments") or {}).get("path") or "").endswith("REPORT.md")
+        or str((call.get("arguments") or {}).get("path")) == REPORT
+    ]
+    assert report_refused == [], report_refused
+    collector_refused = [
+        call
+        for call in outcome["refused_writes"]
+        if COLLECTOR in str((call.get("arguments") or {}).get("path") or "")
+    ]
+    assert collector_refused, (
+        "retry must still be refused when rewriting overlay/seed source",
+        outcome["refused_writes"],
+    )
+
+
+# ======================================================================================
+# 8. P2-2: consecutive read_only_existing_file refusals are bounded
+# ======================================================================================
+
+
+def test_consecutive_read_only_existing_refusals_are_capped(tmp_path) -> None:
+    """Three consecutive existing-file writes end the streak with a named reason."""
+
+    assert MAX_READ_ONLY_EXISTING_REJECTIONS == 3
+    seed = {COLLECTOR: SEED_COLLECTOR}
+    gateway, workspaces = _gateway(tmp_path, existing=(COLLECTOR,), seed=seed)
+    codes = [
+        _write(gateway, "run-1", COLLECTOR, NEW_COLLECTOR + f"# {index}\n").error_code
+        for index in range(MAX_READ_ONLY_EXISTING_REJECTIONS + 1)
+    ]
+    assert codes[: MAX_READ_ONLY_EXISTING_REJECTIONS - 1] == [
+        "read_only_existing_file"
+    ] * (MAX_READ_ONLY_EXISTING_REJECTIONS - 1)
+    assert codes[MAX_READ_ONLY_EXISTING_REJECTIONS - 1] == "read_only_leaf_kept_writing"
+    assert codes[-1] == "read_only_leaf_kept_writing"
+    assert workspaces.get("attempt-1", writable=False).read_text(COLLECTOR) == SEED_COLLECTOR
+
+
+def test_a_new_file_write_resets_the_read_only_existing_streak(tmp_path) -> None:
+    seed = {COLLECTOR: SEED_COLLECTOR}
+    gateway, _workspaces = _gateway(tmp_path, existing=(COLLECTOR,), seed=seed)
+    assert _write(gateway, "run-1", COLLECTOR, NEW_COLLECTOR).error_code == (
+        "read_only_existing_file"
+    )
+    assert _write(gateway, "run-1", COLLECTOR, NEW_COLLECTOR).error_code == (
+        "read_only_existing_file"
+    )
+    assert _write(gateway, "run-1", REPORT, "# notes\n").error_code is None
+    third = _write(gateway, "run-1", COLLECTOR, NEW_COLLECTOR)
+    assert third.error_code == "read_only_existing_file", third
+
+
+# ======================================================================================
+# 9. P2-3: a failed snapshot refuses every write (fail-closed)
+# ======================================================================================
+
+
+def test_a_blocked_read_only_snapshot_refuses_every_write(tmp_path) -> None:
+    seed = {COLLECTOR: SEED_COLLECTOR}
+    gateway, workspaces = _gateway(tmp_path, existing=(COLLECTOR,), seed=seed)
+    gateway.bind(
+        "run-1",
+        WorkspaceBinding(
+            "attempt-1",
+            "work",
+            True,
+            WORKER_TOOLS,
+            read_only_existing=(COLLECTOR,),
+            read_only_writes_blocked=True,
+        ),
+    )
+    report = _write(gateway, "run-1", REPORT, "# verify\n")
+    source = _write(gateway, "run-1", COLLECTOR, NEW_COLLECTOR)
+    assert report.error_code == "read_only_snapshot_unavailable", report
+    assert source.error_code == "read_only_snapshot_unavailable", source
+    assert workspaces.get("attempt-1", writable=False).read_text(COLLECTOR) == SEED_COLLECTOR
+    assert not (workspaces.root / "attempt-1" / REPORT).exists()
+
+
+def test_a_workspace_error_while_snapshotting_blocks_writes_on_the_leaf(
+    tmp_path, monkeypatch
+) -> None:
+    from agent_orchestrator.artifacts.workspace import WorkspaceError
+
+    real = Orchestrator._read_only_initial
+    calls = {"n": 0}
+
+    def boom(self: Orchestrator, attempt: Any) -> dict[str, str]:
+        calls["n"] += 1
+        # `_dispatch` binds twice (CLAIMED then AGENT_CREATED); collect uses the
+        # same helper afterwards and must still see seed ∪ overlay hashes.
+        if calls["n"] <= 2:
+            raise WorkspaceError("snapshot failed")
+        return real(self, attempt)
+
+    monkeypatch.setattr(Orchestrator, "_read_only_initial", boom)
+    outcome = _collect_facts_leaf(
+        tmp_path,
+        key="p23u-snapshot-fail",
+        writes=[
+            (WINDOW, REWRITE),
+            ("facts.json", '{"tests": ["tests/test_public_window.py"]}'),
+        ],
+        artifacts=["facts.json"],
+    )
+    blocked = [
+        call
+        for call in outcome["gateway"]
+        if call.get("tool") == "workspace_write_file"
+        and "read_only_snapshot_unavailable" in str(call.get("outcome") or "")
+    ]
+    assert blocked, outcome["gateway"]

@@ -230,6 +230,7 @@ from .hierarchical_dispatch import (
 from .occurrence_tasks import (
     MAX_READ_ONLY_REWRITE_REJECTIONS,
     MAX_READ_ONLY_REWRITE_REPAIRS,
+    read_only_existing_paths,
     read_only_leaf,
     read_only_rewrites,
 )
@@ -1046,6 +1047,8 @@ class Orchestrator:
             call_key=f"{run_id}:{record.get('call_id')}",
             record=record,
         )
+        if record.get("error_code") == "read_only_leaf_kept_writing" and attempt is not None:
+            self._schedule_read_only_kept_writing_stop(attempt)
 
     def _record_tool_call(self, run_id: str, record: Mapping[str, Any]) -> None:
         """Review P1-3: an executed Worker tool call is a durable fact (once per SDK call id)."""
@@ -3833,6 +3836,59 @@ class Orchestrator:
         files.update(self.commit.fragment_validation_inputs(attempt.task_id))
         return files
 
+    def _read_only_initial(self, attempt: Attempt) -> dict[str, str]:
+        """Path → hash of seed ∪ overlay/upstream ∪ fragment baseline.
+
+        Same set ``read_only_rewrites`` uses as ``initial`` and the gateway
+        snapshot uses as ``read_only_existing``.  Retry copies of a previous
+        Attempt's new outputs are not in this map.
+        """
+
+        mission = self.store.get_mission(attempt.mission_id)
+        if mission is None:
+            raise WorkspaceError("read-only snapshot: mission missing")
+        seed = dict((mission.final_report or {}).get("workspace_seed", {}))
+        upstream = self._upstream_inputs(attempt)
+        baseline = self.commit.fragment_collection_baseline(attempt.id)
+        allowed = set(read_only_existing_paths(seed, (item.path for item in upstream), baseline))
+        initial: dict[str, str] = {}
+        for path, content in seed.items():
+            if path in allowed:
+                initial[path] = sha256_hex_text(content)
+        for item in upstream:
+            if item.path in allowed:
+                initial[item.path] = item.content_hash
+        for path, digest in dict(baseline).items():
+            if path in allowed:
+                initial[path] = str(digest)
+        return initial
+
+    def _schedule_read_only_kept_writing_stop(self, attempt: Attempt) -> None:
+        """End the Attempt after consecutive existing-file writes (P2.3u P2-2)."""
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._stop_read_only_leaf_kept_writing(attempt.id))
+
+    async def _stop_read_only_leaf_kept_writing(self, attempt_id: str) -> None:
+        attempt = self.store.get_attempt(attempt_id)
+        if attempt is None or attempt.status in TERMINAL_ATTEMPT:
+            return
+        intent = self.store.get_intent_for_subject(attempt_id)
+        if intent is not None:
+            await self._cancel_turn(intent)
+        attempt = self.store.get_attempt(attempt_id)
+        if attempt is None or attempt.status in TERMINAL_ATTEMPT:
+            return
+        self.commit.mark_attempt_lost(attempt_id, reason="read_only_leaf_kept_writing")
+        if intent is not None:
+            self._settle_intent(intent, "FAILED")
+        self._settle_if_known(attempt)
+        await self._release_attempt(attempt_id, cancel=True)
+        self._note(f"attempt {attempt_id}: read-only leaf kept writing → LOST")
+
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
         cap = config.get("max_tool_calls")
         context_profile = self._context_profile_for(config)
@@ -3846,17 +3902,15 @@ class Orchestrator:
         if self.commit.domain_for(attempt.mission_id).id == "are-v1":
             self.assembled.gateway.bind_are(attempt.mission_id)
         read_only_existing: tuple[str, ...] = ()
+        read_only_writes_blocked = False
         if config.get("read_only_leaf"):
-            # P2.3u: the files already in the tree (seed + P2.3o overlay) are what
-            # the gateway refuses to rewrite.  Same set ``read_only_rewrites`` uses
-            # as ``initial`` — listed here so the tool, not the collector, is first.
+            # P2.3u: seed ∪ overlay/upstream, the same set ``read_only_rewrites``
+            # uses as ``initial``.  A retry copy of the previous Attempt's REPORT.md
+            # is not in this snapshot, so the leaf can update its own report.
             try:
-                workspace = self.assembled.workspaces.get(
-                    str(config["attempt_id"]), writable=False
-                )
-                read_only_existing = tuple(workspace.list_files())
+                read_only_existing = tuple(sorted(self._read_only_initial(attempt)))
             except WorkspaceError:
-                read_only_existing = ()
+                read_only_writes_blocked = True
         self.assembled.gateway.bind(
             agent_id,
             WorkspaceBinding(
@@ -3873,6 +3927,7 @@ class Orchestrator:
                 context_policy=context_profile.context_policy,
                 tokenizer=context_profile.tokenizer,
                 read_only_existing=read_only_existing,
+                read_only_writes_blocked=read_only_writes_blocked,
             ),
         )
 
@@ -5294,15 +5349,8 @@ class Orchestrator:
         # D3-7': the Attempt's artifact set = what it listed ∪ what it changed relative to
         # its initial inputs (seed + upstream); protected paths are never registered as
         # produced work (a rewrite there is tampering, reported by rule_check instead).
-        initial = {
-            path: sha256_hex_text(content)
-            for path, content in dict(
-                (mission.final_report or {}).get("workspace_seed", {})
-            ).items()
-        }
-        for item in self._upstream_inputs(attempt):
-            initial[item.path] = item.content_hash
-        initial.update(self.commit.fragment_collection_baseline(attempt.id))
+        # P2.3u: same function ``_read_only_initial`` the gateway snapshot uses.
+        initial = self._read_only_initial(attempt)
         guarded = {
             path: sha256_hex_text(content)
             for path, content in self._protected_files(mission, task, attempt).items()
@@ -8963,12 +9011,20 @@ class Orchestrator:
                 producers = [
                     all_tasks[item.task_id] for item in inputs if item.task_id in all_tasks
                 ]
+                read_only_producers: set[str] = set()
+                for producer in producers:
+                    semantic = new_mode.semantics().task_semantics_of(
+                        mission.id, producer.id
+                    )
+                    if semantic is not None and read_only_leaf(semantic):
+                        read_only_producers.add(producer.id)
                 inputs = overlay_bound_producer_files(
                     inputs,
                     seed_paths=set(
                         (mission.final_report or {}).get("workspace_seed", {})
                     ),
                     artifacts_by_producer=self._artifacts_by_task(producers),
+                    read_only_producers=read_only_producers,
                 )
         except GraphIntegrityError as error:
             await self._plan_integrity_stop(mission, error)

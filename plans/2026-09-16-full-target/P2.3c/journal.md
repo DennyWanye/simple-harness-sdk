@@ -4035,6 +4035,28 @@ P2.3s+t（合并 c2f7ffe，核验归档 d3b81e4）与 P2.3u（b67fc9e）同基 `
 
 回归（合后）：定向 6 文件 **80 passed**；full_target **2940 passed / 2 skipped**（基线 2911/2，+6 s +13 t +10 u）；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 改动文件 `check` 清；`_new_mode` 仍 19；`contracts/` 零改动；冻结提示词旧版本 sha256 不变（v3 钉 t 字节 `ed827cf5…`，默认 v4 `d59d7804…`）。
 
+### 核验处置（2026-09-18，对照 `reviews/核验-P2.3u-1a6b320-2026-09-18.md`，结论「修后可合」）
+
+独立核验 P0 无，P1-1 必修。处置：
+
+- **P1-1**：`_bind_agent` 快照不再 `list_files()` 整棵已拷贝的前树。`_read_only_initial` 与 `read_only_existing_paths` 给出 seed ∪ overlay/upstream ∪ fragment baseline，与 P2.3m `read_only_rewrites` 的 `initial` 同一函数口径；收集路径改调同一 helper。retry 拷贝的上一 Attempt `REPORT.md` / 端口产物不进快照，第二轮仍能重写自己的报告，仍不能改 seed/overlay 源码。红测：`test_a_read_only_retry_after_verification_failed_may_rewrite_its_report`（第一轮写 REPORT.md + 失败测试 → `verification_failed` → retry 重写 REPORT.md、改 collector 仍 `read_only_existing_file`）。
+- **P2-2**：同一 Attempt 连续 `read_only_existing_file` 上限 `MAX_READ_ONLY_EXISTING_REJECTIONS=3`（与 `max_consecutive_same_tool` 同宽，非配置项）。达上限后网关返回 `read_only_leaf_kept_writing`，`_audit_tool_rejection` 取消 turn 并 `AttemptLost{read_only_leaf_kept_writing}`，不再烧满 `max_model_calls_per_turn`。写新文件会重置连拒计数。
+- **P2-3**：`_bind_agent` 遇 `WorkspaceError` 快照落空改为 fail-closed：`read_only_writes_blocked=True`，该叶所有 `workspace_write_file` 返回 `read_only_snapshot_unavailable`。
+- **P2-1**：`overlay_bound_producer_files(..., read_only_producers=)` 过滤只读生产者新写的 `tests/`，不预铺给下游。写型步的 tests 端口产物仍 overlay（既有 `test_overlay_places_new_test_files_that_are_not_on_the_seed`）。
+- **P2-4**：核验指出合入时除冲突文件外还改了 s 的 inspect / P2.3m 夹具（`workspace_root` 直写）。未放松产品断言，网关事前拒绝由 `test_read_only_leaf_write_guard.py` 覆盖。记录，不改代码。
+- **P2-5**：全库 `pytest tests -k "gateway or tool_gateway or policies"` 被 `gap_phase1` / `tests/integration` 缺 `asyncio` marker 打断，既有非本片。记录，不改。
+
+变异 2/2 KILLED（临时改源，从 `/tmp/p23u-disp-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `_bind_agent` 改回 `list_files()` | P1 retry e2e | **KILLED**（REPORT.md 停在 round 1） |
+| M2 | 连拒上限 `if False and streak >= N` | 连拒上限单测 | **KILLED**（第 3 次仍是 `read_only_existing_file`） |
+
+回归：full_target **2948 passed / 2 skipped**（核验基线 2940/2，+8）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变；冻结提示词 sha256 不变。
+
+未做：真实第 5 批未重跑（验收在跑，不碰 `.local-test-evidence` / grok CLI / llm_runtime）。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

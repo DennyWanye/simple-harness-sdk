@@ -384,6 +384,14 @@ def _collect_facts_leaf(
                 "rejections": [e.payload for e in events if e.type == "ResultRejected"],
                 "submitted": [e.type for e in events if e.type == "ResultSubmitted"],
                 "artifacts": sorted(a.path for a in loop.store.list_mission_artifacts(mission.id)),
+                "gateway": [
+                    {
+                        "tool": call.get("tool"),
+                        "outcome": call.get("outcome"),
+                        "error_code": call.get("error_code"),
+                    }
+                    for call in loop.assembled.gateway.calls
+                ],
             }
 
     return asyncio.run(case())
