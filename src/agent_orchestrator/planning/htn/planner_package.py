@@ -769,6 +769,28 @@ def _ref_sort_key(ref: Mapping[str, Any]) -> tuple[str, str, int, str]:
     )
 
 
+def _authority_sort_key(row: Any) -> tuple[str, str, int, str]:
+    """A total order over side-table rows that never raises on a malformed one.
+
+    ``_authority_index`` already drops a row without ``kind``/``id``; the sort merely
+    has to be *deterministic* for the rows that survive, so a missing or non-integer
+    revision is ordered as ``0``/``-1`` rather than being validated here.
+    """
+
+    if not isinstance(row, Mapping):
+        return ("", "", 0, str(row))
+    try:
+        revision = int(row.get("semantic_revision", 0))
+    except (TypeError, ValueError):
+        revision = 0
+    return (
+        str(row.get("kind", "")),
+        str(row.get("id", "")),
+        revision,
+        str(row.get("content_hash", "")),
+    )
+
+
 def _sorted_unique_refs(package: Mapping[str, Any]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, int, str]] = set()
     unique: list[dict[str, Any]] = []
@@ -928,7 +950,13 @@ def _decision_fields(
     also what lets a later reader re-run the collector on the stored request.
     """
 
-    authority_rows = _as_json_refs(authorities)
+    # The side table is an input *set*: its row order is not semantic, and letting it
+    # through would move ``visible_refs`` (and the whole package hash the request
+    # binding is computed over) for two callers that handed in the same facts.  Sort
+    # by the §5.1 quadruple, exactly as the refs it feeds are sorted.  The key is
+    # tolerant because a row the caller malformed is *skipped* downstream, not a
+    # crash mid-package: ordering must not be the thing that validates it.
+    authority_rows = sorted(_as_json_refs(authorities), key=_authority_sort_key)
     scoped = {**package, "authoritative_refs": authority_rows}
     # Both quantities come from **one** input — the scoped package — or the count
     # describes a different request than the list it is reported beside: the side

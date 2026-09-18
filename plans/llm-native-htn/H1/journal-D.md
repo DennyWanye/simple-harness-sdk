@@ -376,9 +376,9 @@ INCONSISTENT             : False
 
 | 完成标准 | 证据 | 结果 |
 |---|---|---|
-| 新测试文件全绿 | `65 passed in 0.55s` | ✅ |
-| 相关四文件全绿 | `338 passed in 9.50s` | ✅ |
-| full_target 全绿 | `3077 passed, 2 skipped in 127.73s (0:02:07)`（2 skipped 为既有条件跳过） | ✅ |
+| 新测试文件全绿 | `66 passed in 0.55s` | ✅ |
+| 相关四文件全绿 | `339 passed in 9.42s` | ✅ |
+| full_target 全绿 | `3078 passed, 2 skipped in 126.43s (0:02:06)`（2 skipped 为既有条件跳过） | ✅ |
 | 旧协议字节不变 | 黄金 `a9aa2e7e…` / `801b8e39…` 仍逐位相等 | ✅ |
 | ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |
 | sdk_gate.sh | 见 §9.5 | ✅ |
@@ -393,3 +393,24 @@ fix(h1-d): count omitted refs against the same scoped input as visible_refs
 
 `sdk_gate.sh <workspace> b13e757 --tests tests/orchestrator/full_target/test_planning_decision_package_v4.py
 --max-sentinel 26`：`ok=true`，8 项全 PASS。
+
+### 9.6 本轮新变异（复核 2 的 N/F 系列）与补充修复
+
+复核 2 报上一轮实现有 6 个变异 SURVIVED（N3 / N7 / N8 / N9 / F1 / F2）。本轮逐条重做，**全部
+KILLED**：
+
+```text
+N3  权威表索引忽略 kind      -> 2 failed, 63 passed
+N7  omitted 恒为 0（=F1）    -> 2 failed, 63 passed
+N8  权威表行序反转（未排序） -> 1 failed, 65 passed
+N9  resolution 优先于 acceptance -> 1 failed, 64 passed
+F2  权威表只保留第一个 binding   -> 2 failed, 64 passed
+```
+
+其中 **N8 暴露了一个真实缺陷**（不只是测试缺口）：调用方传入的 `authoritative_refs` 行序原先直接
+落进包，两个仅行序不同的调用会得到不同的 `visible_refs` 与 `authoritative_refs`，从而移动请求绑定
+所哈希的整包。已在 `_decision_fields` 里按 §5.1 四元组 `sorted(..., key=_authority_sort_key)` 定序
+（`_authority_sort_key` 容忍字段缺失，畸形行仍由下游 `_authority_index` 跳过，不由排序崩溃）。补测试
+`test_the_built_sidecar_is_order_independent` 钉死。
+
+变异均以 `/tmp` 副本注入并恢复（`diff -q` 校验恢复后与备份一致），未使用任何 git 写命令。

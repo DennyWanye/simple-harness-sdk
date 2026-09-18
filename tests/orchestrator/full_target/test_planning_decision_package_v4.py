@@ -1070,6 +1070,31 @@ def test_the_legacy_and_decision_packages_share_a_task_hash_source(tmp_path: Any
     assert by_key(package)[("task", "task-root")]["content_hash"] == stored
 
 
+def test_the_built_sidecar_is_order_independent(tmp_path: Any) -> None:
+    """P2-6: the caller's ``authoritative_refs`` order must not move the package.
+
+    The side table is an input *set*, so two calls that differ only in the order of
+    the rows they pass must build the same ``visible_refs`` **and** the same
+    ``authoritative_refs`` — the request binding hashes the whole package.
+    """
+
+    rows = [
+        authority("obligation", "obl-root", 1, "b" * 64),
+        authority("obligation", "obl-second", 1, "c" * 64),
+    ]
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    build = lambda refs: e2e.hierarchical_planner_package(  # noqa: E731
+        world.mission,
+        world.network(),
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+        authoritative_refs=refs,
+    )
+    forward, backward = build(rows), build(list(reversed(rows)))
+    assert forward["visible_refs"] == backward["visible_refs"]
+    assert forward["authoritative_refs"] == backward["authoritative_refs"]
+
+
 def test_the_authority_sidecar_is_a_plain_list_of_quadruples(tmp_path: Any) -> None:
     world = e2e.build_world(tmp_path, key="p23c-decided")
     package = e2e.hierarchical_planner_package(
