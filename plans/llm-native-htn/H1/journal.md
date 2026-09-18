@@ -99,3 +99,4 @@
   - P2-5（`to_json` 的 `str(status)`）、P2-6（`decision_id` 的 `str(ordinal)`）经复核为**等价写法**，非缺口，未改。
 - **复验：** 上述 9 个变异（7 P1 + 2 P2）现全部 KILLED；恢复实现后 targeted **52 passed**。`src/` 零改动（sha256 与上一轮一致）。
 - 未改 `contracts/` 既有文件；未 merge / push / stash / reset / checkout。
+- **全量闸门：** `sdk_gate.sh --full` 首跑 `legacy` 出现 `1 failed, 559 passed`（`tests/orchestrator/step02/test_review_round1.py::test_p1_stalled_executor_times_out_and_is_retried`）。该用例自带 5s 期限 + 2.0s stall 窗口，是时间敏感用例；本次首跑紧跟在 2 分钟 `full_target` 之后，负载导致超时窗口未命中。单独重跑与完整 legacy 集重跑均 **560 passed / 13 skipped / 0 failed**，`sdk_gate.sh --full` 重跑全绿；与本轮改动（仅测试与文档）无因果关系。
