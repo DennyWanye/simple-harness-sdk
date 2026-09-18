@@ -79,3 +79,23 @@
   - `test_planning_ref_all_fields_are_required_by_construction`：直接构造缺 `content_hash` 报 `TypeError`（KILL Y12）。
 - **复验：** 上述 7 个原存活变异现全部 KILLED；恢复实现后 targeted **45 passed**。
 - 未改 `contracts/` 既有文件；未 merge / push / stash / reset / checkout。
+
+---
+
+## H1-A1 第二轮处置（扩展变异 7 个 P1）
+
+- **依据：** `plans/llm-native-htn/H1/reviews/核验-H1-A1-2026-09-18.md`（第二轮复核）。上一轮 7 个缺口已确认 KILLED；本轮扩展变异又发现 7 个存活变异（P1 测试缺口）。
+- **根因：** 测试只覆盖了「字段存在 / 基本类型 / 能 `str()`」这条路径，没有覆盖 §39/§40 的**闭集枚举**与**字符串类型**语义，因此把校验换成 `str()` 后测试仍全绿。**实现本身正确**（7 处现均抛 `ContractError`），缺陷纯属测试未钉死。
+- **先确认现状：** 逐一直接构造 `status="GARBAGE"`、`rejection_codes=("NOPE",)`、`problem.code="NOPE"`、`field_path=123`、`expected=123`、`intent_id=123`、`prompt_hash="not-a-hash"`，当前 `src` 全部抛 `ContractError`（红点仅在变异后暴露）。
+- **P1 修复（每处 ≥1 反例）：**
+  - `test_feedback_status_closed_set_is_enforced`：`status="GARBAGE"` 拒绝（KILL P15）。
+  - `test_feedback_rejection_codes_element_closed_set_is_enforced`：`rejection_codes=("NOPE",)` 拒绝（KILL Q1）。
+  - `test_problem_detail_code_closed_set_is_enforced`：`code="NOPE"` 拒绝（KILL Q2）。
+  - `test_problem_detail_text_fields_reject_wrong_types`：`field_path=123` / `expected=123` / `observed=[1,2]` 拒绝（KILL P14、Q5）。
+  - `test_request_binding_intent_id_and_prompt_hash_are_strict`：`intent_id=123`、`prompt_hash="not-a-hash"` 拒绝（KILL Q6、Q7）。
+- **P2 顺手处理（4 条中的 2 条可测项）：**
+  - `test_request_binding_base_plan_revision_lower_bound_is_pinned`：`-1` 拒绝、`0` 接受（KILL P4）。
+  - `test_retry_budget_counters_lower_bound_is_pinned`：计数 `-1` 拒绝、`0` 接受（KILL P5）。
+  - P2-5（`to_json` 的 `str(status)`）、P2-6（`decision_id` 的 `str(ordinal)`）经复核为**等价写法**，非缺口，未改。
+- **复验：** 上述 9 个变异（7 P1 + 2 P2）现全部 KILLED；恢复实现后 targeted **52 passed**。`src/` 零改动（sha256 与上一轮一致）。
+- 未改 `contracts/` 既有文件；未 merge / push / stash / reset / checkout。

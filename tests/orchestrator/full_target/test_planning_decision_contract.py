@@ -375,6 +375,107 @@ def test_request_binding_package_version_lower_bound_is_pinned() -> None:
     assert PlanningRequestBinding.from_json(payload).package_version == 1
 
 
+def test_feedback_status_closed_set_is_enforced() -> None:
+    # §36: status is one of the eight PlanningDecisionStatus values.  A bare
+    # string that is not a member must be refused, not silently persisted.
+    with pytest.raises(ContractError):
+        PlanningFeedbackV1(
+            previous_decision_id="pd-0123456789abcdef01234567",
+            status="GARBAGE",
+            rejection_codes=(),
+            problems=(),
+            changed_refs=(),
+            budgets=_retry_budget(),
+        )
+
+
+def test_feedback_rejection_codes_element_closed_set_is_enforced() -> None:
+    # §33: every element of rejection_codes is a PlanningDecisionRejectionCode.
+    with pytest.raises(ContractError):
+        PlanningFeedbackV1(
+            previous_decision_id="pd-0123456789abcdef01234567",
+            status=PlanningDecisionStatus.REJECTED,
+            rejection_codes=("NOPE",),
+            problems=(),
+            changed_refs=(),
+            budgets=_retry_budget(),
+        )
+
+
+def test_problem_detail_code_closed_set_is_enforced() -> None:
+    # §40: code is a PlanningDecisionRejectionCode, not an arbitrary string.
+    with pytest.raises(ContractError):
+        PlanningProblemDetailV1(
+            code="NOPE",
+            subject_ref=None,
+            field_path=None,
+            detail="a detail",
+        )
+
+
+def test_problem_detail_text_fields_reject_wrong_types() -> None:
+    # §40: field_path / expected / observed are strings (or null); a non-string
+    # must raise rather than being coerced by str().
+    for field, wrong in (
+        ("field_path", 123),
+        ("expected", 123),
+        ("observed", [1, 2]),
+    ):
+        kwargs = {"field_path": None, "expected": None, "observed": None}
+        kwargs[field] = wrong
+        with pytest.raises(ContractError):
+            PlanningProblemDetailV1(
+                code=PlanningDecisionRejectionCode.METHOD_NOT_FOUND,
+                subject_ref=None,
+                detail="a detail",
+                **kwargs,
+            )
+
+
+def test_request_binding_intent_id_and_prompt_hash_are_strict() -> None:
+    # BL-7 adds intent_id, and prompt_hash must stay a lowercase SHA-256 digest;
+    # neither may be coerced from a non-string or accept a malformed hash.
+    base = _request_binding().to_json()
+    bad_intent = dict(base)
+    bad_intent["intent_id"] = 123
+    with pytest.raises(ContractError):
+        PlanningRequestBinding.from_json(bad_intent)
+    bad_hash = dict(base)
+    bad_hash["prompt_hash"] = "not-a-hash"
+    with pytest.raises(ContractError):
+        PlanningRequestBinding.from_json(bad_hash)
+
+
+def test_request_binding_base_plan_revision_lower_bound_is_pinned() -> None:
+    # §34: base_plan_revision is a non-negative counter; 0 is legal, -1 is not.
+    base = _request_binding().to_json()
+    base["base_plan_revision"] = -1
+    with pytest.raises(ContractError):
+        PlanningRequestBinding.from_json(base)
+    base["base_plan_revision"] = 0
+    assert PlanningRequestBinding.from_json(base).base_plan_revision == 0
+
+
+def test_retry_budget_counters_lower_bound_is_pinned() -> None:
+    # §39: remaining counters may be zero; a negative is a contract error.
+    with pytest.raises(ContractError):
+        PlanningRetryBudgetView(
+            same_request_format_retries_remaining=-1,
+            planning_rounds_remaining=0,
+            synthesis_asks_remaining=0,
+            root_review_repairs_remaining=0,
+            repeated_failure_before_escalation_remaining=None,
+        )
+    zeroed = PlanningRetryBudgetView(
+        same_request_format_retries_remaining=0,
+        planning_rounds_remaining=0,
+        synthesis_asks_remaining=0,
+        root_review_repairs_remaining=0,
+        repeated_failure_before_escalation_remaining=None,
+    )
+    assert zeroed.same_request_format_retries_remaining == 0
+
+
 # --------------------------------------------------------------------------------------
 # PlanningRefV1 negative inputs (§17)
 # --------------------------------------------------------------------------------------
