@@ -265,9 +265,13 @@ class PlanningDecisionStore:
 
         The same ``(request_id, attempt_ordinal, raw_output_hash)`` returns the row
         that is already there.  The same ``(request_id, attempt_ordinal)`` with a
-        different raw output is an identity conflict.  A later call may advance the
-        status and fill in the columns it has learned by then; it never blanks a
-        column and never moves a status backwards.
+        different raw output is an identity conflict.
+
+        A later call may advance the status and fill in what this attempt has learned.
+        The row is the one attempt's evaluation record, so a step that carries nothing
+        new must not delete what an earlier step stored: every learned column is only
+        overwritten by a value, and an empty ``detail`` / ``rejection_codes`` is "no
+        new information", not "erase the column".  The status never moves backwards.
         """
 
         request = identifier(request_id, "planning_decisions.request_id")
@@ -311,11 +315,16 @@ class PlanningDecisionStore:
                     request_id=request,
                     attempt_ordinal=ordinal,
                 )
+                # An empty evaluation carries no information: it must not blank what
+                # an earlier step of the same attempt stored (§35: the row *is* the
+                # attempt's record).  Non-empty values are the later step's answer and
+                # do replace the earlier one.
                 connection.execute(
                     "UPDATE planning_decisions SET status = ?, raw_artifact_ref ="
                     " COALESCE(?, raw_artifact_ref), canonical_json = COALESCE(?, canonical_json),"
                     " canonical_hash = COALESCE(?, canonical_hash), decision_type ="
-                    " COALESCE(?, decision_type), rejection_codes_json = ?, detail_json = ?"
+                    " COALESCE(?, decision_type), rejection_codes_json ="
+                    " COALESCE(?, rejection_codes_json), detail_json = COALESCE(?, detail_json)"
                     " WHERE decision_id = ?",
                     (
                         str(lifecycle),
@@ -323,8 +332,8 @@ class PlanningDecisionStore:
                         canonical,
                         canonical_digest,
                         kind,
-                        codes_json,
-                        detail_json,
+                        None if not codes else codes_json,
+                        None if not document else detail_json,
                         decision,
                     ),
                 )

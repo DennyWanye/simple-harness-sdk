@@ -60,6 +60,11 @@ FROZEN_16_CHECKSUM = "239e8fdcd6a3f4ebb6fbe0073d416c2f6607ca927dc2a324bcdd322fcf
 FROZEN_17_CHECKSUM = "ffb48ba4314a625adcba69e33e83bd8b06f921621282e16beb62c48da66531b1"
 FROZEN_18_CHECKSUM = "a24b4ef345f3ef46ec4b43ee3d68da5f6cc3372aae7968dcc0b7b7a9efd671d8"
 
+#: Migration 19 as shipped.  Same discipline as 16/17/18: a byte in this DDL is frozen,
+#: and a quiet edit has to show up as a checksum failure here, not as a support ticket
+#: from a library whose upgrade suddenly reports ``SchemaIncompatible`` (report P2-2).
+MIGRATION_19_CHECKSUM = "a50c5eaf2d4a137265623670ad39affa184473e6e3fd10e654a3ca28f48812e0"
+
 NEW_TABLES = ("mission_planning_protocols", "planning_requests", "planning_decisions")
 
 
@@ -195,6 +200,8 @@ def test_migration_nineteen_is_the_new_head() -> None:
     assert schema.SCHEMA_VERSION == 19
     assert schema.SCHEMA_NAME == "orchestrator-planning-decision-v1"
     assert schema.MIGRATIONS[-1].ddl is planning_decision_schema.DDL
+    assert schema.MIGRATIONS[18].checksum == MIGRATION_19_CHECKSUM
+    assert schema.checksum() == MIGRATION_19_CHECKSUM
 
 
 def test_a_fresh_library_has_the_three_strict_tables(store: Store) -> None:
@@ -208,50 +215,64 @@ def test_a_fresh_library_has_the_three_strict_tables(store: Store) -> None:
     assert set(planning_decision_schema.DDL.split("CREATE TABLE")) - {""}
 
 
+#: Migration 19 as shipped.  ``(name, declared type, NOT NULL, PRIMARY KEY)`` per
+#: column, in ``PRAGMA table_info`` order.  Like 16/17/18, the DDL is frozen: dropping a
+#: ``NOT NULL`` (or a PK, or changing a type) would silently change the migration's
+#: checksum and make every deployed library report ``SchemaIncompatible``.
+PROTOCOL_SCHEMA: dict[str, tuple[tuple[str, str, bool, bool], ...]] = {
+    "mission_planning_protocols": (
+        ("mission_id", "TEXT", True, True),
+        ("protocol_version", "TEXT", True, False),
+        ("package_version", "INTEGER", True, False),
+        ("prompt_version", "TEXT", True, False),
+        ("binding_hash", "TEXT", True, False),
+        ("created_at", "REAL", True, False),
+    ),
+    "planning_requests": (
+        ("request_id", "TEXT", True, True),
+        ("mission_id", "TEXT", True, False),
+        ("protocol_version", "TEXT", True, False),
+        ("package_version", "INTEGER", True, False),
+        ("package_hash", "TEXT", True, False),
+        ("base_plan_revision", "INTEGER", True, False),
+        ("requirements_revision", "INTEGER", True, False),
+        ("scope_epoch_digest", "TEXT", True, False),
+        ("subject_bindings_hash", "TEXT", True, False),
+        ("visible_refs_digest", "TEXT", True, False),
+        ("prompt_version", "TEXT", True, False),
+        ("prompt_hash", "TEXT", True, False),
+        ("intent_id", "TEXT", True, False),
+        ("created_at", "REAL", True, False),
+    ),
+    "planning_decisions": (
+        ("decision_id", "TEXT", True, True),
+        ("request_id", "TEXT", True, False),
+        ("attempt_ordinal", "INTEGER", True, False),
+        ("raw_output_hash", "TEXT", True, False),
+        ("raw_artifact_ref", "TEXT", False, False),
+        ("canonical_json", "TEXT", False, False),
+        ("canonical_hash", "TEXT", False, False),
+        ("decision_type", "TEXT", False, False),
+        ("status", "TEXT", True, False),
+        ("rejection_codes_json", "TEXT", True, False),
+        ("detail_json", "TEXT", True, False),
+        ("created_at", "REAL", True, False),
+    ),
+}
+
+
 def test_the_protocol_columns_are_exactly_the_section_eight_dot_two_columns(store: Store) -> None:
-    """The DDL is copied verbatim: column names and order are the wire contract."""
+    """The DDL is copied verbatim: names, order, types, NOT NULL and PK are the contract.
 
-    def columns(table: str) -> list[str]:
-        return [row[1] for row in store.connection.execute(f"PRAGMA table_info({table})")]
+    Pinning only the names would let a dropped ``NOT NULL`` through (report P1-1).
+    """
 
-    assert columns("mission_planning_protocols") == [
-        "mission_id",
-        "protocol_version",
-        "package_version",
-        "prompt_version",
-        "binding_hash",
-        "created_at",
-    ]
-    assert columns("planning_requests") == [
-        "request_id",
-        "mission_id",
-        "protocol_version",
-        "package_version",
-        "package_hash",
-        "base_plan_revision",
-        "requirements_revision",
-        "scope_epoch_digest",
-        "subject_bindings_hash",
-        "visible_refs_digest",
-        "prompt_version",
-        "prompt_hash",
-        "intent_id",
-        "created_at",
-    ]
-    assert columns("planning_decisions") == [
-        "decision_id",
-        "request_id",
-        "attempt_ordinal",
-        "raw_output_hash",
-        "raw_artifact_ref",
-        "canonical_json",
-        "canonical_hash",
-        "decision_type",
-        "status",
-        "rejection_codes_json",
-        "detail_json",
-        "created_at",
-    ]
+    for table, expected in PROTOCOL_SCHEMA.items():
+        rows = [
+            (row[1], row[2].upper(), bool(row[3]), bool(row[5]))
+            for row in store.connection.execute(f"PRAGMA table_info({table})")
+        ]
+        assert rows == list(expected), table
 
 
 # --------------------------------------------------------------------------------------
@@ -520,6 +541,80 @@ def test_status_advances_forward_on_the_same_row(
     compiled = record(decisions, status=PlanningDecisionStatus.COMPILED)
     assert compiled["status"] == str(PlanningDecisionStatus.COMPILED)
     assert len(_decision_rows(store)) == 1
+
+
+def test_a_forward_step_does_not_erase_evidence(
+    store: Store, decisions: PlanningDecisionStore
+) -> None:
+    """Advancing the status is not a licence to blank the evaluation columns.
+
+    A row is one attempt, and the steps of one attempt see the same evaluation.  A
+    later call that carries no detail (or an empty rejection list) therefore leaves
+    what the earlier step stored: the store fills in what it learns and never blanks a
+    column (report P2-1).
+    """
+
+    decisions.insert_planning_request(request_binding())
+    decoded = record(
+        decisions,
+        status=PlanningDecisionStatus.DECODED,
+        detail={"stage": "decode", "rich": "value"},
+        rejection_codes=("DECISION_BLOCK_MISSING",),
+    )
+    # The step that has nothing new to say says nothing: an empty object and an empty
+    # list mean "no new information", not "erase what is there".
+    advanced = record(decisions, status=PlanningDecisionStatus.ADMITTED, detail={})
+    assert advanced["decision_id"] == decoded["decision_id"]
+    assert advanced["status"] == "ADMITTED"
+    assert advanced["detail"] == {"stage": "decode", "rich": "value"}
+    assert advanced["rejection_codes"] == ["DECISION_BLOCK_MISSING"]
+    assert decisions.get_planning_decision_by_attempt("request-1", 0) == advanced
+
+
+def test_a_forward_step_may_replace_the_evaluation_when_it_has_new_detail(
+    store: Store, decisions: PlanningDecisionStore
+) -> None:
+    """Filling in is allowed to overwrite with real information, not to empty a column."""
+
+    decisions.insert_planning_request(request_binding())
+    record(decisions, status=PlanningDecisionStatus.DECODED, detail={"stage": "decode"})
+    advanced = record(
+        decisions,
+        status=PlanningDecisionStatus.ADMITTED,
+        detail={"stage": "admit"},
+        rejection_codes=("EVIDENCE_REQUIRED",),
+    )
+    assert advanced["detail"] == {"stage": "admit"}
+    assert advanced["rejection_codes"] == ["EVIDENCE_REQUIRED"]
+
+
+def test_every_terminal_status_freezes_the_row(
+    store: Store, decisions: PlanningDecisionStore
+) -> None:
+    """§36: the five statuses that end an attempt all absorb; none is walkable out of."""
+
+    terminal = {
+        PlanningDecisionStatus.UNREADABLE,
+        PlanningDecisionStatus.REJECTED,
+        PlanningDecisionStatus.COMMIT_REJECTED,
+        PlanningDecisionStatus.COMMITTED,
+        PlanningDecisionStatus.NO_STATE_CHANGE,
+    }
+    for index, status in enumerate(sorted(terminal, key=str)):
+        request_id = f"request-{index}"
+        decisions.insert_planning_request(request_binding(request_id=request_id))
+        record(
+            decisions,
+            request_id=request_id,
+            status=status,
+            rejection_codes=("MALFORMED_DECISION",),
+        )
+        for target in (PlanningDecisionStatus.ADMITTED, PlanningDecisionStatus.COMPILED):
+            with pytest.raises(StoreConflict):
+                record(decisions, request_id=request_id, status=target)
+        assert (
+            decisions.get_planning_decision_by_attempt(request_id, 0)["status"] == str(status)
+        )
 
 
 def test_status_never_goes_backwards(store: Store, decisions: PlanningDecisionStore) -> None:

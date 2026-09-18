@@ -57,13 +57,13 @@
 - **红：** 先写两个测试文件。首跑（`test_planning_decision_store.py`）收集即红：
   `ModuleNotFoundError: No module named 'agent_orchestrator.storage.planning_decision_store'`。
 - **绿：** 实现 `planning_decision_schema.py` / `planning_decision_store.py` 并追加 migration 19 后，
-  两个新文件 **32 passed**（下表给出实现后实测尾行）。
+  两个新文件 **35 passed**（下表给出实现后实测尾行）。
 
 ### 实测（命令与尾行原样）
 
 ```text
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_store.py tests/orchestrator/full_target/test_planning_decision_request_binding.py -q -p no:cacheprovider
-32 passed in 0.35s
+35 passed in 0.41s
 ```
 
 ```text
@@ -73,7 +73,7 @@ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_htn_s
 
 ```text
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
-3044 passed, 2 skipped in 124.94s (0:02:04)
+3046 passed, 2 skipped in 125.99s (0:02:05)
 ```
 
 ```text
@@ -139,10 +139,72 @@ M1 的第一次尝试**SURVIVED**：我的 S8 用了「不同 raw ⇒ 不同 `de
 - [x] 同 raw replay 幂等；同 ordinal 不同 raw → `StoreConflict`（S7 / S8）。
 - [x] 无 `PlanningDecision*` 事件被 append（本片 diff 零 `append_event`）。
 - [x] 未改 `policy_snapshot` / `SNAPSHOT_FIELDS` / `hierarchical_dispatch` / `event_handler`。
-- [x] full_target 0 新失败（3044 passed）；旧模式 560/13/0；哨兵 19。
+- [x] full_target 0 新失败（3046 passed）；旧模式 560/13/0；哨兵 19。
 - [x] 钉死 18 的测试已改为 19 并在本文点名（§4）。
 - [x] 变异 ≥3 全 killed（§5）。
 - [x] §59 至少覆盖：同 raw replay、同 ordinal 不同 raw、写入后 rollback（S10 `InjectedCrash`、调用方事务回滚）。
-- [ ] 独立核验（不同会话）——本片不做。
+- [x] 独立核验（不同会话）——已完成（核验报告：`plans/llm-native-htn/H1/reviews/核验-H1-B-2026-09-18.md`，结论「修后可合」）。
 
 **提交：** `feat(h1-b): migration 19 and the planning-decision store`
+
+---
+
+## 7. 第 1 轮处置（核验：修后可合）
+
+核验报告 `plans/llm-native-htn/H1/reviews/核验-H1-B-2026-09-18.md` 判「修后可合」：无 P0，1 个 P1、2 个 P2。以下逐条处置。
+
+### P1-1（必修）DDL 钉死测试只钉列名，未钉 `NOT NULL` / `PK`
+
+- **问题：** `test_planning_decision_store.py:211` 的 `test_the_protocol_columns_are_exactly_the_section_eight_dot_two_columns`
+  只比较 `PRAGMA table_info` 的**列名**。核验实测把 `planning_requests.intent_id`、`planning_decisions.status`、
+  `planning_decisions.raw_output_hash`、`mission_planning_protocols.prompt_version` 任一列的 `NOT NULL` 去掉后，
+  full_target **3044 全绿**（变异存活 = 测试缺口）。这与 B.5「三表 STRICT」「DDL 逐字一致」的验收意图不符。
+- **修法：** 新增模块常量 `PROTOCOL_SCHEMA`，把三张表逐列钉成
+  `(name, declared type, NOT NULL, PRIMARY KEY)`（按 `PRAGMA table_info` 顺序），测试改为整表逐列比对。
+- **复验（变异全 killed）：**
+
+| 变异 | 结果 |
+|---|---|
+| 去掉 `planning_decisions.status` 的 `NOT NULL` | **KILLED**（2 failed） |
+| 去掉 `mission_planning_protocols.prompt_version` 的 `NOT NULL` | **KILLED**（2 failed） |
+| 去掉 `planning_decisions.raw_output_hash` 的 `NOT NULL` | **KILLED**（2 failed） |
+| 去掉 `planning_requests.intent_id` 的 `NOT NULL` | **KILLED**（2 failed） |
+| 去掉 `mission_planning_protocols.mission_id` 的 `PRIMARY KEY` | **KILLED**（2 failed） |
+
+### P2-1（建议）状态前进时 `detail_json` / `rejection_codes_json` 被无条件清空
+
+- **问题：** `planning_decision_store.py:315` 的 UPDATE 对 `detail_json` / `rejection_codes_json` 无条件覆盖，
+  与 `:269` docstring「never blanks a column」矛盾；核验实测 `DECODED` 写入 `detail`/`rejection_codes` 后，
+  再以 `ADMITTED` + 空值推进会把两列清空。
+- **修法（取核验建议的第一支）：** 两列改为「非空才覆盖」（与 `canonical_json/hash/decision_type/raw_artifact_ref` 同规则），
+  并把 docstring 改成准确表述：`detail` / `rejection_codes` 为空 = 「本步没有新信息」，非空 = 本步的答案、覆盖旧值。
+  先写红测试 `test_a_forward_step_does_not_erase_evidence`（修前 1 failed），再实现。
+- **复验：** 变异「把两列改回无条件覆盖」**KILLED**（1 failed）；新增
+  `test_a_forward_step_may_replace_the_evaluation_when_it_has_new_detail` 钉住「非空可覆盖」。
+
+### P2-2（建议）migration 19 未钉冻结 checksum
+
+- **问题：** `grep -rn "MIGRATION_19\|19_CHECKSUM" tests/` 无命中；16/17/18 都有硬编码 checksum 常量，19 只被
+  `MIGRATIONS[-1].ddl is planning_decision_schema.DDL` 间接钉住，DDL 漂移不会以 checksum 形式报错。
+- **修法：** 新增常量 `MIGRATION_19_CHECKSUM = "a50c5eaf2d4a137265623670ad39affa184473e6e3fd10e654a3ca28f48812e0"`，
+  并在 `test_migration_nineteen_is_the_new_head` 断言 `schema.MIGRATIONS[18].checksum == MIGRATION_19_CHECKSUM`
+  与 `schema.checksum() == MIGRATION_19_CHECKSUM`。
+
+### 处置轮验收（命令与尾行原样）
+
+```text
+PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_store.py tests/orchestrator/full_target/test_planning_decision_request_binding.py -q -p no:cacheprovider
+35 passed in 0.41s
+```
+
+```text
+PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
+3046 passed, 2 skipped in 125.99s (0:02:05)
+```
+
+```text
+PYTHONPATH=src uv run --offline ruff check src/agent_orchestrator/storage/ tests/orchestrator/full_target/test_planning_decision_store.py tests/orchestrator/full_target/test_planning_decision_request_binding.py tests/orchestrator/full_target/test_htn_store.py tests/orchestrator/full_target/test_htn_end_to_end.py
+All checks passed!
+```
+
+**处置提交：** `fix(h1-b): pin DDL NOT NULL/PK, keep evaluation on status advance, freeze migration 19 checksum`
