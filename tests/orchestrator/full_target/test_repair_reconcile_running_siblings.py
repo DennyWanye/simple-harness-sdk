@@ -77,6 +77,7 @@ from agent_orchestrator.storage.htn_store import HtnStore  # noqa: E402
 from agent_orchestrator.testing.fixtures import (  # noqa: E402
     RoleScriptedProvider,
     critic_step,
+    envelope_step,
     method_proposal_step,
     package_of,
 )
@@ -85,9 +86,10 @@ from agent_orchestrator.testing.fixtures import (  # noqa: E402
 class _SixLeafWorker:
     """C1 six-leaf Worker: inspect rewrites twice; verify hangs until cancelled."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, workspace_root: Path | None = None) -> None:
         self.inspect_attempts = 0
         self.verify_started = 0
+        self.workspace_root = workspace_root
         self._queues: dict[str, list[Any]] = {}
 
     def __call__(self, request: Any) -> Any:
@@ -129,15 +131,42 @@ class _SixLeafWorker:
             )
         if "inspect the changeset" in goal:
             self.inspect_attempts += 1
-            return _write_and_envelope(
-                [
-                    ("metrics/collector.py", NEW_COLLECTOR),
-                    ("metrics/reporter.py", NEW_COLLECTOR),
-                    ("findings.md", "# inspect rewrote product files\n"),
-                ],
-                ["metrics/collector.py", "metrics/reporter.py", "findings.md"],
-                {"findings": "findings.md"},
-            )
+            # P2.3u: the gateway refuses workspace_write_file on existing
+            # source.  These tests still exercise the collector fallback and
+            # P2.3s reconcile, so the rewrite is applied on the attempt tree.
+            if self.workspace_root is None:
+                raise AssertionError(
+                    "inspect rewrite needs workspace_root to bypass the write guard"
+                )
+            attempt_id = str((package.get("attempt") or {}).get("attempt_id") or "")
+            root = self.workspace_root
+            artifacts = ["metrics/collector.py", "metrics/reporter.py", "findings.md"]
+            outputs = {"findings": "findings.md"}
+
+            def poke(_request: Any, *, _aid: str = attempt_id) -> Any:
+                (root / _aid / "metrics/collector.py").write_text(
+                    NEW_COLLECTOR, encoding="utf-8"
+                )
+                (root / _aid / "metrics/reporter.py").write_text(
+                    NEW_COLLECTOR, encoding="utf-8"
+                )
+                return (
+                    "workspace_write_file",
+                    {
+                        "path": "findings.md",
+                        "content": "# inspect rewrote product files\n",
+                    },
+                )
+
+            return [
+                poke,
+                envelope_step(
+                    summary="scripted leaf",
+                    artifacts=artifacts,
+                    claims=["scripted"],
+                    override=lambda body: {**body, "outputs": dict(outputs)},
+                ),
+            ]
         if "run the test suite" in goal:
             self.verify_started += 1
             hang = [("workspace_list", {"path": "."})] * 12
@@ -328,7 +357,7 @@ def test_six_leaf_repair_cancels_the_running_sibling_and_completes(tmp_path) -> 
 
     evidence = Path(tmp_path) / "evidence"
     world = _six_leaf_world(tmp_path, key="p23s-e2e-six")
-    worker = _SixLeafWorker()
+    worker = _SixLeafWorker(workspace_root=evidence / "workspaces")
     invented = _four_step("code.fix-by-patch-then-verify.repair", suffix="-v2")
     provider = RoleScriptedProvider(
         {
@@ -388,7 +417,7 @@ def test_cancelling_the_rewriting_leaf_leaves_no_open_attempt(tmp_path) -> None:
 
     evidence = Path(tmp_path) / "evidence"
     world = _six_leaf_world(tmp_path, key="p23s-leaf-a-closed")
-    worker = _SixLeafWorker()
+    worker = _SixLeafWorker(workspace_root=evidence / "workspaces")
     invented = _four_step("code.fix-by-patch-then-verify.repair", suffix="-v2")
     provider = RoleScriptedProvider(
         {
@@ -426,7 +455,7 @@ def test_spent_repair_stops_named_not_no_dispatchable_work(tmp_path) -> None:
 
     evidence = Path(tmp_path) / "evidence"
     world = _six_leaf_world(tmp_path, key="p23s-named-stop")
-    worker = _SixLeafWorker()
+    worker = _SixLeafWorker(workspace_root=evidence / "workspaces")
     provider = RoleScriptedProvider(
         {
             "worker": [worker] * 80,

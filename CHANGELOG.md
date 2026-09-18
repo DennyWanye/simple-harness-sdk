@@ -1,4 +1,4 @@
-## 0.12.2 — P2.3e–P2.3t：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放、修复轮 reconcile 仍在跑的兄弟 attempt、准则驱动写型测试端口（2026-09-18）
+## 0.12.2 — P2.3e–P2.3u：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放、修复轮 reconcile 仍在跑的兄弟 attempt、准则驱动写型测试端口、只读叶写守卫事前阻断（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -24,6 +24,14 @@
 - **overlay**：绑定生产者的 `tests/` 新文件即使不在 seed 也预铺。
 - **具名停机**：`max_root_review_repairs` 用尽后 `stop_reason=root_review_repairs_exhausted`（字符串，不改 `MissionStopReason` 枚举），`admitted_not_dispatched=[]`，READY 由 `fail_mission` 级联取消，守恒成立。
 - 测试：`test_criteria_driven_write_step.py` 11 + 冻结 digest +2；4 变异 KILLED。full_target **2924 passed / 2 skipped**（基线 2911/2，+13）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2v。
+
+**P2.3u：只读叶写守卫（事前拒绝已存在文件）。** 分支 `p2.3u-read-only-leaf-write-guard`，基 f2dfa64；版本号不动。第 5 批 H-L3-{C1-r0,C1-r1,C2-r1} 每一局只读叶（`external_read` / `tests.run` 或 `repo.read`）用 `workspace_write_file` 改了已有源码；P2.3k/m 事后 `ResultRejected{read_only_leaf_rewrote_workspace}` 白烧整次 Attempt。提示词已禁止，模型照改。
+
+- **事前**：分层只读叶绑定瞬间把工作区已有文件（种子 + P2.3o overlay）记入 `WorkspaceBinding.read_only_existing`；对这些路径的 `workspace_write_file` 返回 `read_only_existing_file`（说明该叶只读、把发现写进声明端口 / REPORT.md），文件不变，不 ResultRejected、不消耗 Attempt。声明输出的新文件允许写；写型叶不受影响。
+- **清单**：`effective_tools(..., read_only_leaf=)` 对只读叶去掉 patch/apply 类工具名；`workspace_write_file` 保留。selftest 与派发同一函数。
+- **兜底**：P2.3m 同哈希事后检查保留。
+- **提示词**：本片登记 `worker-hierarchical-v3`（不能改已有文件；需要改动时在报告里写明建议）。与 P2.3t 同名冲突，合后 v3 钉 t 的字节，默认 **`worker-hierarchical-v4`** 两句话都在；v1–v3 字节不动、digest 登记。
+- 测试：`test_read_only_leaf_write_guard.py` 9 + 冻结 +1；4 变异 KILLED。full_target **2921 passed / 2 skipped**（基线 2911/2，+10）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2w。
 
 **P2.3q：修复轮复用已验收只读叶、空 Planner 短路、合成方法宽度硬上限、拒绝理由分字段。** 分支 `p2.3q-repair-reuse-and-synthesis-shortcut`，基 d360750；版本号不动。第 4 批 4 局全部撞调用/attempt 上限：retire+refine 整网重铺（C2-r0 `funded_now=10`）、开局与修复轮空 Planner、10 叶合成方法、C1-r1 把只读取消说成 `rejected_by_root_review`。
 

@@ -644,7 +644,7 @@ def test_the_read_only_worker_prompt_reports_missing_tests_as_findings() -> None
     )
 
     assert WORKER_HIERARCHICAL.prompt_version == WORKER_HIERARCHICAL_VERSION
-    assert WORKER_HIERARCHICAL_VERSION == "worker-hierarchical-v3"
+    assert WORKER_HIERARCHICAL_VERSION == "worker-hierarchical-v4"
     assert WORKER_HIERARCHICAL_V2.prompt_version == "worker-hierarchical-v2"
     text = WORKER_HIERARCHICAL.instructions
     assert "finding" in text.lower() or "finding" in text

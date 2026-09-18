@@ -805,15 +805,33 @@ register_template(WORKER_HIERARCHICAL_V2)
 
 #: P2.3t.  Grok H-L3-C1-r1's verify leaf wrote the missing contract tests itself.
 #: A read-only leaf must report that gap as a finding.  v2 keeps its bytes.
-WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v3"
-WORKER_HIERARCHICAL = _revise(
+WORKER_HIERARCHICAL_V3_VERSION = "worker-hierarchical-v3"
+WORKER_HIERARCHICAL_V3 = _revise(
     WORKER_HIERARCHICAL_V2,
-    WORKER_HIERARCHICAL_VERSION,
+    WORKER_HIERARCHICAL_V3_VERSION,
     (
         "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。",
         "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。"
         "若本叶是只读的（verify / inspect / summarize / facts / reproduce）："
         "发现题目所需测试不在树中时，把缺口写成 finding 报告，不要自己创建或修改文件。",
+    ),
+)
+register_template(WORKER_HIERARCHICAL_V3)
+
+#: P2.3s+t+u merge.  t and u both registered ``worker-hierarchical-v3`` with
+#: different sentences.  v3 keeps t's bytes.  v4 is the default and carries
+#: both: do not rewrite existing files; report missing tests as a finding;
+#: put needed edits in the report as suggestions.
+WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v4"
+WORKER_HIERARCHICAL = _revise(
+    WORKER_HIERARCHICAL_V3,
+    WORKER_HIERARCHICAL_VERSION,
+    (
+        "若本叶是只读的（verify / inspect / summarize / facts / reproduce）："
+        "发现题目所需测试不在树中时，把缺口写成 finding 报告，不要自己创建或修改文件。",
+        "若本叶是只读的（verify / inspect / summarize / facts / reproduce / observe / report）："
+        "不能改已有文件；发现题目所需测试不在树中时，把缺口写成 finding 报告，不要自己创建或修改文件；"
+        "需要改动时在报告里写明建议。",
     ),
 )
 register_template(WORKER_HIERARCHICAL)
@@ -831,6 +849,7 @@ register_template(WORKER_HIERARCHICAL)
 _HIERARCHICAL_WORKER_VERSIONS: set[str] = {
     WORKER_HIERARCHICAL_V1_VERSION,
     WORKER_HIERARCHICAL_V2_VERSION,
+    WORKER_HIERARCHICAL_V3_VERSION,
     WORKER_HIERARCHICAL_VERSION,
 }
 
@@ -1480,6 +1499,8 @@ __all__ = (
     "WORKER_HIERARCHICAL_V1_VERSION",
     "WORKER_HIERARCHICAL_V2",
     "WORKER_HIERARCHICAL_V2_VERSION",
+    "WORKER_HIERARCHICAL_V3",
+    "WORKER_HIERARCHICAL_V3_VERSION",
     "WORKER_HIERARCHICAL_VERSION",
     "WORKER_VERSION",
     "WORKER_V2",
