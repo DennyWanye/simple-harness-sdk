@@ -379,7 +379,7 @@ def test_the_prompt_v5_binds_the_explaining_step_and_v4_is_frozen() -> None:
     )
 
     assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
-    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v6"
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v7"
     v5 = METHOD_SYNTHESIZER.instructions
     v4 = METHOD_SYNTHESIZER_V4.instructions
     for sentence in (

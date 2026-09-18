@@ -35,6 +35,12 @@ from ..contracts import Artifact
 from .versioning import UpstreamInput
 
 
+def _is_test_artifact(path: str) -> bool:
+    """P2.3t: new test files are not on the consumer seed (they are the write)."""
+
+    return path.startswith("tests/") or path.startswith("test_")
+
+
 def overlay_bound_producer_files(
     inputs: Sequence[UpstreamInput],
     *,
@@ -55,7 +61,7 @@ def overlay_bound_producer_files(
         for artifact in artifacts_by_producer.get(item.task_id, ()):
             if artifact.path in occupied or artifact.path in extra:
                 continue
-            if artifact.path not in seed:
+            if artifact.path not in seed and not _is_test_artifact(artifact.path):
                 continue
             extra[artifact.path] = UpstreamInput(
                 item.task_id,

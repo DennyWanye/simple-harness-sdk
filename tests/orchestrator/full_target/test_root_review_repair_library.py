@@ -1193,7 +1193,7 @@ def test_repeated_rejections_end_honestly_with_the_reason_written_down(tmp_path)
     assert outcome["status"] is MissionStatus.FAILED, (
         f"{outcome['status']}: {outcome['types']} roles={outcome['roles']}"
     )
-    assert outcome["stop_reason"] == "planning_failed"
+    assert outcome["stop_reason"] == "root_review_repairs_exhausted"
     detail = outcome["report"]["detail"]
     assert detail["root_review"]["reason"] == ROOT_REVIEW_REPAIR_REASON
     assert detail["root_review"]["status"] == "REVIEW_REJECTED"

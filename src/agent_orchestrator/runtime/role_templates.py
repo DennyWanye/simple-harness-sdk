@@ -792,13 +792,28 @@ register_template(WORKER_HIERARCHICAL_V1)
 #:
 #: v1 is not edited — an Attempt replays on the bytes it pinned (§26.3) and its digest
 #: is frozen — so this is a new version beside it, worded like the AppWorld one.
-WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v2"
-WORKER_HIERARCHICAL = _revise(
+WORKER_HIERARCHICAL_V2_VERSION = "worker-hierarchical-v2"
+WORKER_HIERARCHICAL_V2 = _revise(
     WORKER_HIERARCHICAL_V1,
-    WORKER_HIERARCHICAL_VERSION,
+    WORKER_HIERARCHICAL_V2_VERSION,
     (
         "declared_output_ports 里 required=true 且下游确有消费者的端口必须被认领，漏掉会被验收拒绝。",
         "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。",
+    ),
+)
+register_template(WORKER_HIERARCHICAL_V2)
+
+#: P2.3t.  Grok H-L3-C1-r1's verify leaf wrote the missing contract tests itself.
+#: A read-only leaf must report that gap as a finding.  v2 keeps its bytes.
+WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v3"
+WORKER_HIERARCHICAL = _revise(
+    WORKER_HIERARCHICAL_V2,
+    WORKER_HIERARCHICAL_VERSION,
+    (
+        "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。",
+        "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。"
+        "若本叶是只读的（verify / inspect / summarize / facts / reproduce）："
+        "发现题目所需测试不在树中时，把缺口写成 finding 报告，不要自己创建或修改文件。",
     ),
 )
 register_template(WORKER_HIERARCHICAL)
@@ -815,6 +830,7 @@ register_template(WORKER_HIERARCHICAL)
 #: domain template modules register at the bottom of this file, then frozen once.
 _HIERARCHICAL_WORKER_VERSIONS: set[str] = {
     WORKER_HIERARCHICAL_V1_VERSION,
+    WORKER_HIERARCHICAL_V2_VERSION,
     WORKER_HIERARCHICAL_VERSION,
 }
 
@@ -1121,10 +1137,10 @@ register_template(METHOD_SYNTHESIZER_V5)
 #: but a method that puts the write on a read-only leaf is the other half of the
 #: same mistake.  ``review_feedback`` now also carries
 #: ``read_only_leaf_needs_write``.  v5 keeps its bytes.
-METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v6"
-METHOD_SYNTHESIZER = _revise(
+METHOD_SYNTHESIZER_V6_VERSION = "method-synthesizer-v6"
+METHOD_SYNTHESIZER_V6 = _revise(
     METHOD_SYNTHESIZER_V5,
-    METHOD_SYNTHESIZER_VERSION,
+    METHOD_SYNTHESIZER_V6_VERSION,
     (
         "这样的方法不要提出。同一算子在 operators 里只列出最高版本，按列出的版本与 content_hash 引用。",
         "这样的方法不要提出。同一算子在 operators 里只列出最高版本，按列出的版本与 content_hash 引用。"
@@ -1135,6 +1151,25 @@ METHOD_SYNTHESIZER = _revise(
         "如果 review_feedback 指出某个只读叶改写了工作区（read_only_leaf_needs_write / "
         "read_only_leaf_rewrote_workspace），被拒方法把写权限放错了叶子：把文件改动放到 "
         "apply-patch 步，只读叶只观察并在声明端口上报告。",
+    ),
+)
+register_template(METHOD_SYNTHESIZER_V6)
+
+#: P2.3t.  v6 required a write step; it did not say that *tests* the criterion
+#: asks to add must be produced on a write-step output port.  Grok H-L3-C1-r1
+#: wrote the tests inside a read-only verify leaf, so they never became accepted
+#: products.  v6 keeps its bytes.
+METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v7"
+METHOD_SYNTHESIZER = _revise(
+    METHOD_SYNTHESIZER_V6,
+    METHOD_SYNTHESIZER_VERSION,
+    (
+        "apply-patch 步，只读叶只观察并在声明端口上报告。",
+        "apply-patch 步，只读叶只观察并在声明端口上报告。"
+        "只读 verify 步不得创建或修改文件。"
+        "当 criterion_evidence / 目标准则的 evidence_requirement 要求新增或修改测试并通过时，"
+        "必须由一个写型步骤产出这些测试文件并声明 tests 输出端口（apply-patch@2 提供该端口），"
+        "verify 只运行测试并绑定该端口；不要让 verify / inspect 自己写 tests/ 下的文件。",
     ),
 )
 register_template(METHOD_SYNTHESIZER)
@@ -1400,6 +1435,8 @@ __all__ = (
     "METHOD_SYNTHESIZER_V4_VERSION",
     "METHOD_SYNTHESIZER_V5",
     "METHOD_SYNTHESIZER_V5_VERSION",
+    "METHOD_SYNTHESIZER_V6",
+    "METHOD_SYNTHESIZER_V6_VERSION",
     "ROOT_REVIEWER",
     "ROOT_REVIEWER_V1",
     "ROOT_REVIEWER_V1_VERSION",
@@ -1441,6 +1478,8 @@ __all__ = (
     "WORKER_HIERARCHICAL",
     "WORKER_HIERARCHICAL_V1",
     "WORKER_HIERARCHICAL_V1_VERSION",
+    "WORKER_HIERARCHICAL_V2",
+    "WORKER_HIERARCHICAL_V2_VERSION",
     "WORKER_HIERARCHICAL_VERSION",
     "WORKER_VERSION",
     "WORKER_V2",
