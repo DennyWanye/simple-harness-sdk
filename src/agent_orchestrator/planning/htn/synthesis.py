@@ -444,6 +444,11 @@ class SynthesisRequest:
     #: reviewer's findings plus the rejected method's identity.  Its own field: a
     #: review finding is not a decode problem, and the prompt says which is which.
     review_feedback: tuple[str, ...] = ()
+    #: P2.3t: each coverage criterion with the evidence sentence the synthesizer
+    #: must make producible.  Empty when the goal type publishes none.  Carried
+    #: beside ``required_criteria`` (ids only) so a criterion that needs added
+    #: tests is visible as text, not just as an identifier.
+    criterion_evidence: tuple[Mapping[str, str], ...] = ()
     output_tag: str = METHOD_PROPOSAL_TAG
     role_prompt_version: str = METHOD_SYNTHESIZER.prompt_version
     #: What the model may not write, stated *in* the request.  §18.5 refuses such a
@@ -462,6 +467,17 @@ class SynthesisRequest:
         )
         object.__setattr__(
             self, "review_feedback", tuple(str(item) for item in self.review_feedback)
+        )
+        object.__setattr__(
+            self,
+            "criterion_evidence",
+            tuple(
+                {
+                    "id": str(item.get("id", "")),
+                    "evidence_requirement": str(item.get("evidence_requirement", "")),
+                }
+                for item in self.criterion_evidence
+            ),
         )
         if self.goal_type_ref is not None:
             object.__setattr__(self, "goal_type_ref", dict(self.goal_type_ref))
@@ -491,6 +507,7 @@ class SynthesisRequest:
             "method_shape": {key: list(value) for key, value in METHOD_SHAPE.items()},
             "schema_feedback": list(self.schema_feedback),
             "review_feedback": list(self.review_feedback),
+            "criterion_evidence": [dict(item) for item in self.criterion_evidence],
             "output_tag": self.output_tag,
             "role_prompt_version": self.role_prompt_version,
             "forbidden_fields": list(self.forbidden_fields),
@@ -610,6 +627,13 @@ class MethodSynthesizer:
             goal_type_ref=None if goal_type is None else goal_type.to_json(),
             schema_feedback=tuple(schema_feedback),
             review_feedback=tuple(review_feedback),
+            criterion_evidence=tuple(
+                {
+                    "id": str(criterion),
+                    "evidence_requirement": str(signature.statement),
+                }
+                for criterion in signature.coverage_criteria
+            ),
         )
 
     def goal_type_ref(self, signature: GoalSignature) -> VersionedRef | None:

@@ -212,7 +212,7 @@ def test_v2_names_every_field_the_codec_requires_and_v1_named_none_of_them():
     assert METHOD_SYNTHESIZER_V2_VERSION == "method-synthesizer-v2"
     assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
     # P2.3i: v3; P2.3j merge: the default is v4 (v3 plus ``review_feedback``).
-    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v6"  # P2.3m: v6 beside v5
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v7"  # P2.3t: v7 beside v6
     assert METHOD_SYNTHESIZER.tool_names == METHOD_SYNTHESIZER_V2.tool_names == ()
     assert v2.startswith("[role:method_synthesizer]")
 

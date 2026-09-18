@@ -576,7 +576,7 @@ def test_the_prompt_v6_requires_a_write_step_and_v5_is_frozen() -> None:
     )
 
     assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
-    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v6"
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v7"
     v6 = METHOD_SYNTHESIZER.instructions
     v5 = METHOD_SYNTHESIZER_V5.instructions
     for sentence in (

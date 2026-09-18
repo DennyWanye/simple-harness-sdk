@@ -91,6 +91,13 @@
   },
   {
     "schema_ref": {
+      "id": "code.tests",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
       "id": "code.report",
       "version": 1
     },

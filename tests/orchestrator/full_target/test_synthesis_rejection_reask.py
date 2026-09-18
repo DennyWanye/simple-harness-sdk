@@ -106,6 +106,7 @@ from agent_orchestrator.runtime.role_templates import (  # noqa: E402
     METHOD_SYNTHESIZER_V3_VERSION,
     METHOD_SYNTHESIZER_V4_VERSION,
     METHOD_SYNTHESIZER_V5_VERSION,
+    METHOD_SYNTHESIZER_V6_VERSION,
     METHOD_SYNTHESIZER_VERSION,
     TEMPLATE_VERSIONS,
     template_for,
@@ -769,7 +770,7 @@ def test_v3_tells_the_model_a_protocol_refusal_may_travel_in_schema_feedback():
     assert METHOD_SYNTHESIZER_V3.prompt_version == METHOD_SYNTHESIZER_V3_VERSION
     assert METHOD_SYNTHESIZER_V3_VERSION == "method-synthesizer-v3"
     assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
-    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v6"
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v7"
     assert "拒绝码" in METHOD_SYNTHESIZER.instructions
     for code in sorted(CORRECTABLE_REJECTIONS, key=str):
         assert str(code) in v3, f"v3 names every correctable code: {code!s}"
@@ -801,6 +802,7 @@ def test_v2_keeps_its_bytes_stays_registered_and_is_still_pinnable():
         METHOD_SYNTHESIZER_V3_VERSION,
         METHOD_SYNTHESIZER_V4_VERSION,
         METHOD_SYNTHESIZER_V5_VERSION,
+        METHOD_SYNTHESIZER_V6_VERSION,
         METHOD_SYNTHESIZER_VERSION,
     }
     assert versions[METHOD_SYNTHESIZER_V3_VERSION] is METHOD_SYNTHESIZER_V3
@@ -822,4 +824,4 @@ def test_v2_keeps_its_bytes_stays_registered_and_is_still_pinnable():
     env = synth.empty_library_env()
     request = synth.synthesizer(env).build_request(synth.goal(env), env.capabilities())
     assert isinstance(request, SynthesisRequest)
-    assert request.to_json()["role_prompt_version"] == "method-synthesizer-v6"
+    assert request.to_json()["role_prompt_version"] == "method-synthesizer-v7"

@@ -249,6 +249,11 @@ from .hierarchical_dispatch import (  # noqa: E402
     ROOT_REVIEW_REPAIR_REASON,
 )
 
+#: P2.3t / §9.1: the Mission has spent ``max_root_review_repairs`` and the
+#: last root review still rejected.  A named stop, not idle
+#: ``no_dispatchable_work`` with hanging ``admitted_not_dispatched`` rows.
+ROOT_REVIEW_REPAIRS_EXHAUSTED = "root_review_repairs_exhausted"
+
 #: Deterministic 4xx provider refusals.  Runtime already settles
 #: ``ProviderAuthenticationError`` / ``ProviderPaymentRequiredError`` as FAILED
 #: (``_DEFINITE_PROVIDER_FAILURES``); this set is what the orchestrator reads off
@@ -1331,7 +1336,7 @@ class Orchestrator:
         self,
         mission_id: str,
         *,
-        stop_reason: MissionStopReason,
+        stop_reason: MissionStopReason | str,
         detail: Mapping[str, Any],
     ) -> Any:
         self._prepare_terminal_ledger(mission_id)
@@ -2152,16 +2157,26 @@ class Orchestrator:
                             "remaining_fuel": int(account.remaining_fuel),
                         }
                     )
+            exhausted = self._root_review_repairs_are_exhausted(mission, new_mode)
             self._commit_fail_mission(
                 mission.id,
-                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                stop_reason=(
+                    ROOT_REVIEW_REPAIRS_EXHAUSTED
+                    if exhausted
+                    else MissionStopReason.NO_DISPATCHABLE_WORK
+                ),
                 detail={
                     "plan_revision": int(admissions.plan_revision),
                     # §6.4: the report names the structure that was expanded and the
                     # duties still outstanding.  Every refusal, not a sample — an
                     # operator must not have to re-derive which gate held what.
                     "withheld": [item.to_json() for item in admissions.refusals],
-                    "admitted_not_dispatched": sorted(admissions.readiness),
+                    # P2.3t: repairs exhausted is a named stop; READY rows are
+                    # cancelled by fail_mission's cascade, so they must not hang
+                    # here as admitted_not_dispatched.
+                    "admitted_not_dispatched": (
+                        [] if exhausted else sorted(admissions.readiness)
+                    ),
                     "outstanding_obligations": outstanding,
                     "fingerprint": after,
                     "confirmed_after_one_more_cycle": True,
@@ -2461,6 +2476,22 @@ class Orchestrator:
         if not isinstance(payload, Mapping):
             return ()
         return tuple(str(item) for item in payload.get("review_feedback", ()) or ())
+
+    def _leaf_repair_findings(self, mission_id: str) -> list[dict[str, Any]]:
+        """Root-review (and read-only-rewrite) findings for a repair-round Worker."""
+
+        findings: list[dict[str, Any]] = []
+        for event in self.store.list_events(mission_id):
+            if event.type != "PlanningRejected":
+                continue
+            reason = str(event.payload.get("reason") or "")
+            if reason not in {ROOT_REVIEW_REPAIR_REASON, READ_ONLY_REWRITE_REPAIR_REASON}:
+                continue
+            detail = event.payload.get("detail") or {}
+            for item in list(detail.get("findings") or [])[:8]:
+                if isinstance(item, Mapping):
+                    findings.append(dict(item))
+        return findings[:16]
 
     @staticmethod
     def _synthesizer_subject(
@@ -8145,6 +8176,20 @@ class Orchestrator:
             }
         }
 
+    def _root_review_repairs_are_exhausted(
+        self, mission: Mission, new_mode: HierarchicalDispatch
+    ) -> bool:
+        """True when a REJECTED root review has spent ``max_root_review_repairs``."""
+
+        if int(self._config.max_root_review_repairs) < 1:
+            return False
+        detail = self._root_review_stop_detail(mission, new_mode).get("root_review") or {}
+        if str(detail.get("status") or "") != "REVIEW_REJECTED":
+            return False
+        return int(detail.get("repairs_used") or 0) >= int(
+            self._config.max_root_review_repairs
+        )
+
     def _accepted_path_hashes(self, mission_id: str) -> dict[str, str]:
         """Files a COMPLETED leaf already produced, keyed by path.  Later writers win.
 
@@ -8988,6 +9033,22 @@ class Orchestrator:
                         "output must show what evidence_requirement states"
                     ),
                     "criteria": [dict(item) for item in carried],
+                }})
+            # P2.3t: repair-round findings must reach the *write* Worker, not
+            # only the Planner / synthesizer.  Read from the durable repair
+            # records (retired instances leave ``rejected_refinements`` empty).
+            leaf_findings = self._leaf_repair_findings(mission.id)
+            if leaf_findings:
+                from ..context.context_builder import _seal
+                package = _seal({**dict(package.package), "review_feedback": {
+                    "data_not_instruction": True,
+                    "version": "leaf-review-feedback-v1",
+                    "note": (
+                        "the MISSION_FINAL review rejected the previous method; "
+                        "write-type steps must put the missing evidence (for example "
+                        "test files) on a declared output port in the tree"
+                    ),
+                    "findings": leaf_findings,
                 }})
         fragment_context = self.commit.fragment_validation_context(task.id)
         if fragment_context:

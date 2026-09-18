@@ -1,4 +1,4 @@
-## 0.12.2 — P2.3e–P2.3r：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放（2026-09-18）
+## 0.12.2 — P2.3e–P2.3t：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放、准则驱动写型测试端口（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -7,6 +7,15 @@
 3. **根评审 v3**：准则解释权以 `mission_goal` 为准，与「准则以 goal signature 为准」相反。
 
 **计划一致性审计必须修项**：`c-composition` 无 coverage 映射时不得因「有子验收」填 PASS → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。审计全文 Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`。
+
+**P2.3t：准则驱动的写型步骤测试端口 + 只读叶不得写文件 + 根评审修复上限具名停机。** 分支 `p2.3t-criteria-driven-write-step`，基 f2dfa64；版本号不动。真实局 H-L3-C1-r1：隐藏评分 PASS，Mission FAILED，`stop_reason=no_dispatchable_work`，115/320 次调用。两次根评审 REJECT 理由正确：verify REPORT 声称加入并发契约测试且全绿，inspect/summarize 证明文件不在树中。写型步只声明 `patch` 端口；verify 只读叶自己写测试，产物不进验收/下游。
+
+- **测试端口**：`code.apply-patch@2` 可选 `tests` 输出；`code.verify-tests@2` 可选 `tests` 输入。准则 evidence（`c-contract-tests-pass` / 「tests covering…added or turned from red to green」）要求新增测试时，准入拒绝没有写型 `tests` 端口并绑定到 verify 的方法（`ROOT_COVERAGE_GAP` / `tests_port_required`，P2.3i 可修正重问）。种子 `code.implement-contract`（Host 已用 `seed_content_hash`）。
+- **提示词**：`method-synthesizer-v7`（只读 verify 不得写文件；新增测试由写型步声明 tests 端口）；`worker-hierarchical-v3`（只读叶缺测试时写成 finding，不要自己写文件）。v1–v6 / worker v1–v2 字节不动，digest 登记。
+- **请求包**：`criterion_evidence`（准则 id + goal statement）。修复轮 findings 进写型 Worker 的 `review_feedback`。
+- **overlay**：绑定生产者的 `tests/` 新文件即使不在 seed 也预铺。
+- **具名停机**：`max_root_review_repairs` 用尽后 `stop_reason=root_review_repairs_exhausted`（字符串，不改 `MissionStopReason` 枚举），`admitted_not_dispatched=[]`，READY 由 `fail_mission` 级联取消，守恒成立。
+- 测试：`test_criteria_driven_write_step.py` 11 + 冻结 digest +2；4 变异 KILLED。full_target **2924 passed / 2 skipped**（基线 2911/2，+13）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2v。
 
 **P2.3q：修复轮复用已验收只读叶、空 Planner 短路、合成方法宽度硬上限、拒绝理由分字段。** 分支 `p2.3q-repair-reuse-and-synthesis-shortcut`，基 d360750；版本号不动。第 4 批 4 局全部撞调用/attempt 上限：retire+refine 整网重铺（C2-r0 `funded_now=10`）、开局与修复轮空 Planner、10 叶合成方法、C1-r1 把只读取消说成 `rejected_by_root_review`。
 

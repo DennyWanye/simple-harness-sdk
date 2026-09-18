@@ -2858,7 +2858,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             return updated
 
     def fail_mission(
-        self, mission_id: str, *, stop_reason: MissionStopReason, detail: Mapping[str, Any]
+        self, mission_id: str, *, stop_reason: MissionStopReason | str, detail: Mapping[str, Any]
     ) -> Mission:
         """Mission-level stop that blames no Task (D3-12': the Mission pool itself ran
         out, or an operator condition): Mission → FAILED, open work cancelled."""

@@ -606,6 +606,29 @@ class RejectionCode(StrEnum):
 #: correctable-reask path matches this token, never a detail substring.
 SYNTHESIS_WIDTH_REASON = "synthesis_width"
 
+#: P2.3t.  Structured reason on a ``ROOT_COVERAGE_GAP``: a criterion whose
+#: evidence_requirement needs added/modified tests to pass, but no write-type
+#: step declares a ``tests`` output port that a verify step binds.
+SYNTHESIS_TESTS_PORT_REASON = "tests_port_required"
+TESTS_OUTPUT_PORT = "tests"
+
+_ADDED_TESTS_MARKERS = (
+    "c-contract-tests-pass",
+    "tests covering",
+    "must be added or turned from red to green",
+    "added or turned from red to green",
+    "新增测试",
+    "加入测试",
+    "contract test",
+)
+
+
+def evidence_requires_added_tests(*parts: str) -> bool:
+    """Whether the criterion text asks for tests to be added (not just re-run)."""
+
+    blob = "\n".join(str(item) for item in parts).lower()
+    return any(marker in blob for marker in _ADDED_TESTS_MARKERS)
+
 
 @dataclass(frozen=True, slots=True)
 class AdmissionProblem:
@@ -1789,8 +1812,10 @@ def _check_structure(
     step_id = AdmissionStepId.STRUCTURAL_CHECKS
     recursive = method_is_recursive(method)
 
-    def refuse(code: RejectionCode, detail: str) -> None:
-        problems.append(AdmissionProblem(code=code, detail=detail, step=step_id))
+    def refuse(code: RejectionCode, detail: str, *, reason: str = "") -> None:
+        problems.append(
+            AdmissionProblem(code=code, detail=detail, step=step_id, reason=reason)
+        )
 
     # Bounded expansion.  Recursion is allowed; recursion with nothing that can ever
     # stop it is not — a method that always re-expands its own goal and never says
@@ -1876,7 +1901,51 @@ def _check_structure(
                     f"criterion link for {link.parent_criterion_id!r} names unknown step "
                     f"{link.child_step!r}",
                 )
+    _check_tests_port_coverage(method, policy, refuse)
     return problems, recursive
+
+
+def _check_tests_port_coverage(
+    method: MethodContract,
+    policy: AdmissionPolicy,
+    refuse: Any,
+) -> None:
+    """P2.3t: added-tests evidence cannot hang only on a read-only verify report.
+
+    A write-type step must declare :data:`TESTS_OUTPUT_PORT` and a consumer
+    (typically verify) must bind it.  Optional on every other method.
+    """
+
+    texts = [
+        str(link.parent_criterion_id) for link in method.composition.criterion_links
+    ]
+    texts.extend(str(link.evidence_requirement) for link in method.composition.criterion_links)
+    goal_type = policy.task_types.resolve(method.goal_type_ref)
+    if goal_type is not None:
+        texts.append(str(goal_type.goal_signature.statement))
+        texts.extend(str(item) for item in goal_type.goal_signature.coverage_criteria)
+    if not evidence_requires_added_tests(*texts):
+        return
+    write_declares = False
+    consumed = False
+    for step_spec in method.steps:
+        producer = policy.task_types.resolve(step_spec.task_type_ref)
+        if producer is not None and not producer.read_only:
+            if producer.output_port(TESTS_OUTPUT_PORT) is not None:
+                write_declares = True
+        for argument in step_spec.arguments.values():
+            for node in iter_values(argument):
+                if isinstance(node, OutputValue) and node.port == TESTS_OUTPUT_PORT:
+                    consumed = True
+    if write_declares and consumed:
+        return
+    refuse(
+        RejectionCode.ROOT_COVERAGE_GAP,
+        "a criterion that requires added or modified tests to pass is not evidenced "
+        "by a write-type step declaring output port 'tests' bound into a verify step; "
+        "a read-only verify leaf cannot create those files",
+        reason=SYNTHESIS_TESTS_PORT_REASON,
+    )
 
 
 def _first_cycle(pairs: Sequence[tuple[str, str]], nodes: Sequence[str]) -> tuple[str, ...]:
@@ -1940,7 +2009,10 @@ __all__ = (
     "MethodSuggestion",
     "ObjectSchema",
     "RejectionCode",
+    "SYNTHESIS_TESTS_PORT_REASON",
     "SYNTHESIS_WIDTH_REASON",
+    "TESTS_OUTPUT_PORT",
+    "evidence_requires_added_tests",
     "SchemaCatalog",
     "SchemaField",
     "StepOutcome",

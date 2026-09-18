@@ -3882,6 +3882,61 @@ N11：C1-r0 唯一 UNKNOWN invocation 的 `usage_json.error_class=UnknownProvide
 - 真实模型第 4 批未重跑。
 - 有 token 的 UNKNOWN 仍不从异常抄 usage（P2.3p 未做项）。
 
+## 2u. P2.3s
+
+（并行 worktree `simple-harness-sdk-p23s` 负责；本片不写。）
+
+## 2v. P2.3t：准则驱动的写型步骤测试端口 + 只读叶不得写文件 + 根评审修复上限具名停机（2026-09-18，分支 `p2.3t-criteria-driven-write-step`，基 `f2dfa64` = 0.12.2 候选第 5 版）
+
+输入：用户任务书 + 真实局只读 `H-L3-C1-r1`（`orchestrator.db?immutable=1` + `construction.json`）。证据目录零写入。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 指挥者假设（先核实）
+
+指挥者假设三件事叠在一起：
+
+1. Worker 在**只读 verify 叶**里写了测试文件；只读叶工作区改动不会成为已验收产物，也不进 delivery / 下游 bound inputs，所以测试文件「消失」，REPORT 变成空口声明。
+2. 合成出来的三个方法里没有任何**写型步骤的输出端口包含测试文件**（apply/patch 步只被理解为「改实现」），于是准则 `c-contract-tests-pass` 要求的证据在结构上不可能产生。
+3. 两次根评审 REJECT 且 `max_root_review_repairs` 用尽后，停机走 idle stall，`stop_reason=no_dispatchable_work`，detail 挂着 `admitted_not_dispatched`。
+
+**核实结论：假设成立，不推翻。** 只读证据：
+
+- 隐藏评分 PASS，Mission FAILED，`stop_reason=no_dispatchable_work`，115/320 次调用。
+- r0 `…by-diagnose-patch-verify-explain`：只读 verify 改写 `metrics/reporter.py` → P2.3m 取消退役。
+- r1 / r2 两次根评审 REJECT 理由一致且正确：`c-contract-tests-pass` FAIL——verify 的 REPORT.md 声称加入了 `tests/test_concurrent_contract.py`（第二轮 `tests/test_concurrent_summary.py`）且全绿，inspect / summarize 在同一棵树上证明该文件不在树中；可见套件只有 `tests/test_public_collector.py` 4 passed。
+- r1 方法虽有 `add-red-tests`（`code.apply-patch` + `repo.write`），其输出端口仍只是 `patch`，没有 tests 产物端口；r2 同形。verify 只读，写进去的测试不会成为已验收产物。
+- 终态 `repairs_used=1` / `max_root_review_repairs=1`，detail 有 `admitted_not_dispatched` 一串 READY 任务。
+
+### 修法
+
+1. **写型 tests 端口**：目录新增 `code.apply-patch@2`（可选 `tests` 输出）与 `code.verify-tests@2`（可选 `tests` 输入），@1 行字节/哈希约定不动。种子新增 compound `code.implement-contract`（`c-contract-tests-pass` + `c-change-explained`，statement 含「tests covering the user goal must be added…」；content_hash = `seed_content_hash(id, version)`，与 Host 注入约定一致）。
+2. **准入**：`evidence_requires_added_tests` 认 `c-contract-tests-pass` / 「tests covering」/ 「added or turned from red to green」等。命中则必须有非只读步声明 `tests` 输出端口，且有消费者绑定该端口；否则 `ROOT_COVERAGE_GAP` + `reason=tests_port_required`（P2.3i 可修正重问）。种子 `c-test-passes`「named failing test」不触发。
+3. **请求包**：`SynthesisRequest.criterion_evidence` = 各 coverage 准则 id + goal statement。
+4. **提示词**：只加 `method-synthesizer-v7`、`worker-hierarchical-v3`；v6 / worker-v2 字节钉住。
+5. **Worker 反馈**：修复轮 `PlanningRejected` 的 findings 写入派发包 `review_feedback`（retired 实例已离开 `rejected_refinements`，必须读事件）。
+6. **overlay**：绑定生产者 `tests/` 或 `test_*` 路径即使不在 seed 也并进下游工作区。
+7. **具名停机**：stall 确认时若根评审 REJECTED 且 `repairs_used >= max_root_review_repairs ≥ 1`，`stop_reason=root_review_repairs_exhausted`（Mission.stop_reason 本就是 str，不改 contracts 枚举），`admitted_not_dispatched=[]`，`fail_mission` 级联取消 READY。
+
+### 测试
+
+`test_criteria_driven_write_step.py` 11 条：overlay；准则探测；请求包 criterion_evidence；缺端口可修正拒绝；有端口准入；真 `Orchestrator.run()` COMPLETED；synthesizer 缺端口→采用；两次 REJECT 具名停机；legacy；v7/v3 提示词。冻结 digest +2（synthesizer v6、worker v2 现单独成行）。
+
+变异 4/4 KILLED（`/tmp/p23t-mutant-backup/` 恢复，sha256 一致，不用 git checkout）：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| M1 | `evidence_requires_added_tests` 恒 False | 3 failed → KILLED |
+| M2 | `_check_tests_port_coverage` 立即 return | 2 failed → KILLED |
+| M3 | stall 停机 `exhausted=False` | 2 failed（仍 no_dispatchable_work）→ KILLED |
+| M4 | `_is_test_artifact` 恒 False | 1 failed（overlay 缺 tests/）→ KILLED |
+
+回归：full_target **2924 passed / 2 skipped**（基线 2911/2，+13）；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变。
+
+### 未做
+
+- 真实模型第 5 批未重跑。
+- (b) 全链路「REJECT → 合成缺端口 → 重问 → 采用 → COMPLETED」未用 `run()` 走根评审修复轮（P2.3i 重问环 + 本片准入已覆盖该正确理由码）；写型 Worker 看到 findings 靠派发包接线，无单独 e2e 断言。
+- Host 仍可 `ensure_host_root_type(code.implement-contract)`；SDK 种子已有同 id@version 哈希。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、
