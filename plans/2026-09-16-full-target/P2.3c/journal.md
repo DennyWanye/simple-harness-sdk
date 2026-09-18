@@ -4098,6 +4098,18 @@ P2.3s+t（合并 c2f7ffe，核验归档 d3b81e4）与 P2.3u（b67fc9e）同基 `
 - M3-r0 的 reproduce 叶对红基线跑 `code_test`（题目构造的 SyntaxError）未改判定层，只靠相同失败有界早停。
 - 不把 `repeated_verification_failure` 写成第三套 `rejected_by_*` 包字段（冻结提示词不动；仍进 `REPAIR_REASONS` / `rejected_refinements`）。
 
+### 核验修复（2026-09-18，对照 `reviews/核验-P2.3v-d64044b-2026-09-18.md`，HEAD 合后 `d64044b`）
+
+独立核验「修后可合」，P0 无，P1 三条必修。先红后绿。
+
+- **P1-1**：`_parse_unified_diff` 换下一个 `--- ` 时把当前 hunk 刷入；`files_patched_by_unified_diff` 任一文件 `hunk_mismatch` / 路径含 `..` 或绝对路径 / 不在 seed → `UnifiedDiffApplyError`，整份不登记。收集处非 utf-8 / OSError 同样 `ResultRejected{unified_diff_apply_failed}`（detail 含 path、reason）。
+- **P1-2**：`code_test` 无 problems 时指纹纳入去路径去时序的 pytest 异常类与 node id（`detail.failure_nodes` 或从 `runs.stdout` 抽取）。M3-r0 同 SyntaxError 仍相同；SyntaxError→ImportError 不同。空 detail 仍回落到去时序 summary。
+- **P1-3**：修复额度用尽 `fail_mission(PLANNING_FAILED)`，detail 仍带 `repeated_verification_failure`。有 pending / 未处置 `rejected_refinements` 时先 return（与 P2.3s 一致）。
+- **P2-1**：升级时 `reconcile_retiring_instance` + `_release_cancelled_repair_work`（与只读升级同形）。
+- **P2-2**：`network()` 抛错时 `current_task_ids=()`，accepted hashes 求交为空，不得 fail-open 含退役叶。
+
+定向 `test_repeated_failure_early_stop.py` 12 条。full_target **2960 passed / 2 skipped**（合后核验基线 2955/2，+5）；旧模式 **560/13/0**。`_new_mode` 仍 19。冻结提示词 sha256 未改。
+
 ## 2x. §2x 合并说明（2026-09-18，本 worktree 合入 main `3607c22` = P2.3s/t/u）
 
 P2.3v（976d0d0）与 main（P2.3s/t/u，3607c22）同基 `f2dfa64`。文档两边都留：§2u=s、§2v=t、§2w=u、§2x=v；CHANGELOG 单一 `## 0.12.2` 覆盖 P2.3e–P2.3v。

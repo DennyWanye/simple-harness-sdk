@@ -12,7 +12,8 @@
 
 - **根因（M2）**：retire 后旧 apply 仍 COMPLETED；新 apply 写出相同哈希的 `net/retry.py`，P2.3m 同哈希过滤不登记；P2.3o 只把绑定输入当 recorded，apply 绑定只有 diagnosis。不是「verify 没预铺」，是写型叶自己的产物被退役叶阴影。
 - **修法**：同哈希过滤只对只读叶；`_accepted_path_hashes` 只计当前 plan 成员。生产者只交 unified diff 时收集处套用 diff 并登记 seed 路径。同一 occurrence 连续 N=3 次相同验证失败（layer + problems 哈希，去时序）→ `PlanningRejected{repeated_verification_failure}` 走修复轮；上限后具名停机。legacy 原样。
-- 测试：`test_repeated_failure_early_stop.py` 7；4 变异 KILLED。full_target **2918 passed / 2 skipped**（基线 2911/2，+7）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2x。
+- **核验修复**（`核验-P2.3v-d64044b`）：多文件 diff 换 `---` 时 flush hunk，套用失败 / `..` / 非 seed / 非 utf-8 具名 `ResultRejected{unified_diff_apply_failed}` 且不半套；`code_test` 指纹纳入异常类与 node id；修复额度用尽 `planning_failed`。
+- 测试：`test_repeated_failure_early_stop.py` 12；4 变异 KILLED。详见 journal 第四部分 §2x。
 
 **P2.3s：修复轮编译前 reconcile 被退役方法下仍 OPEN 的兄弟 attempt。** 分支 `p2.3s-repair-reconcile-running-siblings`，基 f2dfa64；版本号不动。真实局第 5 批 H-L3-C1-r0：inspect（task-c07e…）两次改写 → `TaskCancelled{read_only_leaf_needs_write}` → 合成准入 → Planner r3–r6 四次 `running_work_not_reconciled`（兄弟 verify task-cb9e… 的 attempt 仍 RUNNING）→ 最后 `MissionFailed{no_dispatchable_work}`。
 

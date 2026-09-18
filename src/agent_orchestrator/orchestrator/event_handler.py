@@ -42,7 +42,9 @@ if TYPE_CHECKING:
     from ..runtime.provider_budget_guard import ProviderBudgetGuard
 
 from ..artifacts.bound_workspace import (
+    UnifiedDiffApplyError,
     bound_artifacts_named_in_envelope,
+    decode_unified_diff_text,
     files_patched_by_unified_diff,
     overlay_bound_producer_files,
 )
@@ -5411,7 +5413,7 @@ class Orchestrator:
                     str(spec.task_id) for spec in new_mode.network(mission.id).occurrences
                 }
             except (GraphIntegrityError, ContractError, StoreError, KeyError):
-                current_task_ids = None
+                current_task_ids = ()
         accepted_hashes = (
             {}
             if new_mode is None
@@ -5500,12 +5502,28 @@ class Orchestrator:
             )
         ]
         if new_mode is not None and (binding is None or not read_only_leaf(binding)):
-            referenced = self._record_applied_diff_files(
-                referenced,
-                workspace=workspace,
-                attempt=attempt,
-                seed=dict((mission.final_report or {}).get("workspace_seed", {})),
-            )
+            try:
+                referenced = self._record_applied_diff_files(
+                    referenced,
+                    workspace=workspace,
+                    attempt=attempt,
+                    seed=dict((mission.final_report or {}).get("workspace_seed", {})),
+                )
+            except UnifiedDiffApplyError as error:
+                self.commit.reject_result(
+                    attempt.id,
+                    turn_id=result.turn_id,
+                    reason="unified_diff_apply_failed",
+                    detail={"path": error.path, "reason": error.reason},
+                )
+                self._settle_intent(intent, "FAILED")
+                self._settle_if_known(attempt)
+                await self._release_attempt(attempt.id, cancel=False)
+                self._note(
+                    f"attempt {attempt.id}: unified diff {error.path} "
+                    f"{error.reason} → RETRY_WAIT"
+                )
+                return
         self.commit.record_result(
             attempt.id,
             envelope=envelope,
@@ -8494,7 +8512,7 @@ class Orchestrator:
     ) -> list[Artifact]:
         """P2.3v: a write leaf that only delivered a unified diff still records
         the patched seed files, so overlay / ``rule_check`` / ``code_test`` see
-        them.  Failed hunks are skipped rather than invented.
+        them.  Any file that cannot be applied refuses the whole document.
         """
 
         extra: list[Artifact] = []
@@ -8506,9 +8524,10 @@ class Orchestrator:
             if not str(artifact.path).endswith((".diff", ".patch")):
                 continue
             try:
-                text = (workspace.root / artifact.path).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
+                data = (workspace.root / artifact.path).read_bytes()
+            except OSError as error:
+                raise UnifiedDiffApplyError(artifact.path, "unreadable") from error
+            text = decode_unified_diff_text(data, path=artifact.path)
             if "--- " not in text or "+++ " not in text:
                 continue
             patched = files_patched_by_unified_diff(text, seed)
@@ -8766,6 +8785,17 @@ class Orchestrator:
             self.commit._cancel_task_entity(  # noqa: SLF001
                 task.id, reason=REPEATED_VERIFICATION_FAILURE_REASON, replaced_by=None
             )
+        try:
+            network = new_mode.network(mission.id)
+            root = network.root_occurrence_ids[0] if network.root_occurrence_ids else None
+            adopted = None if root is None else network.adopted_instance_for(root)
+            if adopted is not None:
+                new_mode.reconcile_retiring_instance(
+                    mission.id, str(adopted.instance_id), owner=self._owner
+                )
+                await self._release_cancelled_repair_work(mission.id)
+        except (GraphIntegrityError, ContractError, StoreError, KeyError):
+            pass
         used = self._repeated_verification_repairs(mission.id)
         summaries = [
             f"{item.get('layer')}: {item.get('summary')}"
@@ -8773,9 +8803,13 @@ class Orchestrator:
             if isinstance(item, Mapping)
         ]
         if used >= MAX_IDENTICAL_VERIFICATION_REPAIRS:
+            if new_mode.rejected_refinements(mission.id) or new_mode.repair_compile_pending(
+                mission.id
+            ):
+                return
             self._commit_fail_mission(
                 mission.id,
-                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                stop_reason=MissionStopReason.PLANNING_FAILED,
                 detail={
                     "reason": REPEATED_VERIFICATION_FAILURE_REASON,
                     "task_id": task.id,

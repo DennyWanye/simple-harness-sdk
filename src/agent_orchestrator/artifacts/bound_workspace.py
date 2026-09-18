@@ -27,8 +27,8 @@ This module does three pure things and writes nothing:
   dropped it as "already accepted" (P2.3m).
 * :func:`files_patched_by_unified_diff` — P2.3v: when the producer accepted only
   the diff document, apply it onto seed bytes so the patched paths can be
-  recorded (the collector materialises the artifacts; this function is the
-  bytes).
+  recorded.  Unsafe paths, missing seed files and hunk mismatches refuse the
+  whole document (P1-1).
 """
 
 from __future__ import annotations
@@ -36,12 +36,31 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
+from pathlib import Path
 
 from ..contracts import Artifact
 from .versioning import UpstreamInput
 
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _DIFF_PATH = re.compile(r"^(?:---|\+\+\+) [ab]/(.+)$")
+
+
+class UnifiedDiffApplyError(ValueError):
+    """A unified diff could not be applied fail-closed (P2.3v P1-1)."""
+
+    def __init__(self, path: str, reason: str) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"{path}: {reason}")
+
+
+def decode_unified_diff_text(data: bytes, *, path: str) -> str:
+    """Decode a patch document.  Non-utf8 bytes are a named refusal, not a skip."""
+
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise UnifiedDiffApplyError(path, "not_utf8") from error
 
 
 def _is_test_artifact(path: str) -> bool:
@@ -123,20 +142,23 @@ def files_patched_by_unified_diff(
     diff_text: str,
     seed_contents: Mapping[str, str],
 ) -> dict[str, str]:
-    """Apply a unified diff onto seed files.  Unknown paths and failed hunks
-    are skipped rather than invented — a producer that only delivered the
-    document still has to name bytes the consumer can hash.
+    """Apply a unified diff onto seed files.  Any unsafe path, missing seed
+    file, or hunk mismatch refuses the *whole* document — a half-applied
+    patch is not recorded (P2.3v P1-1).
     """
 
     patched: dict[str, str] = {}
     for path, hunks in _parse_unified_diff(diff_text).items():
+        if _unsafe_diff_path(path):
+            raise UnifiedDiffApplyError(path, "unsafe_path")
         original = seed_contents.get(path)
         if original is None:
-            continue
+            raise UnifiedDiffApplyError(path, "not_in_seed")
         result = _apply_hunks(original, hunks)
-        if result is None or result == original:
-            continue
-        patched[path] = result
+        if result is None:
+            raise UnifiedDiffApplyError(path, "hunk_mismatch")
+        if result != original:
+            patched[path] = result
     return patched
 
 
@@ -155,11 +177,13 @@ def _parse_unified_diff(diff_text: str) -> dict[str, list[tuple[int, list[tuple[
     for raw in diff_text.splitlines(keepends=True):
         line = raw[:-1] if raw.endswith("\n") else raw
         if line.startswith("--- "):
+            if body is not None:
+                hunks.append((old_start, body))
+                body = None
             if current and hunks:
                 files[current] = hunks
             current = None
             hunks = []
-            body = None
             match = _DIFF_PATH.match(line)
             if match is not None:
                 current = match.group(1)
@@ -231,8 +255,16 @@ def _line_body(text: str) -> str:
     return text[:-1] if text.endswith("\n") else text
 
 
+def _unsafe_diff_path(path: str) -> bool:
+    if not path or path.startswith("/") or Path(path).is_absolute():
+        return True
+    return ".." in Path(path).parts
+
+
 __all__ = (
+    "UnifiedDiffApplyError",
     "bound_artifacts_named_in_envelope",
+    "decode_unified_diff_text",
     "files_patched_by_unified_diff",
     "overlay_bound_producer_files",
     "patched_content_hash",

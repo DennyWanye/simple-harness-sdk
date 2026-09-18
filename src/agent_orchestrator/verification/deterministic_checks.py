@@ -16,6 +16,7 @@ produced by the router for layers the Task policy did not ask for.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -258,9 +259,29 @@ async def code_test(
                     and sha256_file(verification_copy.resolve(path)) == digest
                     for path, digest in manifest.items())
     detail: dict[str, Any] = {"runs": runs}
+    if failed:
+        detail["failure_nodes"] = _code_test_failure_nodes(runs)
     if bound and unchanged:
         detail["observation_scope"] = scope
     return LayerResult("code_test", FAIL if failed else PASS, summary, detail)
+
+
+def _code_test_failure_nodes(runs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Stable pytest identity: exception class + node id, not the timing line."""
+
+    exc = re.compile(r"^E\s+(\w+(?:Error|Exception|Warning)): ", re.M)
+    node = re.compile(r"^(?:ERROR|FAILED) (\S+)", re.M)
+    timing = re.compile(r"\bin\s+\d+(?:\.\d+)?s\b")
+    workspace = re.compile(r"(?:/[\w.-]+)*/workspaces/[\w.:-]+/")
+    out: list[dict[str, Any]] = []
+    for run in runs:
+        if run.get("passed"):
+            continue
+        text = str(run.get("stdout") or run.get("error") or "")
+        text = workspace.sub("<ws>/", text)
+        text = timing.sub("in Xs", text)
+        out.append({"exc": exc.findall(text), "node": node.findall(text)})
+    return out
 
 
 __all__ = (

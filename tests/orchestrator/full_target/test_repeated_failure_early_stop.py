@@ -34,6 +34,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_htn_deployment_wiring import _task_of  # noqa: E402
@@ -58,6 +60,8 @@ from test_verify_workspace_inputs import (  # noqa: E402
 from test_verify_workspace_inputs import _world as _c3_world  # noqa: E402
 
 from agent_orchestrator.artifacts.bound_workspace import (  # noqa: E402
+    UnifiedDiffApplyError,
+    decode_unified_diff_text,
     files_patched_by_unified_diff,
 )
 from agent_orchestrator.contracts import Budget  # noqa: E402
@@ -136,6 +140,44 @@ def test_the_fingerprint_is_layer_plus_problems_not_timing() -> None:
     assert verification_failure_fingerprint([m2]) != verification_failure_fingerprint([a])
 
 
+def _code_test_stdout(exc: str, *, attempt: str, seconds: str) -> dict[str, Any]:
+    """M3-r0 shape: summary is only the last pytest line; the exception is in stdout."""
+
+    stdout = (
+        "==================================== ERRORS ====================================\n"
+        "___________________ ERROR collecting tests/test_dispatch.py ____________________\n"
+        f"E     File \"/tmp/workspaces/task-d6d9:{attempt}-verify/service/beta/broken.py\""
+        ", line 5\n"
+        "E       def dispatch(queue, sink)\n"
+        "E                                ^\n"
+        f"E   {exc}\n"
+        "ERROR tests/test_dispatch.py\n"
+        f"1 error in {seconds}\n"
+    )
+    return {
+        "layer": "code_test",
+        "summary": f"pytest failed: 1 error in {seconds}",
+        "detail": {"runs": [{"stdout": stdout, "passed": False, "returncode": 2}]},
+    }
+
+
+def test_code_test_fingerprint_uses_the_exception_not_just_error_count() -> None:
+    """P1-2: M3-r0's 21 SyntaxError rows stay identical; SyntaxError vs ImportError
+    must not share a fingerprint just because both say ``1 error in Xs``."""
+
+    syntax_a = _code_test_stdout("SyntaxError: expected ':'", attempt="attempt-1", seconds="0.06s")
+    syntax_b = _code_test_stdout("SyntaxError: expected ':'", attempt="attempt-21", seconds="0.08s")
+    imported = _code_test_stdout(
+        "ImportError: cannot import name 'dispatch'", attempt="attempt-2", seconds="0.06s"
+    )
+    assert verification_failure_fingerprint([syntax_a]) == verification_failure_fingerprint(
+        [syntax_b]
+    )
+    assert verification_failure_fingerprint([syntax_a]) != verification_failure_fingerprint(
+        [imported]
+    )
+
+
 def test_c3_unified_diff_patches_the_seed_window() -> None:
     """P2.3o's leftover: a producer that only delivered ``patch.diff`` still
     names the patched seed file after the diff is applied."""
@@ -143,6 +185,63 @@ def test_c3_unified_diff_patches_the_seed_window() -> None:
     patched = files_patched_by_unified_diff(PATCH_TEXT, {WINDOW: SEED_WINDOW})
     assert patched[WINDOW] == PATCHED_WINDOW
     assert "end - 1" not in patched[WINDOW]
+
+
+OTHER = "stats/other.py"
+OTHER_SEED = "def n():\n    return 1\n"
+OTHER_PATCHED = "def n():\n    return 2\n"
+TWO_FILE_DIFF = PATCH_TEXT.rstrip() + (
+    "\n--- a/stats/other.py\n"
+    "+++ b/stats/other.py\n"
+    "@@ -1,2 +1,2 @@\n"
+    " def n():\n"
+    "-    return 1\n"
+    "+    return 2\n"
+)
+
+
+def test_a_two_file_unified_diff_patches_both_seed_files() -> None:
+    """P1-1: switching to the next ``--- `` must flush the current hunk."""
+
+    patched = files_patched_by_unified_diff(
+        TWO_FILE_DIFF, {WINDOW: SEED_WINDOW, OTHER: OTHER_SEED}
+    )
+    assert patched[WINDOW] == PATCHED_WINDOW
+    assert patched[OTHER] == OTHER_PATCHED
+
+
+def test_a_hunk_mismatch_on_one_file_rejects_the_whole_diff() -> None:
+    """P1-1: one failed file must not leave the other file registered."""
+
+    broken = TWO_FILE_DIFF.replace("-    return 1\n", "-    return 99\n")
+    with pytest.raises(UnifiedDiffApplyError) as caught:
+        files_patched_by_unified_diff(broken, {WINDOW: SEED_WINDOW, OTHER: OTHER_SEED})
+    assert caught.value.path == OTHER
+    assert caught.value.reason == "hunk_mismatch"
+
+
+def test_a_parent_directory_path_in_the_diff_is_rejected() -> None:
+    """P1-1: ``../`` is fail-closed, not skipped."""
+
+    text = (
+        "--- a/../secret.py\n"
+        "+++ b/../secret.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    with pytest.raises(UnifiedDiffApplyError) as caught:
+        files_patched_by_unified_diff(text, {"secret.py": "x\n", WINDOW: SEED_WINDOW})
+    assert ".." in caught.value.path or caught.value.reason == "unsafe_path"
+
+
+def test_a_binary_diff_document_is_rejected_as_not_utf8() -> None:
+    """P1-1: a non-utf8 patch document is a named refusal, not a silent skip."""
+
+    with pytest.raises(UnifiedDiffApplyError) as caught:
+        decode_unified_diff_text(b"\xff\xfe--- a/x\n", path="patch.diff")
+    assert caught.value.path == "patch.diff"
+    assert caught.value.reason == "not_utf8"
 
 
 # ======================================================================================
@@ -467,7 +566,7 @@ def test_identical_rule_check_failures_escalate_instead_of_burning_attempts(
         f"{outcome['status']} / {outcome['stop_reason']}: {outcome['report']} "
         f"types={outcome['types']} roles={outcome['roles']}"
     )
-    assert outcome["stop_reason"] != str(MissionStopReason.BUDGET_EXHAUSTED), (
+    assert outcome["stop_reason"] == str(MissionStopReason.PLANNING_FAILED), (
         outcome["stop_reason"],
         outcome["report"],
     )

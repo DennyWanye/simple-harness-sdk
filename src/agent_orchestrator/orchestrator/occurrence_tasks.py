@@ -402,6 +402,8 @@ MAX_IDENTICAL_VERIFICATION_REPAIRS = 1
 
 _TIMING = re.compile(r"\bin\s+\d+(?:\.\d+)?s\b")
 _WORKSPACE_PATH = re.compile(r"(?:/[\w.-]+)*/workspaces/[\w.:-]+/")
+_PYTEST_EXC = re.compile(r"^E\s+(\w+(?:Error|Exception|Warning)): ", re.M)
+_PYTEST_NODE = re.compile(r"^(?:ERROR|FAILED) (\S+)", re.M)
 
 
 def read_only_rewrites(
@@ -449,9 +451,10 @@ def read_only_rewrites(
 def verification_failure_fingerprint(failures: Sequence[Any]) -> str:
     """Identity of one verification failure for consecutive-retry bounding (P2.3v).
 
-    Same layer + same problems list (or a timing-stripped summary).  Attempt
-    workspace paths and ``0.06s`` / ``0.07s`` suffixes are not part of the
-    identity — Grok M3-r0's 21 ``code_test`` FAILs were the same SyntaxError.
+    Same layer + same problems list, else a stable ``code_test`` node (exception
+    class / pytest node id, paths and ``0.06s`` stripped).  Grok M3-r0's 21
+    ``code_test`` FAILs were the same SyntaxError; two different exceptions
+    that both say ``1 error in Xs`` are not the same failure (P1-2).
     """
 
     parts: list[str] = []
@@ -464,11 +467,36 @@ def verification_failure_fingerprint(failures: Sequence[Any]) -> str:
         if isinstance(problems, list) and problems:
             body = json.dumps(problems, ensure_ascii=False, sort_keys=True)
         else:
-            body = str(item.get("summary") or "")
+            body = _stable_code_test_body(
+                detail if isinstance(detail, Mapping) else {},
+                str(item.get("summary") or ""),
+            )
         body = _TIMING.sub("in Xs", body)
         body = _WORKSPACE_PATH.sub("<ws>/", body)
         parts.append(f"{layer}\0{body}")
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _stable_code_test_body(detail: Mapping[str, Any], summary: str) -> str:
+    nodes = detail.get("failure_nodes")
+    if isinstance(nodes, list) and nodes:
+        return json.dumps(nodes, ensure_ascii=False)
+    extracted: list[dict[str, Any]] = []
+    for run in detail.get("runs") or ():
+        if not isinstance(run, Mapping):
+            continue
+        text = str(run.get("stdout") or run.get("error") or "")
+        text = _WORKSPACE_PATH.sub("<ws>/", text)
+        text = _TIMING.sub("in Xs", text)
+        extracted.append(
+            {
+                "exc": _PYTEST_EXC.findall(text),
+                "node": _PYTEST_NODE.findall(text),
+            }
+        )
+    if any(item["exc"] or item["node"] for item in extracted):
+        return json.dumps(extracted, ensure_ascii=False)
+    return summary
 
 
 def occurrence_task(
