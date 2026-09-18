@@ -220,3 +220,81 @@ stub world (no registry/occurrence/observation)  801b8e3934fd5a77c347385a13d4671
 ```text
 feat(h1-d): planner package additions for planning-decision-v1 (subjects, visible refs, feedback, limits)
 ```
+
+---
+
+## 8. 第 1 轮处置（核验结论：修后可合）
+
+**核验报告：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`（位于核验副本
+`simple-runtime-sdk-h1d-verify-h1-d`，未跟踪）。P0 无；P1 一条；P2 三条。
+
+### 8.1 P1-1（必修）：task / obligation 的 `content_hash` 来源不符 §5.1
+
+**问题。** 旧包的 `open_compound_goals[]` 只带 `contract_revision`、不带哈希，收集器因此落进
+「无现成哈希 → 派生」分支，对 `{kind,id,semantic_revision}` 求 sha256。该值与库内权威值不等：
+task 输出 `fbc4fcfd…` 而 `task_semantics.content_hash` 为 `814531fc…`；obligation 输出
+`66efa7b8…` 而 `content_hash_of(obligation_json)` 为 `ed0798d5…`。`visible_refs` 是模型要逐字节
+照抄、H1-F 会重算比对的四元组，钉一个与对象无关的哈希等于让下游校验必然失败。
+
+**修复。** 收集器**不再派生任何哈希**（删除 `_ref_hash`）。`_one_ref` 现在是「哈希必须由来源
+提供」：无哈希 → 跳过；非整数/非正 revision → 跳过；哈希格式不合法 → 跳过。权威摘要改由一条**仅
+新协议读取的旁路**带入：
+
+- `hierarchical_planner_package` 新增 `authoritative_refs` 入参（默认 `()`，旧路径不传、也不产出该键）；
+- 包内新增 `authoritative_refs` 兄弟字段：`_network_authorities(network)` 覆盖 board 上**每个 task
+  binding**（`kind=task`、`id=task_id`、`semantic_revision=binding_revision`、
+  `content_hash=binding.content_hash()`，即 `task_semantics.content_hash`），调用方再补 obligation
+  的对象规范 JSON 摘要；
+- 收集器按 `(kind,id)` 索引该表，`task`/`obligation` 只从表里取值和哈希；表里没有的 kind/id
+  **不产出 ref**（宁缺毋滥）。
+
+`authoritative_refs` 是 side table（模型不据此推理），随包进入决策包、旧包永不出现它。
+
+**实测（核验员同款脚本）。**
+
+```text
+task emitted  : 814531fcfc18f110015323715cddbdc1be62e06403bd0d22958574d18018cc70
+task authority: 814531fcfc18f110015323715cddbdc1be62e06403bd0d22958574d18018cc70
+task MATCH    : True
+obl emitted   : ed0798d5f897c6a47e665ffd04b611845476433ab1609acc377c0d7745ed6fbe
+obl authority : ed0798d5f897c6a47e665ffd04b611845476433ab1609acc377c0d7745ed6fbe
+obl MATCH     : True
+no-supply has obligation ref: False
+```
+
+### 8.2 P2 三条
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| P2-1 | 非正 revision 被「抬为 1」、字符串 revision `"3"` 被 `int()` 接受 | `_one_ref` 要求 `isinstance(int)` 且 `>=1`，否则跳过（与 `index(minimum=1)` 口径一致） |
+| P2-2 | `resolution_ref` 被标成 `acceptance` | `_accepted_ref` 按 §5.1 区分两种 kind，各自原样输出 |
+| P2-3 | observation 缺哈希时被派生 | observation 只取 `read_set_entry` 自带的 `ReadItem.content_hash`，缺则跳过 |
+
+P2-4（`method_instance` 缺枚举成员时降级为 method 引用）核验员已确认归属 H1-A，不构成本片问题。
+
+### 8.3 测试先行与变异
+
+先补测试到红（红尾：`12 failed, 43 passed in 0.59s`），再改实现到绿（`58 passed in 0.55s`）。
+核验员上一轮判 **SURVIVED** 的 5 个变异（E1 派生材料加盐、E2 obligation 固定哈希、E3 非正 revision
+抬为 1、E4 `resolution_ref` 发 `acceptance`、E5 字符串/浮点 revision 被接受）本轮逐一重跑，**全部
+KILLED**：
+
+```text
+E1 -> 3 failed, 55 passed in 0.56s
+E2 -> 1 failed, 57 passed in 0.55s
+E3 -> 1 failed, 57 passed in 0.55s
+E4 -> 1 failed, 57 passed in 0.55s
+E5 -> 1 failed, 57 passed in 0.56s
+```
+
+变异均以 `/tmp` 副本注入并恢复（`diff -q` 校验恢复后与备份一致），未使用任何 git 写命令。
+
+### 8.4 本轮验收门
+
+| 完成标准 | 证据 | 结果 |
+|---|---|---|
+| 新测试文件全绿 | `58 passed in 0.55s` | ✅ |
+| full_target 全绿 | `3070 passed, 2 skipped in 129.68s (0:02:09)` | ✅ |
+| 相关六文件全绿 | `349 passed in 18.45s` | ✅ |
+| 旧协议字节不变 | 黄金 `a9aa2e7e…` / `801b8e39…` 仍逐位相等 | ✅ |
+| ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |

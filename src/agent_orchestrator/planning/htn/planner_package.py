@@ -512,37 +512,29 @@ def recorded_facts(
 # helpers are what H1-F's request binding is computed over.
 
 
-def _ref_hash(kind: str, id: str, semantic_revision: int) -> str:
-    """The hash a ref gets when the package carries no authoritative one (§5.1).
-
-    The table says "no existing hash → sha256 of the object's canonical JSON".  The
-    object a *reference* is derived from has exactly three stable parts, so hashing
-    them — rather than the whole package entry they happened to sit in — keeps the
-    ref recomputable from the ref alone, which is what a request binding needs.
-    """
-
-    return content_hash_of(
-        {"kind": kind, "id": id, "semantic_revision": int(semantic_revision)}
-    )
-
-
 def _one_ref(
     kind: str, id: object, semantic_revision: object, content_hash: object = None
 ) -> dict[str, Any] | None:
     """One reference quadruple, or ``None`` when the source is not usable.
 
-    A reference the package cannot state correctly is *skipped*, never invented: the
-    alternative — synthesising an id, or overwriting an authoritative hash with a
-    guess — is exactly the "model invented a version" failure §18.5 exists to refuse.
-    Two cases are deliberately kept apart:
+    A reference the package cannot state correctly is *skipped*, never invented.  The
+    hard part is the hash: §18 makes the quadruple a byte-match contract, §5.1 says
+    where each kind's hash comes from, and the only value this function may emit is
+    that *authoritative* one.  So a source that does not carry a hash — a task whose
+    binding was never attached, an obligation with no ledger beside it — is dropped
+    rather than given a plausible-looking digest.  A digest derived from
+    ``{kind, id, revision}`` describes the reference, not the object it points at, and
+    every downstream re-check (H1-F admission, the read-set checker) compares hashes:
+    a fabricated one fails that comparison *after* the model has been told to quote
+    it, which is worse than the ref never having been offered.
 
-    * **no hash at all** (§5.1: "no existing hash → sha256 of the object's canonical
-      JSON").  Some kinds — an obligation, a task whose entry carries no
-      ``contract_hash`` — genuinely have no authoritative digest in the package, so
-      one is *derived* from the ref's own three stable parts.
-    * **a hash that is present but malformed** is not repaired, because a method ref
-      whose digest disagrees with ``method_contracts`` would be refused at commit
-      time; the ref is dropped instead of shown wrong.
+    Other reasons to drop rather than repair, all deliberately strict:
+
+    * a non-integer revision (``"3"``, ``3.5``) or a revision below 1 — ``semantic_revision``
+      is an ``index(minimum=1)`` on the wire, so there is no correct value to
+      substitute;
+    * a malformed hash — a method ref whose digest disagrees with ``method_contracts``
+      would be refused at commit time anyway, so it is not shown.
 
     ``PlanningRefV1`` is the validator, so the shape returned here is exactly the
     shape H1-F's admission layer re-checks the model's answer against.
@@ -550,31 +542,28 @@ def _one_ref(
 
     if id is None or str(id) == "":
         return None
-    if isinstance(semantic_revision, bool) or semantic_revision is None:
+    if isinstance(semantic_revision, bool) or not isinstance(semantic_revision, int):
+        # ``index()`` refuses ``bool`` and ``"3"`` alike; mirror that here so the
+        # collector never coerces a string or float into a revision.
         return None
-    try:
-        revision = int(semantic_revision)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    if semantic_revision < 1:
         return None
-    if revision < 1:
-        revision = 1
-    digest = content_hash
-    if digest is None or digest == "":
-        digest = _ref_hash(str(kind), str(id), revision)
+    if content_hash is None or content_hash == "":
+        return None
     try:
         PlanningRefV1(
             kind=PlanningRefKind(str(kind)),
             id=str(id),
-            semantic_revision=revision,
-            content_hash=digest,
+            semantic_revision=semantic_revision,
+            content_hash=content_hash,
         )
     except (ContractError, ValueError):
         return None
     return {
         "kind": str(kind),
         "id": str(id),
-        "semantic_revision": revision,
-        "content_hash": str(digest),
+        "semantic_revision": semantic_revision,
+        "content_hash": str(content_hash),
     }
 
 
@@ -592,21 +581,61 @@ def _method_ref(value: Any) -> dict[str, Any] | None:
     return _one_ref(PlanningRefKind.METHOD.value, method_id, version, data.get("content_hash"))
 
 
-def _task_ref(entry: Mapping[str, Any], id_key: str, revision_key: str) -> list[dict[str, Any]]:
-    """The task and the obligation a plan entry names, with their revisions (§5.1)."""
+def _authority_index(package: Mapping[str, Any]) -> Mapping[tuple[str, str], Mapping[str, Any]]:
+    """The authoritative digest per ``(kind, id)`` the package was built with (§5.1).
+
+    ``visible_refs`` has to carry the *object's* digest, and the old sections do not
+    have one for a task or an obligation: ``open_compound_goals`` quotes a
+    ``contract_revision`` but never a hash, and nothing in the package reaches the
+    obligation ledger.  Rather than derive a digest from the ref (which describes the
+    ref, not the object), the builder hands the collector this side table — one
+    quadruple per referenced object, taken from ``task_semantics.content_hash`` and
+    from the obligation's canonical JSON.  A ``(kind, id)`` that is not in the table
+    has no authoritative digest, so its ref is simply not emitted.
+    """
+
+    index: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for entry in package.get("authoritative_refs", ()):
+        if not isinstance(entry, Mapping):
+            continue
+        kind = entry.get("kind")
+        id = entry.get("id")
+        if kind is None or id is None:
+            continue
+        index[(str(kind), str(id))] = entry
+    return index
+
+
+def _task_ref(
+    entry: Mapping[str, Any],
+    id_key: str,
+    authorities: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """The task and the obligation a plan entry names, with their §5.1 digests.
+
+    Both kinds take their revision and hash from the authority table and nothing
+    from the plan entry: the entry's ``contract_revision`` is what the *goal* quotes,
+    while the ref's revision is the ``task_semantics`` binding revision, and the two
+    need not agree.  A kind the table does not cover yields no ref.
+    """
 
     out: list[dict[str, Any]] = []
-    task_id = entry.get(id_key)
-    revision = entry.get(revision_key, 1)
-    if task_id:
+    for kind, id_key in (
+        (PlanningRefKind.TASK.value, id_key),
+        (PlanningRefKind.OBLIGATION.value, "obligation_id"),
+    ):
+        identity = entry.get(id_key)
+        if not identity:
+            continue
+        authority = authorities.get((kind, str(identity)))
+        if authority is None:
+            continue
         ref = _one_ref(
-            PlanningRefKind.TASK.value, task_id, revision, entry.get("contract_hash")
+            kind,
+            identity,
+            authority.get("semantic_revision"),
+            authority.get("content_hash"),
         )
-        if ref is not None:
-            out.append(ref)
-    obligation_id = entry.get("obligation_id")
-    if obligation_id:
-        ref = _one_ref(PlanningRefKind.OBLIGATION.value, obligation_id, 1, None)
         if ref is not None:
             out.append(ref)
     return out
@@ -620,10 +649,12 @@ def _read_set_ref(entry: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     # §17: a planning fact *is* an observation.  The package's own entry says
     # kind=fact (the read-set wire kind); the planning ref kind is observation.
+    # §5.1 gives the observation hash as ``ReadItem.content_hash`` — the entry's own
+    # value, never a derivation, so a hash-less entry is dropped by ``_one_ref``.
     return _one_ref(
         PlanningRefKind.OBSERVATION.value,
         quoted.get("id"),
-        quoted.get("semantic_revision", 1),
+        quoted.get("semantic_revision"),
         quoted.get("content_hash"),
     )
 
@@ -650,21 +681,35 @@ def _method_instance_ref(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     return _one_ref(
         getattr(kind, "value", kind),
         instance_id,
-        entry.get("plan_revision", 1),
+        entry.get("plan_revision"),
         entry.get("parameters_digest"),
     )
 
 
 def _accepted_ref(entry: Mapping[str, Any]) -> dict[str, Any] | None:
-    goal = entry.get("acceptance_ref", entry.get("resolution_ref"))
-    if not isinstance(goal, Mapping):
-        return None
-    return _one_ref(
-        PlanningRefKind.ACCEPTANCE.value,
-        goal.get("id"),
-        goal.get("semantic_revision", goal.get("revision", 1)),
-        goal.get("content_hash"),
-    )
+    """The accepted result's acceptance ref, and — separately — its resolution ref.
+
+    §5.1 lists ``acceptance`` and ``resolution`` as two kinds with two sources, so a
+    ``resolution_ref`` is reported as a ``resolution`` and an ``acceptance_ref`` as an
+    ``acceptance``.  Either may be absent; neither is renamed into the other.
+    """
+
+    for key, kind in (
+        ("acceptance_ref", PlanningRefKind.ACCEPTANCE.value),
+        ("resolution_ref", PlanningRefKind.RESOLUTION.value),
+    ):
+        goal = entry.get(key)
+        if not isinstance(goal, Mapping):
+            continue
+        ref = _one_ref(
+            kind,
+            goal.get("id"),
+            goal.get("semantic_revision", goal.get("revision")),
+            goal.get("content_hash"),
+        )
+        if ref is not None:
+            return ref
+    return None
 
 
 def _collect_refs(package: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -672,14 +717,15 @@ def _collect_refs(package: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     collected: list[dict[str, Any]] = []
 
+    authorities = _authority_index(package)
     plan = package.get("plan")
     plan = plan if isinstance(plan, Mapping) else {}
     for entry in plan.get("open_compound_goals", ()):  # type: ignore[union-attr]
         if isinstance(entry, Mapping):
-            collected.extend(_task_ref(entry, "goal_id", "contract_revision"))
+            collected.extend(_task_ref(entry, "goal_id", authorities))
     for entry in plan.get("committed_primitives", ()):  # type: ignore[union-attr]
         if isinstance(entry, Mapping):
-            collected.extend(_task_ref(entry, "task_id", "contract_revision"))
+            collected.extend(_task_ref(entry, "task_id", authorities))
 
     for entry in package.get("method_library", ()):
         if not isinstance(entry, Mapping):
@@ -842,20 +888,56 @@ def _feedback_json(value: Any) -> dict[str, Any] | None:
     return feedback.to_json()
 
 
+def _network_authorities(network: TaskNetworkSnapshot) -> list[dict[str, Any]]:
+    """The authoritative §5.1 digest of every task the network carries.
+
+    ``task_semantics.content_hash`` is the binding's own canonical-JSON digest, and
+    the network is built from those bindings — so the packager can state a task's
+    authority without a store lookup, and does so for every binding on the board
+    (open goals and committed primitives alike) rather than only the ones a section
+    happens to quote.
+    """
+
+    authorities: list[dict[str, Any]] = []
+    for binding in getattr(network, "task_bindings", ()):
+        digest = getattr(binding, "content_hash", None)
+        authorities.append(
+            {
+                "kind": PlanningRefKind.TASK.value,
+                "id": str(binding.task_id),
+                "semantic_revision": int(binding.contract_revision),
+                "content_hash": digest() if callable(digest) else binding.contract_hash,
+            }
+        )
+    return authorities
+
+
 def _decision_fields(
     package: Mapping[str, Any],
     network: TaskNetworkSnapshot,
     previous_feedback: Any,
+    authorities: Sequence[Any],
 ) -> dict[str, Any]:
-    """The five decision-protocol fields, added on top of the legacy package (§38)."""
+    """The §38 decision-protocol fields, added on top of the legacy package.
 
-    refs = visible_refs_from_hierarchical_package(package)
+    ``authoritative_refs`` is a *side table*, not a tenth thing the model reasons
+    about: it carries the object digests §5.1 names for the kinds whose old sections
+    quote only an id and a revision (tasks, obligations), so the collector can emit a
+    byte-matchable quadruple instead of a fabricated digest.  It travels inside the
+    decision package and nowhere else — the legacy package never grows it — which is
+    also what lets a later reader re-run the collector on the stored request.
+    """
+
+    authority_rows = _as_json_refs(authorities)
+    scoped = {**package, "authoritative_refs": authority_rows}
+    refs = visible_refs_from_hierarchical_package(scoped)
     return {
         "planning_protocol": {
             "protocol": PLANNING_DECISION_V1,
             "enabled_decision_types": _enabled_decision_types(),
         },
         "planning_subjects": [dict(item) for item in planning_subjects(network)],
+        "authoritative_refs": authority_rows,
         "visible_refs": [dict(item) for item in refs],
         "visible_refs_omitted": visible_refs_omitted(package),
         "previous_feedback": _feedback_json(previous_feedback),
@@ -880,6 +962,7 @@ def hierarchical_planner_package(
     read_only_rejected_method_refs_of: Mapping[str, Sequence[Any]] | None = None,
     planning_protocol: str | None = None,
     previous_feedback: Any = None,
+    authoritative_refs: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """The whole package, as a plain mapping the context builder can seal.
 
@@ -1005,9 +1088,14 @@ def hierarchical_planner_package(
         ),
     }
     if planning_protocol == PLANNING_DECISION_V1:
-        # The five §38 fields go *on top of* the legacy ones — the plan, method
-        # library, applicability, facts, operators and rejected refinements all stay.
-        package.update(_decision_fields(package, network, previous_feedback))
+        # The §38 fields go *on top of* the legacy ones — the plan, method library,
+        # applicability, facts, operators and rejected refinements all stay.  The
+        # authority side table merges what the network can attest (every task binding)
+        # with what the caller supplies (obligations live in a ledger this module
+        # cannot read); §5.1 says a ref carries the object's own digest, so the
+        # collector emits a task/obligation ref only for a ``(kind, id)`` in there.
+        authorities = [*_network_authorities(network), *_as_json_refs(authoritative_refs)]
+        package.update(_decision_fields(package, network, previous_feedback, authorities))
     return package
 
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,7 @@ from agent_orchestrator.contracts.planning_decisions import (  # noqa: E402
     PlanningRefV1,
     PlanningRetryBudgetView,
 )
+from agent_orchestrator.contracts.semantic_base import content_hash_of  # noqa: E402
 from agent_orchestrator.planning.htn.planner_package import (  # noqa: E402
     HIERARCHICAL_DECISION_PACKAGE_VERSION,
     HIERARCHICAL_PACKAGE_VERSION,
@@ -110,6 +112,7 @@ DECISION_ONLY_FIELDS = frozenset(
     {
         "planning_protocol",
         "planning_subjects",
+        "authoritative_refs",
         "visible_refs",
         "visible_refs_omitted",
         "previous_feedback",
@@ -146,6 +149,7 @@ class _Network:
     root_occurrence_ids: tuple[str, ...] = ()
     required_obligations: tuple[str, ...] = ()
     occurrences: tuple[Any, ...] = ()
+    task_bindings: tuple[Any, ...] = ()
 
     def adopted_instance_for(self, occurrence_id: Any) -> Any:
         return None
@@ -175,6 +179,7 @@ def empty_package(**sections: Any) -> dict[str, Any]:
         "rejected_refinements": [],
         "facts": [],
         "accepted_results": [],
+        "authoritative_refs": [],
     }
     for name, value in sections.items():
         if name in {"open_compound_goals", "committed_primitives"}:
@@ -182,6 +187,24 @@ def empty_package(**sections: Any) -> dict[str, Any]:
         else:
             package[name] = value
     return package
+
+
+def authority(kind: str, id: str, revision: int, digest: str) -> dict[str, Any]:
+    """One sidecar quadruple: an authoritative (§5.1) digest for a task/obligation."""
+
+    return {
+        "kind": kind,
+        "id": id,
+        "semantic_revision": revision,
+        "content_hash": digest,
+    }
+
+
+def by_key(package: Mapping[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    return {
+        (item["kind"], item["id"]): dict(item)
+        for item in visible_refs_from_hierarchical_package(package)
+    }
 
 
 def hex_digest(index: int) -> str:
@@ -432,6 +455,42 @@ def test_an_applicability_row_also_exposes_its_method() -> None:
 
 
 def test_an_open_goal_yields_a_task_and_an_obligation_ref() -> None:
+    """§5.1: the ref carries the object's *authoritative* digest, not a derived one."""
+
+    task_hash = "a" * 64
+    obligation_hash = "b" * 64
+    package = empty_package(
+        open_compound_goals=[
+            {
+                "occurrence_id": "occ-1",
+                "goal_id": "task-1",
+                "obligation_id": "obl-1",
+                "contract_revision": 4,
+            }
+        ],
+        authoritative_refs=[
+            authority("task", "task-1", 4, task_hash),
+            authority("obligation", "obl-1", 1, obligation_hash),
+        ],
+    )
+    refs = by_key(package)
+    assert refs[("task", "task-1")] == {
+        "kind": "task",
+        "id": "task-1",
+        "semantic_revision": 4,
+        "content_hash": task_hash,
+    }
+    assert refs[("obligation", "obl-1")] == {
+        "kind": "obligation",
+        "id": "obl-1",
+        "semantic_revision": 1,
+        "content_hash": obligation_hash,
+    }
+
+
+def test_a_task_or_obligation_without_authority_is_skipped_rather_than_invented() -> None:
+    """§18.5: a hash this package cannot state authoritatively is *omitted*, not faked."""
+
     package = empty_package(
         open_compound_goals=[
             {
@@ -442,37 +501,38 @@ def test_an_open_goal_yields_a_task_and_an_obligation_ref() -> None:
             }
         ]
     )
-    refs = {
-        (item["kind"], item["id"]): dict(item)
-        for item in visible_refs_from_hierarchical_package(package)
-    }
-    assert refs[("task", "task-1")]["semantic_revision"] == 4
-    assert len(refs[("task", "task-1")]["content_hash"]) == 64
-    assert refs[("obligation", "obl-1")]["semantic_revision"] == 1
-    assert len(refs[("obligation", "obl-1")]["content_hash"]) == 64
+    assert visible_refs_from_hierarchical_package(package) == ()
 
 
-def test_an_open_goal_with_a_contract_hash_uses_it_verbatim() -> None:
+def test_a_task_ref_takes_the_sidecars_revision_and_hash_verbatim() -> None:
+    """A task entry that carries its own ``contract_revision`` still needs authority."""
+
     package = empty_package(
         open_compound_goals=[
             {
                 "occurrence_id": "occ-1",
                 "goal_id": "task-1",
                 "obligation_id": "obl-1",
-                "contract_revision": 2,
-                "contract_hash": "c" * 64,
+                "contract_revision": 9,
             }
-        ]
+        ],
+        authoritative_refs=[authority("task", "task-1", 2, "c" * 64)],
     )
-    refs = {item["id"]: dict(item) for item in visible_refs_from_hierarchical_package(package)}
-    assert refs["task-1"]["content_hash"] == "c" * 64
+    refs = by_key(package)
+    assert refs[("task", "task-1")]["semantic_revision"] == 2
+    assert refs[("task", "task-1")]["content_hash"] == "c" * 64
+    assert ("obligation", "obl-1") not in refs
 
 
 def test_a_committed_primitive_yields_a_task_and_an_obligation_ref() -> None:
     package = empty_package(
         committed_primitives=[
             {"occurrence_id": "occ-2", "task_id": "task-2", "obligation_id": "obl-2"}
-        ]
+        ],
+        authoritative_refs=[
+            authority("task", "task-2", 1, "d" * 64),
+            authority("obligation", "obl-2", 1, "e" * 64),
+        ],
     )
     ids = {(item["kind"], item["id"]) for item in visible_refs_from_hierarchical_package(package)}
     assert ids == {("task", "task-2"), ("obligation", "obl-2")}
@@ -580,6 +640,67 @@ def test_an_accepted_result_exposes_its_acceptance_ref() -> None:
     ]
 
 
+def test_a_non_integer_revision_is_skipped_not_coerced() -> None:
+    """P2-1: ``"3"`` and ``3.5`` are not revisions; the ref is dropped (§18.5)."""
+
+    package = empty_package(
+        method_library=[
+            {"refine_method_ref": {"id": "m-str", "version": "3", "content_hash": "1" * 64}},
+            {"refine_method_ref": {"id": "m-float", "version": 3.5, "content_hash": "2" * 64}},
+            method_entry(7, version=3),
+        ]
+    )
+    assert [item["id"] for item in visible_refs_from_hierarchical_package(package)] == ["m-0007"]
+
+
+def test_a_non_positive_revision_is_skipped_not_raised_to_one() -> None:
+    """P2-1: §5.1's "无则 1" is only for the ledger; a 0 revision has no valid四元组."""
+
+    package = empty_package(
+        open_compound_goals=[{"goal_id": "task-1", "obligation_id": "obl-1"}],
+        authoritative_refs=[
+            authority("task", "task-1", 0, "a" * 64),
+            authority("obligation", "obl-1", 0, "b" * 64),
+        ],
+    )
+    assert visible_refs_from_hierarchical_package(package) == ()
+
+
+def test_an_observation_without_a_hash_is_skipped_not_derived() -> None:
+    """P2-3: §5.1 gives the observation hash as ``ReadItem.content_hash`` — no derivation."""
+
+    package = empty_package(
+        facts=[
+            {"read_set_entry": {"kind": "fact", "id": "obsrec-1", "semantic_revision": 1}},
+            {
+                "read_set_entry": {
+                    "kind": "fact",
+                    "id": "obsrec-2",
+                    "semantic_revision": 1,
+                    "content_hash": "c" * 64,
+                }
+            },
+        ]
+    )
+    assert [item["id"] for item in visible_refs_from_hierarchical_package(package)] == ["obsrec-2"]
+
+
+def test_a_resolution_ref_keeps_its_own_kind() -> None:
+    """P2-2: §5.1 lists ``acceptance`` and ``resolution`` as two kinds, two sources."""
+
+    package = empty_package(
+        accepted_results=[
+            {"resolution_ref": {"id": "res-1", "semantic_revision": 2, "content_hash": "d" * 64}}
+        ]
+    )
+    assert by_key(package)[("resolution", "res-1")] == {
+        "kind": "resolution",
+        "id": "res-1",
+        "semantic_revision": 2,
+        "content_hash": "d" * 64,
+    }
+
+
 def test_a_malformed_source_ref_is_skipped_rather_than_invented() -> None:
     package = empty_package(
         method_library=[
@@ -659,11 +780,130 @@ def test_the_built_decision_package_exposes_the_collector_output(tmp_path: Any) 
         world.network(),
         registry=world.env.registry,
         planning_protocol=PLANNING_DECISION_V1,
+        authoritative_refs=[authority("obligation", "obl-root", 1, "b" * 64)],
     )
     assert package["visible_refs_omitted"] == 0
     assert package["visible_refs"] == list(visible_refs_from_hierarchical_package(package))
     kinds = {item["kind"] for item in package["visible_refs"]}
     assert kinds == {"method", "task", "obligation"}
+
+
+def test_the_built_task_ref_carries_the_bindings_authoritative_hash(tmp_path: Any) -> None:
+    """§5.1: ``task`` hash is ``task_semantics.content_hash`` — i.e. the binding's own."""
+
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    network = world.network()
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        network,
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+    )
+    emitted = by_key(package)
+    for spec in network.occurrences:
+        binding = network.binding_for_occurrence(spec.occurrence_id)
+        ref = emitted[("task", str(spec.task_id))]
+        assert ref["content_hash"] == binding.content_hash()
+        # Not merely ``len == 64``: the exact canonical-JSON digest the store keeps.
+        assert ref["content_hash"] == content_hash_of(binding.to_json())
+        assert ref["semantic_revision"] == int(binding.contract_revision)
+
+
+def test_the_built_package_omits_a_ref_it_cannot_attest(tmp_path: Any) -> None:
+    """No obligation ledger was handed in, so no obligation ref is emitted — never a guess."""
+
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        world.network(),
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+    )
+    assert "obligation" not in {item["kind"] for item in package["visible_refs"]}
+    assert "task" in {item["kind"] for item in package["visible_refs"]}
+
+
+def test_a_supplied_obligation_authority_reaches_visible_refs(tmp_path: Any) -> None:
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    from agent_orchestrator.storage.obligation_store import ObligationStore
+
+    duty = ObligationStore(world.store).obligation(world.mission.id, "obl-root")
+    authoritative = content_hash_of(duty.to_json())
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        world.network(),
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+        authoritative_refs=[authority("obligation", "obl-root", 1, authoritative)],
+    )
+    assert by_key(package)[("obligation", "obl-root")] == {
+        "kind": "obligation",
+        "id": "obl-root",
+        "semantic_revision": 1,
+        "content_hash": authoritative,
+    }
+    # The ledger's own canonical-JSON digest is the one §5.1 names, not any other.
+    assert authoritative == content_hash_of(duty.to_json())
+
+
+def test_the_legacy_package_never_carries_the_authority_sidecar() -> None:
+    assert "authoritative_refs" not in stub_package()
+
+
+def test_the_legacy_and_decision_packages_share_a_task_hash_source(tmp_path: Any) -> None:
+    """The only task digest the module may emit is the binding's own ``content_hash``.
+
+    A derived ``sha256({kind, id, revision})`` would describe the ref instead of the
+    task; this pins the value to the store's authoritative column, not to a length.
+    """
+
+    import sqlite3
+
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        world.network(),
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+    )
+    stored = sqlite3.connect(world.path).execute(
+        "SELECT content_hash FROM task_semantics WHERE task_id = 'task-root'"
+    ).fetchone()[0]
+    assert by_key(package)[("task", "task-root")]["content_hash"] == stored
+
+
+def test_the_authority_sidecar_is_a_plain_list_of_quadruples(tmp_path: Any) -> None:
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        world.network(),
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+    )
+    rows = package["authoritative_refs"]
+    assert rows, "every task binding on the board is attested"
+    for row in rows:
+        assert set(row) == {"kind", "id", "semantic_revision", "content_hash"}
+        PlanningRefV1.from_json(row)
+    kinds = {row["kind"] for row in rows}
+    assert kinds == {"task"}
+
+
+def test_the_builder_reads_task_authority_from_the_network_not_the_entry(tmp_path: Any) -> None:
+    """A plan entry's own ``contract_revision`` never substitutes for the binding's."""
+
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    network = world.network()
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        network,
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+    )
+    binding = network.binding_for_occurrence("task-root")
+    ref = by_key(package)[("task", "task-root")]
+    assert ref["semantic_revision"] == int(binding.contract_revision)
+    assert ref["content_hash"] == binding.content_hash()
 
 
 def test_the_built_decision_package_reports_a_stub_with_no_refs() -> None:
