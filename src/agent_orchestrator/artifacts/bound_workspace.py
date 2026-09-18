@@ -16,7 +16,7 @@ artifacts, which no longer include that path, and fails
 ``artifact '…' is not a recorded workspace file``.  ``code_test`` rebuilds from
 seed + the diff document and runs against the red baseline.
 
-This module does two pure things and writes nothing:
+This module does three pure things and writes nothing:
 
 * :func:`overlay_bound_producer_files` — for each bound producer, add the accepted
   artifacts that overlay the consumer's seed.  The port document stays; REPORT.md
@@ -25,14 +25,23 @@ This module does two pure things and writes nothing:
 * :func:`bound_artifacts_named_in_envelope` — an envelope path that names a bound
   input is a recorded workspace file for ``rule_check``, even when the collector
   dropped it as "already accepted" (P2.3m).
+* :func:`files_patched_by_unified_diff` — P2.3v: when the producer accepted only
+  the diff document, apply it onto seed bytes so the patched paths can be
+  recorded (the collector materialises the artifacts; this function is the
+  bytes).
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 
 from ..contracts import Artifact
 from .versioning import UpstreamInput
+
+_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_DIFF_PATH = re.compile(r"^(?:---|\+\+\+) [ab]/(.+)$")
 
 
 def overlay_bound_producer_files(
@@ -97,7 +106,121 @@ def bound_artifacts_named_in_envelope(
     return [*recorded, *extra]
 
 
+def files_patched_by_unified_diff(
+    diff_text: str,
+    seed_contents: Mapping[str, str],
+) -> dict[str, str]:
+    """Apply a unified diff onto seed files.  Unknown paths and failed hunks
+    are skipped rather than invented — a producer that only delivered the
+    document still has to name bytes the consumer can hash.
+    """
+
+    patched: dict[str, str] = {}
+    for path, hunks in _parse_unified_diff(diff_text).items():
+        original = seed_contents.get(path)
+        if original is None:
+            continue
+        result = _apply_hunks(original, hunks)
+        if result is None or result == original:
+            continue
+        patched[path] = result
+    return patched
+
+
+def patched_content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _parse_unified_diff(diff_text: str) -> dict[str, list[tuple[int, list[tuple[str, str]]]]]:
+    """path → list of (old_start, [(tag, line-with-newline), ...])."""
+
+    files: dict[str, list[tuple[int, list[tuple[str, str]]]]] = {}
+    current: str | None = None
+    hunks: list[tuple[int, list[tuple[str, str]]]] = []
+    body: list[tuple[str, str]] | None = None
+    old_start = 0
+    for raw in diff_text.splitlines(keepends=True):
+        line = raw[:-1] if raw.endswith("\n") else raw
+        if line.startswith("--- "):
+            if current and hunks:
+                files[current] = hunks
+            current = None
+            hunks = []
+            body = None
+            match = _DIFF_PATH.match(line)
+            if match is not None:
+                current = match.group(1)
+            continue
+        if line.startswith("+++ "):
+            match = _DIFF_PATH.match(line)
+            if match is not None:
+                current = match.group(1)
+            continue
+        header = _HUNK_HEADER.match(line)
+        if header is not None:
+            if body is not None:
+                hunks.append((old_start, body))
+            old_start = int(header.group(1))
+            body = []
+            continue
+        if body is None or current is None:
+            continue
+        if not line:
+            body.append((" ", "\n" if raw.endswith("\n") else ""))
+            continue
+        tag = line[0]
+        if tag not in {" ", "+", "-", "\\"}:
+            continue
+        if tag == "\\":
+            continue
+        text = line[1:] + ("\n" if raw.endswith("\n") else "")
+        body.append((tag, text))
+    if body is not None:
+        hunks.append((old_start, body))
+    if current and hunks:
+        files[current] = hunks
+    return files
+
+
+def _apply_hunks(
+    original: str,
+    hunks: Sequence[tuple[int, list[tuple[str, str]]]],
+) -> str | None:
+    newline = "\n" if original.endswith("\n") or "\n" in original else "\n"
+    lines = original.splitlines(keepends=True)
+    if original and not original.endswith("\n"):
+        # splitlines(keepends=True) keeps the last line without a newline.
+        pass
+    offset = 0
+    for old_start, body in hunks:
+        old_slice: list[str] = []
+        new_slice: list[str] = []
+        for tag, text in body:
+            if tag in {" ", "-"}:
+                old_slice.append(text)
+            if tag in {" ", "+"}:
+                new_slice.append(text)
+        start = old_start - 1 + offset
+        if start < 0 or start + len(old_slice) > len(lines):
+            return None
+        actual = lines[start : start + len(old_slice)]
+        if [_line_body(item) for item in actual] != [_line_body(item) for item in old_slice]:
+            return None
+        lines[start : start + len(old_slice)] = new_slice
+        offset += len(new_slice) - len(old_slice)
+    text = "".join(lines)
+    if original.endswith(newline) and not text.endswith(newline):
+        text += newline
+    return text
+
+
+def _line_body(text: str) -> str:
+    return text[:-1] if text.endswith("\n") else text
+
+
 __all__ = (
     "bound_artifacts_named_in_envelope",
+    "files_patched_by_unified_diff",
     "overlay_bound_producer_files",
+    "patched_content_hash",
 )

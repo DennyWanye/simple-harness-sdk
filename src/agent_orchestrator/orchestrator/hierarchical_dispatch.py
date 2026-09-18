@@ -265,9 +265,21 @@ ROOT_REVIEW_REPAIR_REASON = "root_review_rejected"
 #: Findings travel as ``PlanningRejected`` so the P2.3j package section, the
 #: synthesis ``review_feedback`` and the stall report all read one named reason.
 READ_ONLY_REWRITE_REPAIR_REASON = "read_only_leaf_needs_write"
+#: P2.3v: the same repair record, opened when one occurrence has failed
+#: verification with the identical layer+problems fingerprint
+#: ``MAX_IDENTICAL_VERIFICATION_FAILURES`` times.  Findings travel as
+#: ``PlanningRejected`` so the P2.3j package section, the synthesis
+#: ``review_feedback`` and the stall report all read one named reason.
+REPEATED_VERIFICATION_FAILURE_REASON = "repeated_verification_failure"
 #: Reasons :meth:`HierarchicalDispatch.rejected_refinements` treats as "this adopted
 #: instance is the one a repair round is about".
-REPAIR_REASONS = frozenset({ROOT_REVIEW_REPAIR_REASON, READ_ONLY_REWRITE_REPAIR_REASON})
+REPAIR_REASONS = frozenset(
+    {
+        ROOT_REVIEW_REPAIR_REASON,
+        READ_ONLY_REWRITE_REPAIR_REASON,
+        REPEATED_VERIFICATION_FAILURE_REASON,
+    }
+)
 
 #: How many refusals one :data:`METHOD_APPLICABILITY_ASSESSED` payload carries.  Far
 #: larger than the prompt's own cap (that one protects the model's attention; this one
@@ -513,7 +525,8 @@ class RejectedRefinement:
     review_package_id: str
     findings: tuple[Mapping[str, Any], ...]
     repair_round: int
-    #: P2.3q / N12: ``root_review_rejected`` or ``read_only_leaf_needs_write``.
+    #: P2.3q / N12 / P2.3v: ``root_review_rejected``, ``read_only_leaf_needs_write``,
+    #: or ``repeated_verification_failure``.
     reason: str = ROOT_REVIEW_REPAIR_REASON
 
     def to_json(self) -> dict[str, Any]:
@@ -4505,6 +4518,7 @@ __all__ = (
     "PlanningWorld",
     "RejectedRefinement",
     "READ_ONLY_REWRITE_REPAIR_REASON",
+    "REPEATED_VERIFICATION_FAILURE_REASON",
     "REPAIR_REASONS",
     "ROOT_REVIEW_REPAIR_REASON",
     "SYNTHESIS_WORTHY_REFUSALS",

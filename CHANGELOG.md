@@ -1,4 +1,4 @@
-## 0.12.2 — P2.3e–P2.3r：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放（2026-09-18）
+## 0.12.2 — P2.3e–P2.3v：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放、相同验证失败有界早停（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -7,6 +7,12 @@
 3. **根评审 v3**：准则解释权以 `mission_goal` 为准，与「准则以 goal signature 为准」相反。
 
 **计划一致性审计必须修项**：`c-composition` 无 coverage 映射时不得因「有子验收」填 PASS → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。审计全文 Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`。
+
+**P2.3v：上游写型产物记录/套用 diff + 相同验证失败有界早停。** 分支 `p2.3v-repeated-failure-early-stop`，基 f2dfa64；版本号不动。真实局 H-L4-M2-r1：隐藏评分 PASS，新方法 apply 叶 `code.apply-patch` 42 次相同 `rule_check`「`net/retry.py` is not a recorded workspace file」→ `budget_exhausted(attempts=48)`。H-L4-M3-r0：reproduce 叶 21 次相同 `code_test` SyntaxError → 叶 token 账户耗尽。
+
+- **根因（M2）**：retire 后旧 apply 仍 COMPLETED；新 apply 写出相同哈希的 `net/retry.py`，P2.3m 同哈希过滤不登记；P2.3o 只把绑定输入当 recorded，apply 绑定只有 diagnosis。不是「verify 没预铺」，是写型叶自己的产物被退役叶阴影。
+- **修法**：同哈希过滤只对只读叶；`_accepted_path_hashes` 只计当前 plan 成员。生产者只交 unified diff 时收集处套用 diff 并登记 seed 路径。同一 occurrence 连续 N=3 次相同验证失败（layer + problems 哈希，去时序）→ `PlanningRejected{repeated_verification_failure}` 走修复轮；上限后具名停机。legacy 原样。
+- 测试：`test_repeated_failure_early_stop.py` 7；4 变异 KILLED。full_target **2918 passed / 2 skipped**（基线 2911/2，+7）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2x。
 
 **P2.3q：修复轮复用已验收只读叶、空 Planner 短路、合成方法宽度硬上限、拒绝理由分字段。** 分支 `p2.3q-repair-reuse-and-synthesis-shortcut`，基 d360750；版本号不动。第 4 批 4 局全部撞调用/attempt 上限：retire+refine 整网重铺（C2-r0 `funded_now=10`）、开局与修复轮空 Planner、10 叶合成方法、C1-r1 把只读取消说成 `rejected_by_root_review`。
 

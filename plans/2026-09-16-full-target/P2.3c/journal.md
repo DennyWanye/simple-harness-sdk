@@ -3882,6 +3882,47 @@ N11：C1-r0 唯一 UNKNOWN invocation 的 `usage_json.error_class=UnknownProvide
 - 真实模型第 4 批未重跑。
 - 有 token 的 UNKNOWN 仍不从异常抄 usage（P2.3p 未做项）。
 
+## 2x. P2.3v：上游写型产物记录/套用 diff + 相同验证失败有界早停（2026-09-18，分支 `p2.3v-repeated-failure-early-stop`，基 `f2dfa64` = 0.12.2 候选第 5 版）
+
+输入：用户任务书 + 真实局只读 `H-L4-M2-r1` / `H-L4-M3-r0`（`file:...?immutable=1`，证据目录零写入）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。第四部分编号：§2u=s、§2v=t、§2w=u，本片为 §2x。
+
+### 诊断
+
+**M2-r1**（`mission-2703941ecca5c9fa`）：隐藏评分 PASS，停 `budget_exhausted(dimension=attempts, 48)`，245 次调用、2.4M token。r0 方法 `code.fix-by-patch@2` 根评审 REJECT 后退役；r1 采用 `code.fix-by-diagnose-patch-verify-explain@1`。42 次 `VerificationFailed` 全部在**新方法的 apply 叶** `code.apply-patch`（slot `apply`，`occ-f6fb7f9af478`，`task-ec5b8951059`），不是 verify。
+
+`net/retry.py` 是该 apply 叶自己写入的（工作区哈希 `804e2efcfc8c…` = 旧方法已验收补丁，与种子 `a9a8d974…` 不同），不是 P2.3o 预铺的上游产物。旧 apply（`task-9e911`，端口 `patch` 实际产物就是 `net/retry.py`）仍 COMPLETED。收集处 P2.3m 同哈希过滤：路径在 seed 且哈希等于 `_accepted_path_hashes`（按**所有** COMPLETED 叶，含已退役方法）→ 不记入本 Attempt。`bound_artifacts_named_in_envelope` 只并信封点名的**绑定输入**；新 apply 的绑定只有 `diagnosis.json`。`rule_check` 因此 42 次同一句 `artifact 'net/retry.py' is not a recorded workspace file`（`checked_artifacts: net/retry.py, patch.diff, REPORT.md`）。verify 副本从种子重建，仍是未打补丁的 `net/retry.py`。
+
+对照 P2.3o：`overlay_bound_producer_files` 只把绑定生产者**已验收且路径落在消费者 seed 上**的产物并进 inputs；apply 叶本身没有「上游源码」绑定。P2.3o 未做项「只交付 diff 时不套用 diff」在本局是次要路径——Worker 写了源码，但是被同哈希丢掉；若只交 `patch.diff`，收集处同样不会登记 `net/retry.py`。
+
+**M3-r0**（`mission-20e37fa94ca8e3c2`）：停 `budget_exhausted(dimension=tokens)`，叶账户 `task-d6d920ba821` 22 次 attempt、settled 3.94M / 4M。失败叶是 `code.reproduce-failure`（assess-by-reading 的 reproduce），不是同型「未记录 workspace 文件」：`rule_check` 全 PASS，21 次 `code_test` FAIL，stdout 都是 `service/beta/broken.py` `def dispatch(queue, sink)` 缺冒号的 `SyntaxError`（摘要只差 `0.06s`/`0.07s` 与 attempt 工作区路径）。同叶连续相同失败直到 token 墙。
+
+### 修法
+
+1. **写型叶同哈希不再丢掉本叶产物**：P2.3m 的 `consistent` 过滤只对 `read_only_leaf`。`_accepted_path_hashes` 只计**当前 plan membership** 的 COMPLETED 叶，退役方法的已验收字节不再阴影替换 apply。
+2. **只交 unified diff 时套用**：收集处 `_record_applied_diff_files` 对 `.diff`/`.patch` 调 `files_patched_by_unified_diff`（纯函数），把打过补丁的 seed 文件登记为产物（有 `artifact_id`），随后 P2.3o overlay / `rule_check` / `verification_copy` 都能看见。套用失败则跳过，不发明字节。
+3. **有界早停**：同一 occurrence 连续 N=3 次相同验证失败（`verification_failure_fingerprint` = layer + problems 列表，否则去时序/工作区路径的 summary）→ 取消该叶，`PlanningRejected{repeated_verification_failure}` 走 P2.3j 修复轮；修复预算用尽则 `NO_DISPATCHABLE_WORK` + detail 具名，不是 `budget_exhausted`。attempts 如实、预留释放、守恒成立。用 `is_hierarchical` + 已装 assembly，不开第 20 处 `_new_mode`。`REPAIR_REASONS` 纳入该理由。legacy 原样。无新配置项、不改冻结提示词。
+
+### 测试
+
+`test_repeated_failure_early_stop.py` 7 条。先红后绿。真 `Orchestrator.run()`：(a) 根评审 REJECT → 换方法 → 新 apply 写出与退役叶相同的源码并被记录，verify 意图含该路径 → COMPLETED；(b) 固定相同 `rule_check`（空 claims）第 N 次后 `PlanningRejected{repeated_verification_failure}`，停机非 `budget_exhausted`，apply attempts==3，守恒；(c) legacy demo 一次验证失败后重试通过，无该 PlanningRejected。
+
+变异 4/4 KILLED（`/tmp/p23v-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `_record_applied_diff_files` 原样返回 | 只交 diff 的 e2e | **KILLED**（超时/缺预铺） |
+| M2 | fingerprint 不去掉 `0.06s` | 指纹单元 | **KILLED**（0.06s 与 0.08s 不再相等） |
+| M3 | 连续失败永不升级 | 有界早停 e2e | **KILLED**（`budget_exhausted`） |
+| M4 | `N=1` | 常量钉 | **KILLED**（assert 1==3） |
+
+回归：full_target **2918 passed / 2 skipped**（基线 2911/2，+7）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变；冻结提示词 sha256 不变。
+
+### 未做
+
+- 真实模型第 5 批未重跑。
+- M3-r0 的 reproduce 叶对红基线跑 `code_test`（题目构造的 SyntaxError）未改判定层，只靠相同失败有界早停。
+- 不把 `repeated_verification_failure` 写成第三套 `rejected_by_*` 包字段（冻结提示词不动；仍进 `REPAIR_REASONS` / `rejected_refinements`）。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

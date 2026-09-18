@@ -48,6 +48,9 @@ refined yet*, and every other dimension the Mission bounds is inherited.  See
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -362,6 +365,16 @@ MAX_READ_ONLY_REWRITE_REJECTIONS = 2
 #: shape as ``max_root_review_repairs``'s default, as a constant so nothing is
 #: added to the policy snapshot.
 MAX_READ_ONLY_REWRITE_REPAIRS = 1
+#: P2.3v.  How many consecutive *identical* verification failures one occurrence
+#: may retry before the named feedback goes to planning.  One more than the
+#: read-only rewrite bound: the first two retries are still the leaf's, the
+#: third is the honest next layer.  Not a config item.
+MAX_IDENTICAL_VERIFICATION_FAILURES = 3
+#: How many planning repair rounds one Mission may open for this reason.
+MAX_IDENTICAL_VERIFICATION_REPAIRS = 1
+
+_TIMING = re.compile(r"\bin\s+\d+(?:\.\d+)?s\b")
+_WORKSPACE_PATH = re.compile(r"(?:/[\w.-]+)*/workspaces/[\w.:-]+/")
 
 
 def read_only_rewrites(
@@ -404,6 +417,31 @@ def read_only_rewrites(
         and artifact.content_hash != initial[artifact.path]
         and allowed.get(artifact.path) != artifact.content_hash
     )
+
+
+def verification_failure_fingerprint(failures: Sequence[Any]) -> str:
+    """Identity of one verification failure for consecutive-retry bounding (P2.3v).
+
+    Same layer + same problems list (or a timing-stripped summary).  Attempt
+    workspace paths and ``0.06s`` / ``0.07s`` suffixes are not part of the
+    identity — Grok M3-r0's 21 ``code_test`` FAILs were the same SyntaxError.
+    """
+
+    parts: list[str] = []
+    for item in failures:
+        if not isinstance(item, Mapping):
+            continue
+        layer = str(item.get("layer") or "")
+        detail = item.get("detail") if isinstance(item.get("detail"), Mapping) else {}
+        problems = detail.get("problems") if isinstance(detail, Mapping) else None
+        if isinstance(problems, list) and problems:
+            body = json.dumps(problems, ensure_ascii=False, sort_keys=True)
+        else:
+            body = str(item.get("summary") or "")
+        body = _TIMING.sub("in Xs", body)
+        body = _WORKSPACE_PATH.sub("<ws>/", body)
+        parts.append(f"{layer}\0{body}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 def occurrence_task(
@@ -507,6 +545,9 @@ __all__ = (
     "OccurrenceTask",
     "MAX_READ_ONLY_REWRITE_REJECTIONS",
     "MAX_READ_ONLY_REWRITE_REPAIRS",
+    "MAX_IDENTICAL_VERIFICATION_FAILURES",
+    "MAX_IDENTICAL_VERIFICATION_REPAIRS",
+    "verification_failure_fingerprint",
     "occurrence_criteria",
     "occurrence_policy",
     "occurrence_task",

@@ -27,7 +27,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
 from ..artifacts.bound_workspace import (
     bound_artifacts_named_in_envelope,
+    files_patched_by_unified_diff,
     overlay_bound_producer_files,
 )
 from ..artifacts.store import ArtifactStoreError, backfill, read_nofollow, read_verified
@@ -228,9 +229,13 @@ from .hierarchical_dispatch import (
     record_assembly_missing,
 )
 from .occurrence_tasks import (
+    MAX_IDENTICAL_VERIFICATION_FAILURES,
+    MAX_IDENTICAL_VERIFICATION_REPAIRS,
     MAX_READ_ONLY_REWRITE_REJECTIONS,
     MAX_READ_ONLY_REWRITE_REPAIRS,
+    read_only_leaf,
     read_only_rewrites,
+    verification_failure_fingerprint,
 )
 from .plan_commits import PlanPrincipal
 from .resolution_commits import eligible_root_receipts
@@ -246,6 +251,7 @@ logger = logging.getLogger("agent_orchestrator")
 # name is kept here so nothing that imported it from this module moves.
 from .hierarchical_dispatch import (  # noqa: E402
     READ_ONLY_REWRITE_REPAIR_REASON,
+    REPEATED_VERIFICATION_FAILURE_REASON,
     ROOT_REVIEW_REPAIR_REASON,
 )
 
@@ -2425,6 +2431,14 @@ class Orchestrator:
                 f"revision {int(rejection.plan_revision)}, review package "
                 f"{rejection.review_package_id}); every leaf of that method had been accepted "
                 "and the MISSION_FINAL review still rejected the composed result"
+            ]
+        elif str(getattr(rejection, "reason", "") or "") == REPEATED_VERIFICATION_FAILURE_REASON:
+            lines = [
+                f"a leaf failed verification identically under method {reference.method_id}@"
+                f"{int(reference.version)} (method instance {rejection.method_instance_id}, plan "
+                f"revision {int(rejection.plan_revision)}); "
+                f"{REPEATED_VERIFICATION_FAILURE_REASON}: retrying the same occurrence "
+                "will not change the outcome; repair or replace the method"
             ]
         else:
             lines = [
@@ -5159,11 +5173,25 @@ class Orchestrator:
         # come in, not merely trusted.  Legacy Missions carry no binding and are
         # untouched (``new_mode`` answers None).
         new_mode = self._new_mode(mission)
+        current_task_ids = None
+        if new_mode is not None:
+            try:
+                current_task_ids = {
+                    str(spec.task_id) for spec in new_mode.network(mission.id).occurrences
+                }
+            except (GraphIntegrityError, ContractError, StoreError, KeyError):
+                current_task_ids = None
         accepted_hashes = (
-            {} if new_mode is None else self._accepted_path_hashes(mission.id)
+            {}
+            if new_mode is None
+            else self._accepted_path_hashes(mission.id, current_task_ids=current_task_ids)
+        )
+        binding = (
+            None
+            if new_mode is None
+            else new_mode.semantics().task_semantics_of(mission.id, task.id)
         )
         if new_mode is not None:
-            binding = new_mode.semantics().task_semantics_of(mission.id, task.id)
             rewrote = (
                 []
                 if binding is None
@@ -5208,9 +5236,16 @@ class Orchestrator:
         # Missions cite upstream artifacts by listing them; applying this filter
         # there dropped those citations and left the static-DAG golden run waiting
         # on a result that never settled.
+        # P2.3v: a *write* leaf that reproduces a retired method's accepted bytes
+        # (Grok M2-r1's new apply leaf vs the retired patch) must still record
+        # those paths — otherwise ``rule_check`` refuses the envelope.  Same-hash
+        # drop stays on read-only leaves, where P2.3o re-adds bound inputs.
+        drop_same_hash = (
+            new_mode is not None and binding is not None and read_only_leaf(binding)
+        )
         consistent = (
             set()
-            if new_mode is None
+            if not drop_same_hash
             else {
                 artifact.path
                 for artifact in artifacts
@@ -5233,6 +5268,13 @@ class Orchestrator:
                 or (artifact.path in guarded and artifact.path in listed)
             )
         ]
+        if new_mode is not None and (binding is None or not read_only_leaf(binding)):
+            referenced = self._record_applied_diff_files(
+                referenced,
+                workspace=workspace,
+                attempt=attempt,
+                seed=dict((mission.final_report or {}).get("workspace_seed", {})),
+            )
         self.commit.record_result(
             attempt.id,
             envelope=envelope,
@@ -5722,6 +5764,23 @@ class Orchestrator:
                     or after.attempt_count < after.budget.max_attempts
                 )
             )
+            # P2.3v: N identical verification failures on one occurrence escalate
+            # to planning (same door as P2.3m).  Uses the installed assembly +
+            # ``is_hierarchical`` so this is not a 20th ``_new_mode`` site.
+            new_mode = self._hierarchical if is_hierarchical(mission) else None
+            if new_mode is not None and can_retry:
+                fingerprint = verification_failure_fingerprint(verdict.failures)
+                count = self._identical_verification_failures(task.id, fingerprint)
+                if count >= MAX_IDENTICAL_VERIFICATION_FAILURES:
+                    await self._escalate_repeated_verification(
+                        mission,
+                        task,
+                        new_mode,
+                        fingerprint=fingerprint,
+                        count=count,
+                        failures=verdict.failures,
+                    )
+                    return True
             manager_after = int(self.policy_for(mission.id)["manager_after_failures"])
             if can_retry and failures >= manager_after:
                 # An admitted fragment consumer has already used a Manager round
@@ -8145,13 +8204,21 @@ class Orchestrator:
             }
         }
 
-    def _accepted_path_hashes(self, mission_id: str) -> dict[str, str]:
+    def _accepted_path_hashes(
+        self,
+        mission_id: str,
+        *,
+        current_task_ids: Collection[str] | None = None,
+    ) -> dict[str, str]:
         """Files a COMPLETED leaf already produced, keyed by path.  Later writers win.
 
         P2.3m: Grok H-L3-C1-r0's apply-patch leaf listed ``metrics/collector.py`` on
         its result (not only the ``patch`` port file).  The verify leaf then wrote
         the same bytes.  Those files are accepted work even when they are not the
         declared port output.
+
+        P2.3v: only CURRENT plan members count.  A retired method's accepted
+        ``net/retry.py`` must not shadow the replacement apply leaf.
         """
 
         completed = {
@@ -8159,11 +8226,66 @@ class Orchestrator:
             for task in self.store.list_tasks(mission_id)
             if task.status is TaskStatus.COMPLETED
         }
+        if current_task_ids is not None:
+            completed &= set(current_task_ids)
         hashes: dict[str, str] = {}
         for artifact in self.store.list_mission_artifacts(mission_id):
             if artifact.task_id in completed:
                 hashes[artifact.path] = artifact.content_hash
         return hashes
+
+    def _record_applied_diff_files(
+        self,
+        referenced: Sequence[Artifact],
+        *,
+        workspace: Any,
+        attempt: Attempt,
+        seed: Mapping[str, str],
+    ) -> list[Artifact]:
+        """P2.3v: a write leaf that only delivered a unified diff still records
+        the patched seed files, so overlay / ``rule_check`` / ``code_test`` see
+        them.  Failed hunks are skipped rather than invented.
+        """
+
+        extra: list[Artifact] = []
+        occupied = {artifact.path for artifact in referenced}
+        store = workspace.store
+        if store is None or not seed:
+            return list(referenced)
+        for artifact in referenced:
+            if not str(artifact.path).endswith((".diff", ".patch")):
+                continue
+            try:
+                text = (workspace.root / artifact.path).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if "--- " not in text or "+++ " not in text:
+                continue
+            patched = files_patched_by_unified_diff(text, seed)
+            for path, content in patched.items():
+                if path in occupied:
+                    continue
+                data = content.encode("utf-8")
+                digest = sha256_hex_text(data)
+                store.put_bytes(data)
+                extra.append(
+                    Artifact(
+                        id=ids.artifact_id(attempt.id, path, digest),
+                        mission_id=attempt.mission_id,
+                        task_id=attempt.task_id,
+                        attempt_id=attempt.id,
+                        type="file",
+                        path=path,
+                        version=1,
+                        content_hash=digest,
+                        size_bytes=len(data),
+                        produced_by=artifact.produced_by,
+                        storage_uri=str(store.path_for(digest)),
+                        workspace=attempt.id,
+                    )
+                )
+                occupied.add(path)
+        return [*referenced, *extra]
 
     def _read_only_rewrite_rejections(self, mission_id: str, task_id: str) -> int:
         return sum(
@@ -8309,6 +8431,162 @@ class Orchestrator:
             return
         await self._planner_round_on_committed_plan(
             mission.id, ordinal=ordinal, phase="read_only_rewrite_repair"
+        )
+
+    def _identical_verification_failures(self, task_id: str, fingerprint: str) -> int:
+        """Consecutive trailing Attempts of this occurrence with the same failure."""
+
+        count = 0
+        attempts = sorted(
+            self.store.list_attempts(task_id),
+            key=lambda item: int(item.ordinal),
+        )
+        for attempt in reversed(attempts):
+            failure = attempt.failure or {}
+            if failure.get("reason") != "verification_failed":
+                break
+            found = verification_failure_fingerprint(failure.get("failures") or [])
+            if found != fingerprint:
+                break
+            count += 1
+        return count
+
+    def _repeated_verification_repairs(self, mission_id: str) -> int:
+        return sum(
+            1
+            for event in self.store.list_events(mission_id)
+            if event.type == "PlanningRejected"
+            and event.payload.get("reason") == REPEATED_VERIFICATION_FAILURE_REASON
+        )
+
+    def _repeated_verification_stop_detail(
+        self, mission: Mission, new_mode: HierarchicalDispatch | None = None
+    ) -> dict[str, Any]:
+        if self._repeated_verification_repairs(mission.id) < 1:
+            return {}
+        revision = 0
+        if new_mode is not None:
+            active = new_mode.semantics().active_plan_revision(mission.id)
+            revision = 0 if active is None else int(active.revision)
+        findings: list[dict[str, Any]] = []
+        for event in self.store.list_events(mission.id):
+            if event.type != "PlanningRejected":
+                continue
+            if event.payload.get("reason") != REPEATED_VERIFICATION_FAILURE_REASON:
+                continue
+            findings = list((event.payload.get("detail") or {}).get("findings") or [])
+        return {
+            "repeated_verification_failure": {
+                "reason": REPEATED_VERIFICATION_FAILURE_REASON,
+                "plan_revision": revision,
+                "repairs_used": self._repeated_verification_repairs(mission.id),
+                "max_repairs": MAX_IDENTICAL_VERIFICATION_REPAIRS,
+                "findings": findings[:8],
+            }
+        }
+
+    async def _escalate_repeated_verification(
+        self,
+        mission: Mission,
+        task: Task,
+        new_mode: HierarchicalDispatch,
+        *,
+        fingerprint: str,
+        count: int,
+        failures: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """P2.3v: N identical verification failures → planning, not another Attempt."""
+
+        if task.status not in TERMINAL_TASK:
+            self.commit._cancel_task_entity(  # noqa: SLF001
+                task.id, reason=REPEATED_VERIFICATION_FAILURE_REASON, replaced_by=None
+            )
+        used = self._repeated_verification_repairs(mission.id)
+        summaries = [
+            f"{item.get('layer')}: {item.get('summary')}"
+            for item in failures
+            if isinstance(item, Mapping)
+        ]
+        if used >= MAX_IDENTICAL_VERIFICATION_REPAIRS:
+            self._commit_fail_mission(
+                mission.id,
+                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                detail={
+                    "reason": REPEATED_VERIFICATION_FAILURE_REASON,
+                    "task_id": task.id,
+                    "failures": count,
+                    "fingerprint": fingerprint,
+                    "summaries": summaries[:8],
+                    **self._repeated_verification_stop_detail(mission, new_mode),
+                },
+            )
+            self._note(
+                f"mission {mission.id}: leaf {task.id} failed identically {count} "
+                f"time(s); repair budget spent → {REPEATED_VERIFICATION_FAILURE_REASON}"
+            )
+            return
+        if new_mode.planner_round_in_flight(mission.id):
+            return
+        active = new_mode.semantics().active_plan_revision(mission.id)
+        revision = 0 if active is None else int(active.revision)
+        rejected: dict[str, Any] = {}
+        occurrence_id = ""
+        try:
+            network = new_mode.network(mission.id)
+            spec = next(
+                (item for item in network.occurrences if str(item.task_id) == task.id),
+                None,
+            )
+            if spec is not None:
+                occurrence_id = str(spec.occurrence_id)
+            root = network.root_occurrence_ids[0] if network.root_occurrence_ids else None
+            adopted = None if root is None else network.adopted_instance_for(root)
+            if adopted is not None:
+                rejected = {
+                    "occurrence_id": str(root),
+                    "method_instance_id": str(adopted.instance_id),
+                    "method_ref": adopted.method_ref.to_json(),
+                }
+        except (GraphIntegrityError, ContractError, StoreError, KeyError, StopIteration):
+            rejected = {}
+        ordinal = self._next_planning_ordinal(mission.id)
+        self.commit.record_planning_rejected(
+            mission.id,
+            ordinal=ordinal,
+            reason=REPEATED_VERIFICATION_FAILURE_REASON,
+            key=f"{mission.id}:repeated-verification:{task.id}:{revision}",
+            detail={
+                "plan_revision": revision,
+                "repair_round": used + 1,
+                "task_id": task.id,
+                "occurrence_id": occurrence_id or rejected.get("occurrence_id", ""),
+                "failures": count,
+                "fingerprint": fingerprint,
+                "findings": [
+                    {
+                        "severity": "blocker",
+                        "detail": (
+                            f"leaf {task.id} failed verification identically {count} "
+                            f"times ({'; '.join(summaries[:4]) or 'verification_failed'}). "
+                            "Retrying the same occurrence will not change the outcome; "
+                            "the method must be repaired or replaced."
+                        ),
+                    }
+                ],
+                **rejected,
+            },
+        )
+        self._note(
+            f"mission {mission.id}: leaf {task.id} failed identically {count} "
+            f"time(s); asking the Planner (ordinal {ordinal}, "
+            f"{REPEATED_VERIFICATION_FAILURE_REASON})"
+        )
+        if new_mode.empty_planner_should_skip(mission.id):
+            self._record_planner_skipped(mission, new_mode, phase="repeated_verification_repair")
+            await self._request_method_synthesis(mission)
+            return
+        await self._planner_round_on_committed_plan(
+            mission.id, ordinal=ordinal, phase="repeated_verification_repair"
         )
 
     def _next_planning_ordinal(self, mission_id: str) -> int:
