@@ -285,6 +285,21 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "planner-hierarchical-v7",
         "5b87b9624fbf4a4e1c31e6d9c4a765de2ac4ec689b5d708000b427676cb50f15",
     ),
+    # H1-E closes H0's first two freeze gaps: v1 and v2 were registered and
+    # replayable but absent from this table.  Digests match H0's prompt-digests.json.
+    "PLANNER_HIERARCHICAL_V1": (
+        "planner-hierarchical-v1",
+        "2acb2294fca09f55c30831ffd43dd7eae5685af72daa4c85de8759b440e43830",
+    ),
+    "PLANNER_HIERARCHICAL": (
+        "planner-hierarchical-v2",
+        "f8a8bba7221bfcc1c33d8b3f71517678bced6c905c7dbfdcee1558f0374a0387",
+    ),
+    # H1-E (V2 plan §9, §41): the planning-decision-protocol Planner prompt.
+    "PLANNER_HIERARCHICAL_V8": (
+        "planner-hierarchical-v8",
+        "dba73c4f583256ff36147d59a936aef48f3d1392797cebeba468142417e85ada",
+    ),
 }
 
 #: P2.3d / defect D1: the same freeze for the versions a *domain module* registers.

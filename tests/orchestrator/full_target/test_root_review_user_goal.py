@@ -50,6 +50,12 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "htn" / "c2_root_review
 #: episodes replay on it, so v3 is registered beside it and v2 is never edited.
 FROZEN_ROOT_REVIEWER_V2 = "75debfd9640f1c635b808cdaf7657168ce10782d9e0cd93f08450fdc0d744c76"
 
+#: H1-E closes H0's third freeze gap: v3 (the live root reviewer) was registered but
+#: had no literal anywhere.  The digest is the value H0 recorded in
+#: ``plans/llm-native-htn/H0/prompt-digests.json``; registering it here means a future
+#: edit of v3's words fails loudly instead of silently rewriting a shipped prompt.
+FROZEN_ROOT_REVIEWER_V3 = "21a7814076b72957f41c47bf21fb340d2c2243e3fc0687fb397a143373930980"
+
 
 # ======================================================================================
 # 1. The defect, pinned by the real C2-r0 package
@@ -191,6 +197,11 @@ def test_the_prompt_v3_reads_the_requirement_against_the_user_goal_and_v2_is_fro
     assert (
         hashlib.sha256(ROOT_REVIEWER_V2.instructions.encode("utf-8")).hexdigest()
         == FROZEN_ROOT_REVIEWER_V2
+    )
+    # H1-E closes H0's third freeze gap: v3, the live template, now has a literal too.
+    assert (
+        hashlib.sha256(ROOT_REVIEWER.instructions.encode("utf-8")).hexdigest()
+        == FROZEN_ROOT_REVIEWER_V3
     )
     assert TEMPLATE_VERSIONS["root_reviewer"].keys() >= {
         "root-reviewer-v1",

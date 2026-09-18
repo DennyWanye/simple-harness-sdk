@@ -682,6 +682,72 @@ register_template(PLANNER_HIERARCHICAL_V5)
 register_template(PLANNER_HIERARCHICAL_V6)
 register_template(PLANNER_HIERARCHICAL_V7)
 
+#: H1-E (V2 plan §9 and §41, ruling addendum §7–§8): the **new planning-decision
+#: protocol** gets a Planner prompt written against a *different wire contract*, not
+#: another revision of the plan-revision proposal.  v1–v7 tell the model to emit a
+#: ``<plan_revision_proposal>`` (semantic operations the compiler turns into a typed
+#: delta); v8 tells it to emit exactly one ``<planning_decision>`` carrying a
+#: decision type from the request package's ``enabled_decision_types``.  Because the
+#: contract differs, v8 is a fresh template rather than a ``_revise`` of v7, and the
+#: old versions keep their bytes verbatim (their digests are frozen).
+PLANNER_HIERARCHICAL_V8_VERSION = "planner-hierarchical-v8"
+PLANNER_HIERARCHICAL_V8 = RoleTemplate(
+    name="planner",
+    prompt_version=PLANNER_HIERARCHICAL_V8_VERSION,
+    tool_names=(),
+    instructions=(
+        "[role:planner]\n"
+        "你是编排系统在层次模式（hierarchical）下的 Planner，运行在 planning-decision-v1 协议上。"
+        "一轮回复里只提出一个决定：系统把你的回复当作一条建议，经过类型化准入后才可能执行。"
+        "你不执行任务、不调用工具、不判断任务是否完成、不给方法评级、不宣布任何东西被批准。\n"
+        "输出要求：\n"
+        "  1. 只输出一个 <planning_decision>…</planning_decision> 块，块内是一个 JSON 对象；"
+        "块外不要输出任何文字，不要写解释、标题或 Markdown 代码围栏。\n"
+        "  2. decision_type 只能取请求包 planning_protocol.enabled_decision_types 里列出的值，"
+        "请求包没有列出的类型一律不能写，写了整块会被拒绝。\n"
+        "  3. subject_key 照抄请求包里给你的 subject_key，不要改写、不要自己编，也不要换一个目标。\n"
+        "引用规则：你写的每条引用都必须从请求包的 visible_refs 里完整照抄四元组，即 "
+        "{\"kind\":…,\"id\":…,\"semantic_revision\":int,\"content_hash\":…} 四个字段逐字照抄；"
+        "只能引用 visible_refs 里出现过的对象，不能引用没给你的 id，更不能自己编 semantic_revision "
+        "或 content_hash。写进 payload 的引用同样按这条规则照抄。\n"
+        "禁止系统字段：以下字段由系统绑定，无论写在块上、payload 里还是引用里，只要出现就会被整块拒绝："
+        "mission_id、tenant_id、principal、principal_id、scope、scope_id、manager_epoch、"
+        "budget_account、budget_grant_revision、registry_status、opened_by、authorization_ref、"
+        "grant_ref、provenance、authored_by、dispatch_generation、plan_revision、"
+        "expected_plan_revision、operation_id、acceptance_id、approval_id、decision_id、request_id。"
+        "不要写 decision_id、request_id、plan_revision——它们由系统按请求绑定填写。\n"
+        "可用决定与用法（只列 H1 阶段 enabled_decision_types 里可能出现的几种）：\n"
+        "  - REFINE：为一个 open 的 compound 目标采用一个已注册方法。payload 形如 "
+        "{\"method_ref\":四元组,\"bindings\":{参数名:值}}，"
+        "method_ref 必须能在 visible_refs 里找到同一条。\n"
+        "  - REPAIR：payload.repair_kind = REPLACE_METHOD 时表示「退掉一个被拒的方法实例、采用一个替代方法」。"
+        "若输入里 rejected_refinements 非空，说明根评审拒绝了该目标当前采用的方法实例："
+        "用一个 REPAIR 决定表达修复，payload.repair_kind = \"REPLACE_METHOD\"，"
+        "rejected_method_instance 与 replacement_method_ref 都从 visible_refs 照抄——"
+        "不要拆成两个顶层决定，也不要用别的 repair_kind 代替。\n"
+        "  - BIND_EXISTING_GOAL：把一个已有目标共享/复用到某个方法槽位（不重做同一件事）时用这个类型，"
+        "payload 里给出 mode 与被复用的 goal_ref / resolution_ref，引用同样照抄 visible_refs。\n"
+        "  - DECLARE_BLOCKED：当你找不到任何可用方法、也证明不了目标能推进时用这个类型，"
+        "在 payload.blockers 里写清 code 与 detail；系统据此决定是否进入方法合成轮，"
+        "你不需要也不能自己合成方法，也不要直接宣布 Mission 失败。\n"
+        "  - WAIT：当已有工作在推进、你只是等它返回时用这个类型，只在 payload.wait_for 里列出要等的引用。\n"
+        "  - NO_CHANGE：当当前采用的方法仍然有效、不需要改动计划时用这个类型，"
+        "payload 只写一句 reason，不要夹带任何状态修改。\n"
+        "本阶段不能请求取证：REQUEST_EVIDENCE（以及 REQUEST_HUMAN、PROPOSE_METHOD）不在本阶段"
+        " enabled_decision_types 里，你不要写。如果你证明不了某件事，就改成 DECLARE_BLOCKED 声明受阻，"
+        "或在方法仍有效时输出 NO_CHANGE，不要编造证据、不要假设未观察的事实。\n"
+        "不要在回复里写出内部思维链（CoT）：只给最终决定与理由，不要罗列你的逐步推理。\n"
+        "最小合法示例（REFINE，字段与第 13、24 节一致；一行一个完整 JSON 对象）：\n"
+        '{"schema_version":1,"decision_type":"REFINE","subject_key":"subject-root",'
+        '"rationale":"选择已注册且当前可适用的方法。","reason_refs":[],"assumptions":[],'
+        '"payload":{"method_ref":{"kind":"method","id":"code.fix-by-patch",'
+        '"semantic_revision":2,"content_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},'
+        '"bindings":{"target":"src/app.py"}},"uncertainties":[],"alternatives":[],'
+        '"replan_triggers":[]}\n'
+    ),
+)
+register_template(PLANNER_HIERARCHICAL_V8)
+
 #: Every registered prompt version that belongs to the *hierarchical* Planner.
 #: P2.3c part 2b: a deployment's frozen ``prompt_versions`` pins ``planner`` to a
 #: DAG-Planner version (``planner-v4``), and ``template_for`` honours that pin for
@@ -699,6 +765,7 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
         PLANNER_HIERARCHICAL_V5_VERSION,
         PLANNER_HIERARCHICAL_V6_VERSION,
         PLANNER_HIERARCHICAL_V7_VERSION,
+        PLANNER_HIERARCHICAL_V8_VERSION,
     }
 )
 
@@ -713,6 +780,14 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
 #: smoke spent two rounds on.  Bump this number whenever the package changes in a way
 #: a prompt can be wrong about, and list the prompts written against it below.
 HIERARCHICAL_PLANNER_PACKAGE_VERSION = 3
+
+#: H1 (§9, addendum §7.1): the *new* planning-decision protocol rides on integer
+#: package version 4, whose in-package string label becomes
+#: ``planner-package-hierarchical-v5``.  The two switches are independent: a
+#: new-protocol task selects package 4 explicitly, while a default task with no
+#: charter field keeps the old protocol on ``HIERARCHICAL_PLANNER_PACKAGE_VERSION``
+#: (still 3) with the same bytes as 0.12.2 (§8.1–§8.2).
+PLANNING_DECISION_PACKAGE_VERSION = 4
 
 #: Which prompt versions were written against which package version.  A pin only
 #: applies among the versions of the package the branch actually builds.
@@ -737,6 +812,10 @@ HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE: Mapping[int, frozenset[str]] = {
             PLANNER_HIERARCHICAL_V7_VERSION,
         }
     ),
+    # package 4 (H1, §9): the planning-decision protocol.  Its only prompt is v8,
+    # whose wire contract is ``planning-decision-v1``; v1–v7 describe the old
+    # proposal contract and must never be pinned here (see the pairing check below).
+    PLANNING_DECISION_PACKAGE_VERSION: frozenset({PLANNER_HIERARCHICAL_V8_VERSION}),
 }
 
 
@@ -746,6 +825,22 @@ def hierarchical_planner_versions(
     """The prompt versions a pin may select while this package version is built."""
 
     return HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE.get(int(package_version), frozenset())
+
+
+
+def hierarchical_planner_pairing_is_valid(prompt_version: str, package_version: int) -> bool:
+    """Whether ``prompt_version`` was written against ``package_version``.
+
+    The pairing is symmetric and testable: ``planner-hierarchical-v8`` may only be
+    selected while package 4 is built, and package 4 must never hand the model a v7
+    (or earlier) prompt, because those words describe the old
+    ``<plan_revision_proposal>`` wire contract (§9: v8 只能配 package 4，package 4
+    不允许 pin 回 v7).
+    """
+
+    return str(prompt_version) in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE.get(
+        int(package_version), frozenset()
+    )
 
 
 WORKER_HIERARCHICAL_V1_VERSION = "worker-hierarchical-v1"
@@ -1462,6 +1557,8 @@ __all__ = (
     "ROOT_REVIEWER_VERSION",
     "PLAN_REVISION_PROPOSAL_TAG",
     "HIERARCHICAL_PLANNER_PACKAGE_VERSION",
+    "PLANNING_DECISION_PACKAGE_VERSION",
+    "hierarchical_planner_pairing_is_valid",
     "HIERARCHICAL_PLANNER_VERSIONS",
     "HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE",
     "hierarchical_planner_versions",
@@ -1482,6 +1579,8 @@ __all__ = (
     "PLANNER_HIERARCHICAL_V6_VERSION",
     "PLANNER_HIERARCHICAL_V7",
     "PLANNER_HIERARCHICAL_V7_VERSION",
+    "PLANNER_HIERARCHICAL_V8",
+    "PLANNER_HIERARCHICAL_V8_VERSION",
     "PLANNER_HIERARCHICAL_VERSION",
     "TASK_ROLE_BY_KIND",
     "CRITIC",
