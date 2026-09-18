@@ -601,16 +601,24 @@ class RejectionCode(StrEnum):
     ALREADY_REGISTERED = "ALREADY_REGISTERED"
 
 
+#: P2.3q / P2-4.  Structured reason on a ``SIZE_BOUND`` problem that is a
+#: synthesised method's step count, not a ports-per-step overflow.  The
+#: correctable-reask path matches this token, never a detail substring.
+SYNTHESIS_WIDTH_REASON = "synthesis_width"
+
+
 @dataclass(frozen=True, slots=True)
 class AdmissionProblem:
     code: RejectionCode
     detail: str
     step: AdmissionStepId
+    reason: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", enum_of(RejectionCode, self.code, "problem.code"))
         object.__setattr__(self, "detail", text(self.detail, "problem.detail", limit=MAX_TEXT))
         object.__setattr__(self, "step", enum_of(AdmissionStepId, self.step, "problem.step"))
+        object.__setattr__(self, "reason", str(self.reason or ""))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1451,8 +1459,8 @@ def _check_structure_and_types(
     missing_operators: list[str] = []
     step = AdmissionStepId.STRUCTURE_AND_TYPES
 
-    def refuse(code: RejectionCode, detail: str) -> None:
-        problems.append(AdmissionProblem(code=code, detail=detail, step=step))
+    def refuse(code: RejectionCode, detail: str, *, reason: str = "") -> None:
+        problems.append(AdmissionProblem(code=code, detail=detail, step=step, reason=reason))
 
     try:
         # Belt and braces: the codec already refuses executables, but a contract
@@ -1471,6 +1479,7 @@ def _check_structure_and_types(
         refuse(
             RejectionCode.SIZE_BOUND,
             f"the method declares {len(method.steps)} steps, above the policy's {policy.max_steps}",
+            reason=SYNTHESIS_WIDTH_REASON,
         )
 
     goal_type = policy.task_types.resolve(method.goal_type_ref)
@@ -1931,6 +1940,7 @@ __all__ = (
     "MethodSuggestion",
     "ObjectSchema",
     "RejectionCode",
+    "SYNTHESIS_WIDTH_REASON",
     "SchemaCatalog",
     "SchemaField",
     "StepOutcome",

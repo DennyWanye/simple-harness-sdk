@@ -3901,13 +3901,13 @@ class HierarchicalDispatch:
         catalog: Any,
         retiring: Sequence[MethodInstanceId],
     ) -> _RepairReadOnlyShareIndex:
-        """Accepted read-only, not-criterion-linked leaves of the retiring instance.
+        """Accepted read-only leaves of the retiring instance with no write predecessor.
 
-        P2.3q / N10a.  Facts / reproduce (``side_effect_kind`` in {none,
-        external_read}, no write capability) that already have a CURRENT
-        Acceptance are offered as ``share_active`` targets.  Criterion-linked
-        leaves (verify) stay new work: the root review judged them.  Unaccepted
-        and write-typed leaves stay new work.
+        P2.3q / N10a, tightened by P1-1.  Facts / reproduce (no DATA/ORDER ancestor
+        that writes) that already have a CURRENT Acceptance are offered as
+        ``share_active`` targets.  A read-only inspect/summarize fed by apply is
+        not: reusing it would carry the rejected patch's findings.  Criterion-linked
+        leaves (verify), unaccepted leaves and write-typed leaves stay new work.
         """
 
         if not retiring:
@@ -3933,6 +3933,8 @@ class HierarchicalDispatch:
                 except (KeyError, ContractError):
                     continue
                 if not read_only_leaf(binding):
+                    continue
+                if _has_write_typed_predecessor(network, occ_id):
                     continue
                 by_signature = {
                     (str(item.goal_signature.signature_id), int(item.goal_signature.version)): item
@@ -4358,15 +4360,48 @@ def shared_goal_index(
     return SharedGoalIndex(entries)
 
 
+def _has_write_typed_predecessor(network: TaskNetworkSnapshot, occurrence_id: OccurrenceId) -> bool:
+    """Whether any DATA/ORDER ancestor of ``occurrence_id`` is a writing leaf.
+
+    Walks producer→consumer DATA edges and before→after ORDER edges backwards.
+    A read-only inspect fed by apply is True; facts with no writer upstream is
+    False.
+    """
+
+    from .occurrence_tasks import read_only_leaf
+
+    seen: set[str] = set()
+    stack = [occurrence_id]
+    while stack:
+        current = stack.pop()
+        key = str(current)
+        if key in seen:
+            continue
+        seen.add(key)
+        if current != occurrence_id:
+            try:
+                binding = network.binding_for_occurrence(current)
+            except (KeyError, ContractError):
+                continue
+            if not read_only_leaf(binding):
+                return True
+        for requirement in network.data_requirements:
+            if requirement.consumer_occurrence == current:
+                stack.append(requirement.producer_occurrence)
+        for constraint in network.order_constraints:
+            if constraint.after == current:
+                stack.append(constraint.before)
+    return False
+
+
 class _RepairReadOnlyShareIndex:
-    """Accepted read-only leaves of a retiring instance, matched by task type.
+    """Accepted read-only leaves of a retiring instance, matched by signature.
 
     ``may_share`` refuses ``NEW_WORK`` and requires a full sharing signature.
     Repair reuse is a default *policy* of the retire+refine compiler, not a
     declaration on the task type: facts / reproduce are ``NEW_WORK`` in the
-    catalogue and still share.  Lookup is by ``goal_type_ref.id`` so a new
-    method's facts step binds the old facts occurrence even when local ids
-    differ.
+    catalogue and still share.  Lookup matches ``goal_type_ref`` id **and**
+    version plus ``typed_parameters`` (P2-3); local ids may still differ.
     """
 
     def __init__(self, entries: Sequence[SharedGoalEntry] = ()) -> None:
@@ -4376,17 +4411,26 @@ class _RepairReadOnlyShareIndex:
         self, signature: SharingSignature, *, reuse_policy: ReusePolicy
     ) -> tuple[SharedGoalEntry | None, ShareDecision]:
         del reuse_policy
-        key = str(signature.goal_type_ref.id)
+        wanted = (
+            str(signature.goal_type_ref.id),
+            int(signature.goal_type_ref.version),
+            signature.typed_parameters,
+        )
         for entry in self._entries:
-            if str(entry.signature.goal_type_ref.id) != key:
+            have = (
+                str(entry.signature.goal_type_ref.id),
+                int(entry.signature.goal_type_ref.version),
+                entry.signature.typed_parameters,
+            )
+            if have != wanted:
                 continue
             return entry, ShareDecision(
                 verdict=ShareVerdict.SHAREABLE,
-                reason="repair reuses an accepted read-only leaf of the same task type",
+                reason="repair reuses an accepted read-only leaf of the same type and parameters",
             )
         return None, ShareDecision(
             verdict=ShareVerdict.SIGNATURE_DIFFERS,
-            reason="no accepted read-only leaf of this task type is on the retiring instance",
+            reason="no accepted read-only leaf matches this type, version and parameters",
         )
 
 

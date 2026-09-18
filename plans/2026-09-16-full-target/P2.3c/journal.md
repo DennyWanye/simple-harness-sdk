@@ -3833,6 +3833,18 @@ C3-r0（`mission-01a511b9a5d78b1f`）：种子方法 `code.fix-by-patch@2`。fac
 - 真实模型第 4 批未重跑。
 - Host `max_attempts` 12→24、局级 calls 与 `max_model_calls_per_turn` 解绑（N8/N10b）属 runner。
 - 合成器提示词未加 v7（宽度靠 schema_feedback / 协议 detail）。
+
+### 核验处置（2026-09-18，对照 `reviews/核验-P2.3q+r-a5fc85c-2026-09-18.md`）
+
+独立核验「修后可合」，P0 无，P1-1 必修。处置：
+
+- **P1-1**：复用前沿 DATA/ORDER 回溯，任何写型祖先（`read_only_leaf` 为假）则不 `share_active`。inspect/summarize 经 apply 不再复用；facts/reproduce 仍复用。lookup 比 `goal_type_ref` id+version 与 `typed_parameters`。红测：`test_an_inspect_leaf_fed_by_apply_is_not_shared_on_repair`、`test_repair_share_requires_matching_parameters`。
+- **P2-1**：hierarchical COMPLETED（`judge_mission`）与 `cancel_mission` 的 `final_report` 写入 `usage_fully_known` / `budget_conserved`。`costs_report` 这两键只对 hierarchical Mission 出现，legacy 字节不加。
+- **P2-2**：CHANGELOG 两个 `## 0.12.2` 合成一个；P2.3r「详见 journal §2s」改为 §2t。
+- **P2-4**：`SIZE_BOUND` 步数超限带 `AdmissionProblem.reason=synthesis_width`；`_is_synthesis_width_bound` 只认该理由码，不再扫 detail 子串。
+- **P2-5**：`test_a_skipped_repair_still_reuses_read_only_leaves_and_keeps_their_grants` 组合 e2e。skip 事件 key 改为 `{mission}:skip:{revision}:{phase}`，同 revision 后写 phase 不被幂等丢掉（`test_skip_events_of_two_phases_on_the_same_revision_both_land`）。
+- **P2-6**：ACTIVE 修复轮合成拒绝仍走既有 stall 梯子，不改为 `method_synthesis_refused`。宽度拒绝的具名停依赖 skip_now，与既有 PLANNING 梯子一致。
+
 ## 2t. P2.3r：终态释放 UNKNOWN 预留 + 诊断沿异常链 + usage_fully_known（2026-09-18，分支 `p2.3r-terminal-unknown-release-and-diagnostics`，基 `d360750` = 0.12.2 候选第 4 版）
 
 输入：用户任务书 + 诊断 `Grok验收-第4批L3诊断-2026-09-18.zh-CN.md` §4 N9/N11、§8 Q2、§10 Q4。证据只读。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。

@@ -2666,7 +2666,7 @@ class Orchestrator:
             self.store,
             PLANNER_SKIPPED_FOR_SYNTHESIS,
             mission.id,
-            key=f"{mission.id}:skip:{revision}",
+            key=f"{mission.id}:skip:{revision}:{phase}",
             payload={
                 "reason": "evidence_saturated_no_applicable_method",
                 "phase": phase,

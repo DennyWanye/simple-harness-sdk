@@ -370,4 +370,24 @@ def test_a_legacy_mission_does_not_gain_usage_fully_known_on_the_report(tmp_path
     assert outcome["status"] is not MissionStatus.FAILED
     assert "usage_fully_known" not in outcome["payload"]
     assert "budget_conserved" not in outcome["payload"]
+    assert "usage_fully_known" not in outcome["report_keys"]
+    assert "budget_conserved" not in outcome["report_keys"]
     assert "MissionFailed" not in outcome["types"]
+
+
+def test_cancel_mission_writes_usage_flags_on_a_hierarchical_report(tmp_path) -> None:
+    """P2-1: cancel_mission is a terminal path; hierarchical final_report carries
+    the two ledger flags."""
+
+    from test_htn_end_to_end import committed  # noqa: PLC0415
+
+    world = committed(tmp_path, key="p23q-cancel-flags", demand=True)
+    loop_mission = world.mission.id
+    cancelled = world.service.cancel_mission(loop_mission)
+    report = dict(cancelled.final_report or {})
+    assert cancelled.status is MissionStatus.CANCELLED
+    assert "usage_fully_known" in report
+    assert "budget_conserved" in report
+    costs = world.service.ledger.costs_report(loop_mission)
+    assert "usage_fully_known" in costs
+    assert costs["budget_conserved"] is True

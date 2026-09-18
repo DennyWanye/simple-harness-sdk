@@ -39,7 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_evidence_saturation as saturation  # noqa: E402
 import test_htn_end_to_end as e2e  # noqa: E402
-from htn_world import method, param, step  # noqa: E402
+from htn_world import const, method, out, param, step  # noqa: E402
+from test_htn_end_to_end import committed  # noqa: E402
 from test_root_review_repair_library import (  # noqa: E402
     C1_FINDING,
     _adopted_root,
@@ -47,13 +48,16 @@ from test_root_review_repair_library import (  # noqa: E402
     _drive,
     _judge_critic,
     _planner_replaces,
+    _register,
     _rejected_open,
+    _repair_recorded,
     _replacement,
     _reviewer,
     _seeded,
+    _synthesised_method,
 )
 
-from agent_orchestrator.contracts.htn import ReusePolicy, TaskForm  # noqa: E402
+from agent_orchestrator.contracts.htn import ReusePolicy, SideEffectKind, TaskForm  # noqa: E402
 from agent_orchestrator.contracts.models import MissionStatus  # noqa: E402
 from agent_orchestrator.contracts.state_machines import (  # noqa: E402
     TERMINAL_MISSION,
@@ -173,6 +177,215 @@ def test_retire_and_refine_shares_the_accepted_read_only_leaf(tmp_path) -> None:
     assert old_leaf in {str(spec.occurrence_id) for spec in network.occurrences}
 
 
+def _accept_all_primitives(world: Any) -> None:
+    """Accept every primitive of the adopted plan, producers before consumers."""
+
+    from agent_orchestrator.runtime.output_blocks import PortClaim
+
+    network = world.network()
+    world.dispatch.issue_input_witnesses(world.mission.id, network, now_ms=1_000_000)
+    producers = {
+        str(item.producer_occurrence): str(item.consumer_occurrence)
+        for item in network.data_requirements
+    }
+    pending = [spec for spec in network.occurrences if spec.form is TaskForm.PRIMITIVE]
+    pending.sort(key=lambda spec: 0 if str(spec.occurrence_id) in producers else 1)
+    assembly = e2e._assembly(world)
+    for index, spec in enumerate(pending):
+        task_id = str(spec.task_id)
+        declared = world.dispatch.declared_output_ports_for(world.mission.id, task_id)
+        path = f"out/{task_id}.json"
+        assembly.accept(
+            world.mission.id,
+            task_id,
+            result_id=f"result-{task_id}",
+            layers=e2e._passing_layers(),
+            artifacts=(e2e._Artifact(f"artifact-{task_id}", path),),
+            producer_agent_ids=("agent-worker",),
+            reviewer_agent_id="agent-critic",
+            now_ms=1_000_000 + index,
+            port_claims=tuple(
+                PortClaim(port_key=item["port"], path=path) for item in declared
+            ),
+        )
+
+
+def _inspect_method(method_id: str) -> Any:
+    """facts (read-only) → apply (write) → inspect (read-only, DATA from apply) +
+    criterion-linked verify.  inspect is *not* in criterion_links."""
+
+    return method(
+        method_id,
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        steps=(
+            step(
+                "facts",
+                "plan.leaf",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("plan.read",),
+            ),
+            step(
+                "apply",
+                "plan.apply",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject")},
+                capabilities=("repo.write",),
+            ),
+            step(
+                "inspect",
+                "plan.inspect",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject"), "patch": out("apply", "patch")},
+                capabilities=("plan.read",),
+            ),
+            step(
+                "verify",
+                "plan.review",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject"), "result": out("facts", "result")},
+                capabilities=("plan.read",),
+            ),
+        ),
+        links=(("c-root", "verify", "c-reviewed"),),
+        finalizer="verify",
+    )
+
+
+def _inspect_rejected(tmp_path, *, key: str):
+    """A committed inspect-shaped plan whose children are accepted and the root
+    review has opened a repair record."""
+
+    original_env, original_outer = e2e._env, e2e._outer
+
+    def env(mission: str):
+        built = original_env(mission)
+        built.register_type(
+            "plan.apply",
+            parameters=(("subject", "string"),),
+            outputs=(("patch", "plan.patch"),),
+            capabilities=("repo.write",),
+            effect=SideEffectKind.LOCAL_WRITE,
+            writes=(("repo", "workspace"),),
+            domain="plan",
+        )
+        built.register_type(
+            "plan.inspect",
+            parameters=(("subject", "string"),),
+            inputs=(("patch", "plan.patch", True),),
+            outputs=(("findings", "plan.findings"),),
+            capabilities=("plan.read",),
+            domain="plan",
+        )
+        return built
+
+    e2e._env = env
+    e2e._outer = lambda: _inspect_method("plan.outer")
+    try:
+        world = committed(tmp_path, key=key, demand=True)
+    finally:
+        e2e._env, e2e._outer = original_env, original_outer
+    _register(world, _inspect_method("plan.alt"))
+    _accept_all_primitives(world)
+    _repair_recorded(world)
+    return world
+
+
+def _probe_method(method_id: str, tag: str):
+    """A facts-like probe leaf whose ``tag`` parameter distinguishes two shares."""
+
+    return method(
+        method_id,
+        "plan.goal",
+        parameter_schema="plan.goal.params",
+        steps=(
+            step(
+                "probe",
+                "plan.probe",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject"), "tag": const(tag)},
+                capabilities=("plan.read",),
+            ),
+            step(
+                "verify",
+                "plan.review",
+                TaskForm.PRIMITIVE,
+                {"subject": param("subject"), "result": out("probe", "result")},
+                capabilities=("plan.read",),
+            ),
+        ),
+        links=(("c-root", "verify", "c-reviewed"),),
+        finalizer="verify",
+    )
+
+
+def _probe_rejected(tmp_path, *, key: str, new_tag: str):
+    original_env, original_outer = e2e._env, e2e._outer
+
+    def env(mission: str):
+        built = original_env(mission)
+        built.register_type(
+            "plan.probe",
+            parameters=(("subject", "string"), ("tag", "string")),
+            outputs=(("result", "plan.result"),),
+            capabilities=("plan.read",),
+            domain="plan",
+        )
+        return built
+
+    e2e._env = env
+    e2e._outer = lambda: _probe_method("plan.outer", "alpha")
+    try:
+        world = committed(tmp_path, key=key, demand=True)
+    finally:
+        e2e._env, e2e._outer = original_env, original_outer
+    _register(world, _probe_method("plan.alt", new_tag))
+    _accept_all_primitives(world)
+    _repair_recorded(world)
+    return world
+
+
+def test_an_inspect_leaf_fed_by_apply_is_not_shared_on_repair(tmp_path) -> None:
+    """P1-1: accepted inspect is read-only and not criterion-linked, but a write
+    leaf (apply) is a DATA predecessor — reusing it would carry the rejected
+    patch's findings into the new revision.  facts has no write predecessor."""
+
+    world = _inspect_rejected(tmp_path, key="p23q-p1-inspect")
+    old_facts = _leaf_occurrence(world.network(), "plan.leaf")
+    old_inspect = _leaf_occurrence(world.network(), "plan.inspect")
+    old = _adopted_root(world)
+    outcome = world.plan(
+        _replacement(world, _inspect_method("plan.alt"), instance_id=old, revision=1),
+        command_id="cmd-no-share-inspect",
+    )
+    assert outcome.committed, outcome.last_reason
+    network = world.network()
+    assert _leaf_occurrence(network, "plan.leaf") == old_facts
+    assert _leaf_occurrence(network, "plan.inspect") != old_inspect
+    adopted = network.adopted_instance_for(network.root_occurrence_ids[0])
+    shared_types = {
+        network.binding_for_occurrence(child.occurrence_id).goal_signature.signature_id
+        for child in adopted.child_bindings
+        if child.reuse_policy is ReusePolicy.SHARE_ACTIVE
+    }
+    assert shared_types == {"plan.leaf"}, shared_types
+
+
+def test_repair_share_requires_matching_parameters(tmp_path) -> None:
+    """P2-3: same task type, different typed parameters → not share_active."""
+
+    world = _probe_rejected(tmp_path, key="p23q-p2-params", new_tag="beta")
+    old_probe = _leaf_occurrence(world.network(), "plan.probe")
+    old = _adopted_root(world)
+    outcome = world.plan(
+        _replacement(world, _probe_method("plan.alt", "beta"), instance_id=old, revision=1),
+        command_id="cmd-no-share-params",
+    )
+    assert outcome.committed, outcome.last_reason
+    assert _leaf_occurrence(world.network(), "plan.probe") != old_probe
+
+
 def test_a_criterion_linked_leaf_is_not_shared_even_when_accepted(tmp_path) -> None:
     """Verify-like leaves carry a parent criterion; the root review judged them.
     Reusing that occurrence would replay the rejected evidence."""
@@ -223,6 +436,8 @@ def test_root_review_reject_then_repair_reuses_the_read_only_leaf_and_completes(
     )
     assert first_leaf
     assert outcome["roles"].get("planner") == 1
+    assert outcome["report"].get("usage_fully_known") is True
+    assert outcome["report"].get("budget_conserved") is True
 
 
 # ======================================================================================
@@ -411,26 +626,28 @@ def test_a_width_overflow_is_correctable_without_moving_size_bound() -> None:
     """Step-count overflow is a P2.3q re-ask; other SIZE_BOUND stays non-correctable."""
 
     from agent_orchestrator.planning.htn.registry import (  # noqa: PLC0415
+        SYNTHESIS_WIDTH_REASON,
         AdmissionProblem,
-        AdmissionReceipt,
         AdmissionStepId,
-        AdmissionVerdict,
-        MethodRef,
-        MethodRegistryStatus,
-        RegistryAuthor,
     )
     from agent_orchestrator.planning.htn.synthesis import (  # noqa: PLC0415
         _is_synthesis_width_bound,
     )
 
     assert RejectionCode.SIZE_BOUND not in CORRECTABLE_REJECTIONS
-    problem = AdmissionProblem(
+    width = AdmissionProblem(
+        code=RejectionCode.SIZE_BOUND,
+        detail="the method declares 9 steps, above the policy's 8",
+        step=AdmissionStepId.STRUCTURE_AND_TYPES,
+        reason=SYNTHESIS_WIDTH_REASON,
+    )
+    ports = AdmissionProblem(
         code=RejectionCode.SIZE_BOUND,
         detail="the method declares 9 steps, above the policy's 8",
         step=AdmissionStepId.STRUCTURE_AND_TYPES,
     )
-    assert _is_synthesis_width_bound(problem) is True
-    del AdmissionReceipt, AdmissionVerdict, MethodRef, MethodRegistryStatus, RegistryAuthor
+    assert _is_synthesis_width_bound(width) is True
+    assert _is_synthesis_width_bound(ports) is False, "substring match must not license a re-ask"
     assert rejection_is_correctable  # live re-ask path
 
 
@@ -473,6 +690,85 @@ def test_planner_hierarchical_v7_names_both_rejection_flags_and_v6_bytes_stay() 
     v6 = hashlib.sha256(PLANNER_HIERARCHICAL_V6.instructions.encode("utf-8")).hexdigest()
     assert v6 == "b13d16f7d1d5aaa8919d983e93b7639105446bd6d95bd73d05353571a9a185a6"
     assert PLANNER_HIERARCHICAL_V7.instructions != PLANNER_HIERARCHICAL_V6.instructions
+
+
+def test_a_skipped_repair_still_reuses_read_only_leaves_and_keeps_their_grants(
+    tmp_path,
+) -> None:
+    """P2-5: skip Planner → synthesise → retire+refine still share_active the
+    accepted facts leaf; funded_now is the new leaf; COMPLETED ledger is conserved."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = _seeded(evidence, key="p23q-skip-reuse", alt=False, free_text=True)
+    first_leaf = _leaf_occurrence(world.network(), "plan.leaf")
+    world.store.close()
+    invented = _synthesised_method()
+    provider = RoleScriptedProvider(
+        {
+            "root_reviewer": [_reviewer("FAIL", finding=C1_FINDING["detail"]), _reviewer("PASS")],
+            "planner": [_planner_replaces],
+            "method_synthesizer": [method_proposal_step(invented.to_json())],
+            "critic": [_judge_critic],
+        }
+    )
+    outcome = _drive(world, evidence, provider, max_planning_attempts=1)
+    assert outcome["status"] is MissionStatus.COMPLETED, (
+        f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']}"
+    )
+    skips = [
+        item
+        for item in outcome["events"]
+        if item.type == PLANNER_SKIPPED_FOR_SYNTHESIS
+    ]
+    assert skips, outcome["types"]
+    phases = {item.payload.get("phase") for item in skips}
+    assert "root_review_repair" in phases or "method_synthesis" in phases, phases
+    revisions = _revision_events(outcome)
+    second = revisions[-1].payload["budget_conservation"]
+    assert second["holds"] is True
+    assert second["funded_now"] == 1, second
+    assert second.get("reused"), second
+    assert first_leaf
+    assert outcome["report"].get("budget_conserved") is True
+    assert outcome["report"].get("usage_fully_known") is True
+
+
+def test_skip_events_of_two_phases_on_the_same_revision_both_land(tmp_path) -> None:
+    """P2-5: the skip event key includes phase, so a later write on the same
+    revision is not dropped by idempotency."""
+
+    evidence = Path(tmp_path) / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    world = saturation._gated_world(evidence, key="p23q-skip-phases")
+    for ordinal in (1, 2):
+        saturation._observe(world, observer="plan.observer", ordinal=ordinal)
+    world.store.close()
+    config = OrchestratorConfig(
+        evidence_root=evidence,
+        max_concurrency=1,
+        test_timeout_seconds=30,
+        max_planning_attempts=2,
+    )
+
+    async def case() -> list[str]:
+        async with Orchestrator(
+            config, RoleScriptedProvider({"planner": []}), poll_interval=0.02
+        ) as loop:
+            world.env.semantics = HtnStore(loop.store)
+            loop.install_hierarchical(planning=world.env)
+            mission = loop.store.get_mission(world.mission.id)
+            assert mission is not None
+            loop._record_planner_skipped(mission, loop.hierarchical, phase="initial")
+            loop._record_planner_skipped(mission, loop.hierarchical, phase="method_synthesis")
+            return [
+                str(item.payload.get("phase"))
+                for item in loop.store.list_events(mission.id)
+                if item.type == PLANNER_SKIPPED_FOR_SYNTHESIS
+            ]
+
+    phases = asyncio.run(case())
+    assert "initial" in phases and "method_synthesis" in phases, phases
 
 
 def test_legacy_missions_never_emit_the_skip_event(tmp_path) -> None:

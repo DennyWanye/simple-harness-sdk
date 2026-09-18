@@ -64,6 +64,7 @@ from ...runtime.role_templates import METHOD_PROPOSAL_TAG, METHOD_SYNTHESIZER
 from ..planner import SYSTEM_BOUND_FIELDS, parse_method_proposal
 from .applicability import ApplicabilityReport, CapabilitySnapshot
 from .registry import (
+    SYNTHESIS_WIDTH_REASON,
     AdmissionPolicy,
     AdmissionProblem,
     AdmissionReceipt,
@@ -252,12 +253,15 @@ def rejection_is_correctable(receipt: AdmissionReceipt) -> bool:
 def _is_synthesis_width_bound(problem: AdmissionProblem) -> bool:
     """P2.3q / N10c: a method wider than ``MAX_SYNTHESIS_METHOD_STEPS`` is a shape
     the second ask can shrink.  Other ``SIZE_BOUND`` refusals (ports per step) stay
-    non-correctable — the package never stated that bound."""
+    non-correctable — the package never stated that bound.
+
+    Matches :data:`SYNTHESIS_WIDTH_REASON` on the problem, never a detail substring
+    (P2-4).
+    """
 
     return (
         problem.code is RejectionCode.SIZE_BOUND
-        and "steps" in str(problem.detail)
-        and "policy's" in str(problem.detail)
+        and str(getattr(problem, "reason", "")) == SYNTHESIS_WIDTH_REASON
     )
 
 

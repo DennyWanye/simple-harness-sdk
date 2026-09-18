@@ -478,7 +478,7 @@ class BudgetLedger:
         global_row = self._store.connection.execute(
             "SELECT account_id FROM budget_accounts WHERE scope = 'global'"
         ).fetchone()
-        return {
+        report: dict[str, Any] = {
             "accounts": [self.account(row["account_id"]).to_json() for row in rows],
             "usage": [dict(row) for row in usage],
             "reservations": [dict(row) for row in reservations],
@@ -489,9 +489,18 @@ class BudgetLedger:
                 for row in reservations
                 if row["state"] != "SETTLED" and self.has_unknown_usage(row["subject_id"])
             ],
-            "usage_fully_known": self._usage_fully_known(mission_id, usage),
-            "budget_conserved": self._budget_conserved(rows),
         }
+        if self._mission_is_hierarchical(mission_id):
+            report["usage_fully_known"] = self._usage_fully_known(mission_id, usage)
+            report["budget_conserved"] = self._budget_conserved(rows)
+        return report
+
+    def _mission_is_hierarchical(self, mission_id: str) -> bool:
+        mission = self._store.get_mission(mission_id)
+        if mission is None:
+            return False
+        mode = str((mission.final_report or {}).get("orchestration_semantics_version") or "")
+        return mode in {"hierarchical", "full-target-v1"}
 
     def _usage_fully_known(self, mission_id: str, usage: Sequence[Any]) -> bool:
         if any(int(row["unknown"] or 0) == 1 for row in usage):
@@ -519,10 +528,17 @@ class BudgetLedger:
         return True
 
     def usage_flags(self, mission_id: str) -> dict[str, bool]:
-        report = self.costs_report(mission_id)
+        rows = self._store.connection.execute(
+            "SELECT * FROM budget_accounts WHERE mission_id = ? ORDER BY account_id", (mission_id,)
+        ).fetchall()
+        usage = self._store.connection.execute(
+            "SELECT subject_id, usage_ref, input_tokens, output_tokens, cost_micros, unpriced, unknown"
+            " FROM imported_usage WHERE mission_id = ? ORDER BY imported_at, usage_ref",
+            (mission_id,),
+        ).fetchall()
         return {
-            "usage_fully_known": bool(report["usage_fully_known"]),
-            "budget_conserved": bool(report["budget_conserved"]),
+            "usage_fully_known": self._usage_fully_known(mission_id, usage),
+            "budget_conserved": self._budget_conserved(rows),
         }
 
 

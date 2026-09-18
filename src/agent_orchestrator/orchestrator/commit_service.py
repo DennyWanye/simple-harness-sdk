@@ -2841,8 +2841,16 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             mission = self._require_mission(mission_id)
             if mission.status is MissionStatus.CANCELLED:
                 return mission
+            from .hierarchical_dispatch import is_hierarchical
+
+            report = dict(mission.final_report or {})
+            if is_hierarchical(mission):
+                report.update(self._ledger.usage_flags(mission_id))
             updated = next_mission(
-                mission, MissionStatus.CANCELLED, stop_reason=str(MissionStopReason.CANCELLED)
+                mission,
+                MissionStatus.CANCELLED,
+                stop_reason=str(MissionStopReason.CANCELLED),
+                final_report=report,
             )
             self._store.update_mission(updated, expected_version=mission.version)
             self._cascade_stop(mission_id, skip_task=None)
@@ -5130,6 +5138,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 payload={"met": met, "judgments": [dict(item) for item in judgments]},
             )
             if met:
+                from .hierarchical_dispatch import is_hierarchical
+
+                if is_hierarchical(mission):
+                    report.update(self._ledger.usage_flags(mission_id))
                 done = next_mission(
                     mission,
                     MissionStatus.COMPLETED,

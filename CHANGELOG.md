@@ -1,5 +1,4 @@
-## 0.12.2 — P2.3e–P2.3q：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路（2026-09-18）
-## 0.12.2 — P2.3e–P2.3r：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机与终态 UNKNOWN 预留释放（2026-09-18）
+## 0.12.2 — P2.3e–P2.3r：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -11,7 +10,7 @@
 
 **P2.3q：修复轮复用已验收只读叶、空 Planner 短路、合成方法宽度硬上限、拒绝理由分字段。** 分支 `p2.3q-repair-reuse-and-synthesis-shortcut`，基 d360750；版本号不动。第 4 批 4 局全部撞调用/attempt 上限：retire+refine 整网重铺（C2-r0 `funded_now=10`）、开局与修复轮空 Planner、10 叶合成方法、C1-r1 把只读取消说成 `rejected_by_root_review`。
 
-- **N10a**：retire+refine 时已验收、只读、非准则叶（facts/reproduce）默认 `share_active`；写型/未验收/verify 不复用。`funded_now` 只计新叶。守恒、预留、attempts 如实。
+- **N10a**：retire+refine 时已验收、只读、**无写型前驱**的叶（facts/reproduce）默认 `share_active`；经 apply 的 inspect/summarize、写型/未验收/verify 不复用。lookup 比 task type version 与 typed_parameters。`funded_now` 只计新叶。
 - **空 Planner 短路**：证据饱和且无 APPLICABLE（含排除被拒方法后）时开局与修复轮都跳过 Planner，直接 `_request_method_synthesis`，写 `PlannerRoundSkippedForSynthesis`。有 APPLICABLE 不跳。仍受 `MAX_SYNTHESIS_ASKS` 与修复轮上限。
 - **N10c**：合成方法宽度 `MAX_SYNTHESIS_METHOD_STEPS=8`；超宽按 P2.3i 可修正重问一次，再超则拒绝、停机原因具名。
 - **N12**：包把 `rejected_by_root_review` 与 `rejected_by_read_only_leaf` 分成两字段。只加 `planner-hierarchical-v7`（v6 字节不动，digest 登记）。
@@ -21,7 +20,7 @@
 - **终态收口**：hierarchical 的 `fail_mission` / `fail_planning` / `stop_task` / `cancel_mission` 统一先 `_prepare_terminal_ledger`：导入用量（unknown 留账）→ 释放 HELD/UNKNOWN grant → `settle_subject_known` → 关闭仍 SUBMITTED 的 intent。终态 reserved=0 且无 HELD/UNKNOWN grant。legacy 原样（ORCH §12.2）。
 - **可诊断**：`_handoff_unknown_diagnostics` 沿 `__cause__` / `__context__` 取底层短类名与 HTTP 状态；包装类记 `wrapper_class`。不写响应体 / 请求体 / 头 / 密钥。
 - **口径**：`costs_report` 与 hierarchical `final_report` 增加 `usage_fully_known`（用量全部已知）与 `budget_conserved`（`remaining+reserved+settled==pool`）。Host 应用前者，不要把「有未知」等价于「不守恒」。
-- 测试：`test_terminal_unknown_release.py` 6 + 落库 1；4 变异 KILLED。full_target **2894 passed / 2 skipped**（基线 2888/2，+6）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2s。
+- 测试：`test_terminal_unknown_release.py` 6 + 落库 1；4 变异 KILLED。full_target **2894 passed / 2 skipped**（基线 2888/2，+6）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2t。
 
 **P2.3p：交接后连续 UNKNOWN 有界停机。** 分支 `p2.3p-after-handoff-unknown-bounded`，基 4a12e8d；版本号不动。真实局 H-L3-C2-r0/r1：planner:1 + synthesizer 成功后，后续 planner 全部 `provider_error_after_handoff`（0 token）；P2.3f 等 300 s → 重交接 → 再 UNKNOWN → 新 planner ordinal，直到墙钟。r0 停在 PLANNING、`stop_reason=null`、预留悬挂；r1 Worker 叶空转到 1800 s。P2.3l 的 `runtime_unavailable` 只覆盖梯子烧尽的 PLANNING。
 
