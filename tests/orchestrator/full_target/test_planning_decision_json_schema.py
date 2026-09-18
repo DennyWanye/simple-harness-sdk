@@ -23,6 +23,7 @@ mirror, so relaxing one side alone is a red test rather than a silent drift.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from importlib import resources
 from pathlib import Path
@@ -231,6 +232,164 @@ def _payload_pointer(schema: dict[str, Any], raw: dict[str, Any]) -> str:
     if decision_type == "REPAIR":
         return REPAIR_PAYLOAD_BY_KIND[raw["payload"]["repair_kind"]]
     return PAYLOAD_DEF_BY_DECISION_TYPE[decision_type]
+
+
+# --------------------------------------------------------------------------------------
+# A minimal Draft 2020-12 subset validator (no jsonschema dependency).
+#
+# The schema deliberately uses only a small keyword set, so the reverse-acceptance
+# test below re-implements exactly those keywords.  It exists to pin the direction
+# the mirror tests cannot see: a value the *Python codec* calls canonical must be
+# accepted by the *Schema*.  Mutating a schema ``type`` (for example narrowing a
+# nullable field back to ``string``) has to turn this test red.
+# --------------------------------------------------------------------------------------
+
+
+def _json_kind(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _kind_matches(value: Any, kind: str) -> bool:
+    got = _json_kind(value)
+    if kind == got:
+        return True
+    return kind == "number" and got == "integer"
+
+
+def _type_matches(value: Any, spec: Any) -> bool:
+    kinds = spec if isinstance(spec, list) else [spec]
+    return any(_kind_matches(value, kind) for kind in kinds)
+
+
+def _deref(defs: dict[str, Any], node: Any) -> Any:
+    while isinstance(node, dict) and "$ref" in node:
+        ref = node["$ref"]
+        assert ref.startswith("#/$defs/"), ref
+        node = defs[ref.split("/")[2]]
+    return node
+
+
+def _validate(schema: dict[str, Any], node: Any, value: Any, path: str = "$") -> list[str]:
+    """Return a list of human-readable violations (empty means accepted)."""
+
+    if not isinstance(node, dict):
+        return []
+    if "$ref" in node:
+        target = _deref(schema["$defs"], node)
+        siblings = {key: item for key, item in node.items() if key != "$ref"}
+        return _validate(schema, target, value, path) + _validate(schema, siblings, value, path)
+
+    errors: list[str] = []
+    if "type" in node and not _type_matches(value, node["type"]):
+        errors.append(f"{path}: type {node['type']} != {_json_kind(value)}")
+    if "const" in node and value != node["const"]:
+        errors.append(f"{path}: const {node['const']!r} != {value!r}")
+    if "enum" in node and value not in node["enum"]:
+        errors.append(f"{path}: {value!r} not in enum")
+
+    if isinstance(value, str):
+        if len(value) < node.get("minLength", 0):
+            errors.append(f"{path}: shorter than minLength {node['minLength']}")
+        if "maxLength" in node and len(value) > node["maxLength"]:
+            errors.append(f"{path}: longer than maxLength {node['maxLength']}")
+        if "pattern" in node and re.search(node["pattern"], value) is None:
+            errors.append(f"{path}: does not match pattern {node['pattern']}")
+    if isinstance(value, int) and not isinstance(value, bool) and "minimum" in node:
+        if value < node["minimum"]:
+            errors.append(f"{path}: below minimum {node['minimum']}")
+    if isinstance(value, list):
+        if len(value) < node.get("minItems", 0):
+            errors.append(f"{path}: fewer than minItems {node['minItems']}")
+        if "maxItems" in node and len(value) > node["maxItems"]:
+            errors.append(f"{path}: more than maxItems {node['maxItems']}")
+        if node.get("uniqueItems"):
+            canon = {json.dumps(item, sort_keys=True) for item in value}
+            if len(canon) != len(value):
+                errors.append(f"{path}: items are not unique")
+        if "items" in node:
+            for position, item in enumerate(value):
+                errors += _validate(schema, node["items"], item, f"{path}[{position}]")
+    if isinstance(value, dict):
+        if "maxProperties" in node and len(value) > node["maxProperties"]:
+            errors.append(f"{path}: more than maxProperties {node['maxProperties']}")
+        for required in node.get("required", []):
+            if required not in value:
+                errors.append(f"{path}: missing required {required!r}")
+        properties = node.get("properties", {})
+        if node.get("additionalProperties") is False:
+            for key in value:
+                if key not in properties:
+                    errors.append(f"{path}: additional property {key!r} is not allowed")
+        for key, sub in properties.items():
+            if key in value:
+                errors += _validate(schema, sub, value[key], f"{path}.{key}")
+
+    if "anyOf" in node:
+        if not any(not _validate(schema, branch, value, path) for branch in node["anyOf"]):
+            errors.append(f"{path}: no anyOf branch accepted the value")
+    if "oneOf" in node:
+        matched = sum(1 for branch in node["oneOf"] if not _validate(schema, branch, value, path))
+        if matched != 1:
+            errors.append(f"{path}: oneOf matched {matched} branches")
+    for branch in node.get("allOf", []):
+        errors += _validate(schema, branch, value, path)
+    if "if" in node:
+        if not _validate(schema, node["if"], value, path):
+            if "then" in node:
+                errors += _validate(schema, node["then"], value, path)
+        elif "else" in node:
+            errors += _validate(schema, node["else"], value, path)
+    return errors
+
+
+def _codec_canonical_variants() -> dict[str, dict[str, Any]]:
+    """Every codec-legal shape whose canonical JSON exercises a nullable field.
+
+    ``blockedItem.detail`` is the field the verifier flagged (P1-A); the other
+    three ``None``-able fields are added so their ``null`` branches cannot be
+    deleted without turning this test red (P1-C).
+    """
+
+    variants: dict[str, dict[str, Any]] = {}
+    for path in _valid_paths():
+        variants[path.stem] = _read(path)
+
+    blocked = _read(VALID_DIR / "declare-blocked.json")
+    blocked["payload"]["blockers"] = [{"code": "NO_USABLE_METHOD"}]
+    variants["variant-blocked-item-without-detail"] = blocked
+
+    alternative = _read(VALID_DIR / "refine.json")
+    alternative["alternatives"] = [
+        {"method_ref": None, "label": "alt", "disposition": "DEFERRED", "reason": "later"}
+    ]
+    variants["variant-alternative-without-method-ref"] = alternative
+
+    assumption = _read(VALID_DIR / "refine.json")
+    assumption["assumptions"] = [
+        {
+            "key": "a",
+            "statement": "s",
+            "required_for": ["REFINE"],
+            "risk": "LOW",
+            "suggested_predicate_key": None,
+        }
+    ]
+    variants["variant-assumption-without-predicate"] = assumption
+    return variants
 
 
 # --------------------------------------------------------------------------------------
@@ -505,6 +664,21 @@ def test_domain_parameter_maps_are_not_scanned_for_system_field_names() -> None:
     raw["payload"]["bindings"] = {"plan_revision": 7, "operation_id": "op-1"}
     envelope = PlanningDecisionEnvelopeV1.from_json(raw)
     assert envelope.to_json()["payload"]["bindings"] == {"plan_revision": 7, "operation_id": "op-1"}
+
+
+@pytest.mark.parametrize(
+    ("name", "raw"),
+    _codec_canonical_variants().items(),
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_codec_canonical_output_is_accepted_by_the_schema(name: str, raw: dict[str, Any]) -> None:
+    # Reverse acceptance (P1-B): the Schema must accept every value the Python
+    # codec calls canonical.  A one-directional "Schema vs Python constant"
+    # mirror cannot see a field whose ``type`` is narrower than the codec's
+    # nullable annotation, which is exactly how P1-A slipped through.
+    output = PlanningDecisionEnvelopeV1.from_json(raw).to_json()
+    errors = _validate(_load_schema(), _load_schema(), output)
+    assert errors == [], (name, errors)
 
 
 # --------------------------------------------------------------------------------------

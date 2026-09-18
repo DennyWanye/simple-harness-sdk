@@ -114,3 +114,55 @@ All checks passed!
 - H1-H：编排接线；H1-I：真实模型/变异验收。
 
 **测试计数（供最终回复引用）：** A2b 新增 86 passed（本文件）+ 11 valid / 39 invalid fixtures；full_target 3197 passed / 2 skipped。
+
+## 八、第 1 轮处置（核验“修后可合”，2026-09-19）
+
+核验报告：`plans/llm-native-htn/H1/reviews/核验-H1-A2b-2026-09-19.md`（独立会话，判定“有 P1 无 P0 ⇒ 修后可合”）。本轮修复 P1-A，并为 P1-B/P1-C 补上反向接受性测试；P2 的处置说明见下。**未改** `planning_decisions.py`、`pyproject.toml`，未触其它白名单外文件。
+
+### P1-A：`$defs/blockedItem.detail` 可空性漂移（已修）
+
+- 根因：Python `BlockedItemV1` 的注解是 `detail: str | None`，非 `OTHER` 时允许省略 `detail`，`to_json()` 会回吐 `"detail": null`；而 Schema 把它写成 `"type": "string"`，于是**一个 codec 认为合法的 decision 被 Schema 判为非法**——正是 V2 §14 要“其它语言 Host 与 fixtures 共用同一 wire 形状”的那条用途失效。
+- 修复（只改 Schema 一处，不动 codec）：`src/.../planning-decision-v1.schema.json` 的 `$defs/blockedItem/properties/detail/type` 由 `"string"` 改为 `["string", "null"]`，`minLength`/`maxLength` 保持原位不动。
+- 回归：`test_every_declared_cap_equals_its_python_constant` 仍能定位 `blockedItem/properties/detail/maxLength`，不被本次改动影响。
+
+### P1-B / P1-C：补“codec 合法输出必须被 Schema 接受”的用例（已补）
+
+- 位置：`tests/orchestrator/full_target/test_planning_decision_json_schema.py`。
+- 新增一个**最小 Draft 2020-12 子集校验器**（`_json_kind` / `_type_matches` / `_deref` / `_validate`），只覆盖本 Schema 实际用到的关键字（`type/const/enum/minLength/maxLength/pattern/minimum/minItems/maxItems/uniqueItems/items/required/additionalProperties/maxProperties/anyOf/oneOf/allOf/if-then-else/$ref`），**不引入 `jsonschema` 依赖**。
+- 新增反应用例 `test_codec_canonical_output_is_accepted_by_the_schema`：遍历 11 个 `valid/*.json` 加 3 个 codec 合法变体（P1-C 的三个可空字段各一），断言 `PlanningDecisionEnvelopeV1.from_json(...).to_json()` 的输出满足 Schema。这可堵住此前“单向镜像（Schema vs Python 常量）看不见字段 `type` 比 codec 注解更窄”的缺口。
+- 先在红态确认（红：`variant-blocked-item-without-detail` 报 `$.payload.blockers[0].detail: type string != null`），再修 Schema 后转绿。
+
+### 变异复验（证明 M7b 方向不再存活）
+
+| 变异 | 目标 | 结果 |
+|---|---|---|
+| M7b（核验期 SURVIVED）`blockedItem.detail` 收紧回 `"string"` | schema blockedItem.detail | **KILLED**（1 failed / 99 passed） |
+| 删 `alternative.method_ref` 的 `null` 分支 | schema alternative.method_ref | **KILLED**（1 failed / 99 passed） |
+| 删 `assumption.suggested_predicate_key` 的 `null` 分支 | schema assumption.suggested_predicate_key | **KILLED**（1 failed / 99 passed） |
+| 删 `bindGoalPayload.resolution_ref` 的 `null` 分支 | schema bindGoalPayload.resolution_ref | **KILLED**（1 failed / 99 passed） |
+
+所有变异均“先 `cp` Schema 到 `/tmp` → 变异 → 跑测试 → 用副本恢复”，恢复后 `git status --short` 与变异前一致。
+
+### P2 处置
+
+- **P2-1（docstring 反引号不配平）：** 已按原始字节复核，`src/.../schemas/__init__.py:8` 实为 `` ``importlib.resources`` ``（首尾各 2 个 ASCII 反引号，U+0060，共 4 个），与 HEAD 提交、核验副本三方 sha256 完全一致。该条系报告渲染假象，**无需改动**。
+- **P2-2（`proposeMethodPayload.method_proposal` 开放对象）：** 与 §32、补遗 §三一致，本片维持不变，留待 H1-C 收紧。
+- **P2-3（REUSE 缺 `src/**/*.json` 覆盖）：** 白名单外，维持记录而不改动（见 §六）。
+
+### 本轮测试（尾行原文）
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py -q -p no:cacheprovider
+100 passed in 0.09s
+
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py tests/orchestrator/full_target/test_planning_decision_contract.py tests/orchestrator/full_target/test_planning_decision_envelope.py -q -p no:cacheprovider
+251 passed in 0.13s
+
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
+3211 passed, 2 skipped in 124.61s (0:02:04)
+
+$ uv run --offline ruff check src/agent_orchestrator/contracts/schemas/__init__.py tests/orchestrator/full_target/test_planning_decision_json_schema.py
+All checks passed!
+```
+
+独立复核：用 `jsonschema.Draft202012Validator`（仅核验期临时 `--with`，不入依赖）校验 11 个 valid 样例与 `detail:null` 变体，全部 0 error。

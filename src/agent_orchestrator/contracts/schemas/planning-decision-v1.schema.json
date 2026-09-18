@@ -523,7 +523,10 @@
           "$ref": "#/$defs/blockerCode"
         },
         "detail": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1,
           "maxLength": 20000
         }
