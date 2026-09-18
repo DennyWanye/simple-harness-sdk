@@ -840,10 +840,12 @@ def test_an_output_of_an_occurrence_the_plan_dropped_is_not_offered(world: World
 # ======================================================================================
 
 
-def test_migration_seventeen_is_additive_and_eighteen_is_the_head() -> None:
-    assert schema.SCHEMA_VERSION == 18
+def test_migration_seventeen_is_additive_and_eighteen_is_still_present() -> None:
+    assert schema.SCHEMA_VERSION == 19
     assert schema.MIGRATIONS[16].ddl is acceptance_receipt_schema.DDL
     assert "ALTER TABLE" not in acceptance_receipt_schema.DDL.upper()
+    assert schema.MIGRATIONS[17].version == 18
+    assert schema.MIGRATIONS[18].version == 19
 
 
 def test_the_three_new_tables_exist_and_are_strict(world: World) -> None:
