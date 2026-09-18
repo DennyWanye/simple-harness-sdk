@@ -930,7 +930,12 @@ def _decision_fields(
 
     authority_rows = _as_json_refs(authorities)
     scoped = {**package, "authoritative_refs": authority_rows}
+    # Both quantities come from **one** input — the scoped package — or the count
+    # describes a different request than the list it is reported beside: the side
+    # table contributes task/obligation refs, so measuring the cap on the un-scoped
+    # package would under-report exactly the refs this round added (§48).
     refs = visible_refs_from_hierarchical_package(scoped)
+    omitted = len(_sorted_unique_refs(scoped)) - len(refs)
     return {
         "planning_protocol": {
             "protocol": PLANNING_DECISION_V1,
@@ -939,7 +944,7 @@ def _decision_fields(
         "planning_subjects": [dict(item) for item in planning_subjects(network)],
         "authoritative_refs": authority_rows,
         "visible_refs": [dict(item) for item in refs],
-        "visible_refs_omitted": visible_refs_omitted(package),
+        "visible_refs_omitted": omitted,
         "previous_feedback": _feedback_json(previous_feedback),
         "decision_limits": dict(DECISION_LIMITS),
     }

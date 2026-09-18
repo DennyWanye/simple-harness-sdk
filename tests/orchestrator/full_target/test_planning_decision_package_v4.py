@@ -207,6 +207,85 @@ def by_key(package: Mapping[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
     }
 
 
+class _WideBinding:
+    """Enough of ``TaskSemanticBindingV1`` for the packager: id, revision, digest."""
+
+    def __init__(self, task_id: str, obligation_id: str, digest: str) -> None:
+        self.task_id = task_id
+        self.obligation_id = obligation_id
+        self.contract_revision = 1
+        self.contract_hash = digest
+        self.goal_signature = _Signature()
+        self.typed_parameters: dict[str, Any] = {}
+        self.requirement_refs: tuple[str, ...] = ()
+        self.capability_requirements: tuple[str, ...] = ()
+
+    def content_hash(self) -> str:
+        return self.contract_hash
+
+
+class _Signature:
+    signature_id = "wide.signature"
+    statement = "a wide goal"
+
+
+class _Occurrence:
+    def __init__(self, occurrence_id: str, task_id: str, obligation_id: str) -> None:
+        from agent_orchestrator.contracts.htn import TaskForm
+
+        self.occurrence_id = occurrence_id
+        self.task_id = task_id
+        self.obligation_id = obligation_id
+        self.form = TaskForm.COMPOUND
+        self.requiredness = "required"
+
+
+class _WideNetwork:
+    """A network with ``count`` compound goals, so the 128 cap is reachable."""
+
+    plan_revision = 0
+    root_occurrence_ids: tuple[str, ...] = ()
+    required_obligations: tuple[str, ...] = ()
+
+    def __init__(self, count: int) -> None:
+        self._by_occurrence: dict[str, _WideBinding] = {}
+        occurrences: list[_Occurrence] = []
+        bindings: list[_WideBinding] = []
+        for index in range(count):
+            task_id = f"task-{index:03d}"
+            occurrence_id = f"occ-{index:03d}"
+            digest = hex_digest(index + 1)
+            binding = _WideBinding(task_id, f"obl-{index:03d}", digest)
+            self._by_occurrence[occurrence_id] = binding
+            bindings.append(binding)
+            occurrences.append(_Occurrence(occurrence_id, task_id, f"obl-{index:03d}"))
+        self.occurrences = tuple(occurrences)
+        self.task_bindings = tuple(bindings)
+
+    def adopted_instance_for(self, occurrence_id: str) -> Any:
+        return None
+
+    def binding_for_occurrence(self, occurrence_id: str) -> _WideBinding:
+        return self._by_occurrence[occurrence_id]
+
+
+def wide_package(count: int, **kwargs: Any) -> dict[str, Any]:
+    return hierarchical_planner_package(
+        _Mission(),
+        _WideNetwork(count),
+        registry=None,
+        planning_protocol=PLANNING_DECISION_V1,
+        **kwargs,
+    )
+
+
+def obligation_authorities(count: int) -> list[dict[str, Any]]:
+    return [
+        authority("obligation", f"obl-{index:03d}", 1, hex_digest(index + 1))
+        for index in range(count)
+    ]
+
+
 def hex_digest(index: int) -> str:
     """A stable 64-character lowercase hex digest for one small integer."""
 
@@ -701,6 +780,96 @@ def test_a_resolution_ref_keeps_its_own_kind() -> None:
     }
 
 
+def test_the_authority_table_keys_on_kind_and_id_not_id_alone() -> None:
+    """P2-5: a task and an obligation may share an id; the ref must not cross kinds."""
+
+    package = empty_package(
+        open_compound_goals=[
+            {"goal_id": "shared", "obligation_id": "shared", "contract_revision": 1}
+        ],
+        authoritative_refs=[
+            authority("task", "shared", 1, "a" * 64),
+            authority("obligation", "shared", 2, "b" * 64),
+        ],
+    )
+    refs = by_key(package)
+    assert refs[("task", "shared")] == {
+        "kind": "task",
+        "id": "shared",
+        "semantic_revision": 1,
+        "content_hash": "a" * 64,
+    }
+    assert refs[("obligation", "shared")] == {
+        "kind": "obligation",
+        "id": "shared",
+        "semantic_revision": 2,
+        "content_hash": "b" * 64,
+    }
+
+
+def test_an_authority_row_with_only_one_kind_does_not_answer_for_the_other() -> None:
+    """P2-5: the obligation entry is not served by a task row that shares its id."""
+
+    package = empty_package(
+        open_compound_goals=[
+            {"goal_id": "shared", "obligation_id": "shared", "contract_revision": 1}
+        ],
+        authoritative_refs=[authority("task", "shared", 1, "a" * 64)],
+    )
+    assert [item["kind"] for item in visible_refs_from_hierarchical_package(package)] == [
+        "task"
+    ]
+
+
+def test_the_authority_sidecar_order_does_not_change_the_refs() -> None:
+    """P2-6: the side table is an input set; its row order is not semantic."""
+
+    entries = [
+        {"goal_id": "task-a", "obligation_id": "obl-a", "contract_revision": 1},
+        {"goal_id": "task-b", "obligation_id": "obl-b", "contract_revision": 1},
+    ]
+    rows = [
+        authority("task", "task-a", 1, "a" * 64),
+        authority("obligation", "obl-a", 1, "b" * 64),
+        authority("task", "task-b", 1, "c" * 64),
+        authority("obligation", "obl-b", 1, "d" * 64),
+    ]
+    forward = empty_package(open_compound_goals=entries, authoritative_refs=rows)
+    backward = empty_package(
+        open_compound_goals=entries, authoritative_refs=list(reversed(rows))
+    )
+    assert visible_refs_from_hierarchical_package(
+        forward
+    ) == visible_refs_from_hierarchical_package(backward)
+
+
+def test_an_acceptance_ref_wins_over_a_resolution_ref_on_one_row() -> None:
+    """P2-7: an ``accepted_results`` row reports its acceptance when both are present."""
+
+    package = empty_package(
+        accepted_results=[
+            {
+                "acceptance_ref": {"id": "acc-1", "semantic_revision": 1, "content_hash": "a" * 64},
+                "resolution_ref": {"id": "res-1", "semantic_revision": 1, "content_hash": "b" * 64},
+            }
+        ]
+    )
+    assert [dict(item) for item in visible_refs_from_hierarchical_package(package)] == [
+        {"kind": "acceptance", "id": "acc-1", "semantic_revision": 1, "content_hash": "a" * 64}
+    ]
+
+
+def test_a_resolution_ref_is_used_when_no_acceptance_ref_is_present() -> None:
+    package = empty_package(
+        accepted_results=[
+            {"resolution_ref": {"id": "res-1", "semantic_revision": 1, "content_hash": "b" * 64}}
+        ]
+    )
+    assert [item["kind"] for item in visible_refs_from_hierarchical_package(package)] == [
+        "resolution"
+    ]
+
+
 def test_a_malformed_source_ref_is_skipped_rather_than_invented() -> None:
     package = empty_package(
         method_library=[
@@ -771,6 +940,35 @@ def test_the_omitted_count_is_reported_for_over_long_input() -> None:
 def test_the_omitted_count_is_zero_when_nothing_is_dropped() -> None:
     assert visible_refs_omitted(empty_package()) == 0
     assert visible_refs_omitted(empty_package(method_library=[method_entry(1)])) == 0
+
+
+def test_the_omitted_count_describes_the_refs_actually_emitted() -> None:
+    """P1-2: ``visible_refs`` and ``visible_refs_omitted`` must share one input.
+
+    The authority side table contributes task/obligation refs, so measuring the
+    omitted count on the package *without* it under-reports what the cap dropped.
+    With ``count`` goals and ``count`` obligation rows the collector sees two refs
+    per goal, so the dropped count is ``2 * count - 128`` — an oracle computed here
+    from the inputs, not read back out of the code under test.
+    """
+
+    count = MAX_VISIBLE_REFS + 5
+    package = wide_package(count, authoritative_refs=obligation_authorities(count))
+    assert len(package["visible_refs"]) == MAX_VISIBLE_REFS
+    assert package["visible_refs_omitted"] == 2 * count - MAX_VISIBLE_REFS
+    assert package["visible_refs_omitted"] == visible_refs_omitted(package)
+
+
+def test_a_sidecar_only_ref_can_push_the_package_over_the_cap() -> None:
+    """A package at the cap whose last ref comes from the side table still counts it."""
+
+    package = wide_package(
+        MAX_VISIBLE_REFS,
+        authoritative_refs=[authority("obligation", "obl-000", 1, hex_digest(9))],
+    )
+    # MAX_VISIBLE_REFS task refs plus one obligation ref: exactly one is dropped.
+    assert len(package["visible_refs"]) == MAX_VISIBLE_REFS
+    assert package["visible_refs_omitted"] == 1
 
 
 def test_the_built_decision_package_exposes_the_collector_output(tmp_path: Any) -> None:

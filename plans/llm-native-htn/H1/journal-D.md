@@ -300,3 +300,96 @@ E5 -> 1 failed, 57 passed in 0.56s
 | 相关六文件全绿 | `349 passed in 18.45s` | ✅ |
 | 旧协议字节不变 | 黄金 `a9aa2e7e…` / `801b8e39…` 仍逐位相等 | ✅ |
 | ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |
+
+---
+
+## 9. 第 2 轮处置（核验结论：修后可合）
+
+**核验报告：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 2」小节。P0 无；P1
+一条（P1-2，本轮新引入的不一致）；P2 四条（P2-5…P2-8，其中 P2-4 沿用、非本片问题）。
+
+**处置提交：** 见 §9.5（fix(h1-d): count omitted refs against the same scoped input as visible_refs）。
+
+### 9.1 P1-2（必修）：`visible_refs_omitted` 与 `visible_refs` 取自不同输入包
+
+**问题。** 上一轮的修复让 `_decision_fields` 用**带旁路 `authoritative_refs` 的 `scoped` 包**算
+`visible_refs`，却用**不带旁路的 `package`** 算 `visible_refs_omitted`。旁路会贡献 task/obligation
+引用，于是截断发生时两个字段来自不同的输入集合，`visible_refs_omitted` **少报**被丢弃条数。
+
+**复现（核验员公开构造器口径）。** 65 个 compound goal（每个贡献 task + obligation 两条 ref，共 130
+条）+ 65 条 obligation 权威，收集总数 130、上限 128；修复前 `visible_refs_omitted` 报 `0`（真实应丢
+`2`）：
+
+```text
+len(visible_refs)        : 128
+visible_refs_omitted     : 0     ← 少报
+omitted(returned)        : 2
+INCONSISTENT             : True
+```
+
+**修复。** `_decision_fields` 里两个量都基于**同一个 `scoped`**：`refs = visible_refs_from_...(
+scoped)`，`omitted = len(_sorted_unique_refs(scoped)) - len(refs)`。两者同源，计数即「本次
+`visible_refs` 实际丢了多少」（§48「必须输出 truncated/omitted_counts」）。
+
+**实测（同一构造器，修复后）。**
+
+```text
+len(visible_refs)        : 128
+visible_refs_omitted     : 2
+omitted(returned)        : 2
+INCONSISTENT             : False
+```
+
+### 9.2 P2 四条
+
+| 编号 | 问题 | 处置 |
+|---|---|---|
+| P2-5 | 权威表按 `(kind,id)` 取值的 kind 区分未钉死（N3 SURVIVED） | 补两条负例：同 id、不同 kind 的两条权威并存时不得串用；只有 task 行时不产出 obligation ref |
+| P2-6 | 截断边界与旁路顺序无断言（N7 / N8 SURVIVED） | 补「>128 且旁路贡献 ref 时 `visible_refs_omitted == 收集总数 − 128`」与「旁路行序无关」两条断言 |
+| P2-7 | `acceptance_ref` / `resolution_ref` 同时存在时优先级无断言（N9 SURVIVED） | 补两条：两者并存取 acceptance；无 acceptance 时取 resolution |
+| P2-8 | 新增模型可见顶层字段 `authoritative_refs` 不在 §38「只加五项」清单内 | **见 §9.3：规格未覆盖点，按纪律记录并请计划作者裁定（本片不擅自改名或收敛）** |
+
+### 9.3 P2-8 规格未覆盖点（BLOCKER 备案，请计划作者裁定）
+
+- **事实：** §38 明写「在当前 package 上只加：`planning_protocol` / `planning_subjects` /
+  `visible_refs` / `previous_feedback` / `decision_limits`」，本片额外新增了第 6 个**模型可见**顶层
+  字段 `authoritative_refs`；`_seal` 会把它渲染进模型文本（实测 `"## authoritative_refs" in
+  sealed.text == True`）。
+- **为何仍需要它：** §5.1 要求 `task` 取 `task_semantics.content_hash`、`obligation` 取对象规范 JSON
+  摘要，而合并前旧包的 `open_compound_goals[]` 只带 `contract_revision`、不带哈希，`facts[]`/`methods[]`
+  也不含这两个摘要——**包内没有物理载体**。第 1 轮核验的修复方向亦给出两条路：把权威摘要「随包带入
+  一个仅供新协议读取的旁路」或「给收集器加可选的 network/binding 取值入口」；本片选了前者，因为它让
+  `visible_refs` 成为**包内内容的纯函数**（H1-F 可重算比对）。
+- **替代方案与代价：**
+  1. 改为「收集器可选参数」而非包内字段（不新增线上字段名）——代价：`visible_refs_from_hierarchical_
+     package(已存包)` 无法仅凭包体复现 task/obligation 引用，H1-F 只能以请求存储的 `visible_refs`
+     为准，而不能再重算。
+  2. 「留在包内数据但不渲染给模型」——本片**不可为**：渲染在 `context/context_builder.py::_seal`
+     （不在本片白名单），`_render` 遍历全部顶层键、无跳过机制。
+- **本片处置：** 按「规格未覆盖 → 记录并停在裁定点」的纪律，保留该字段（加性、不改旧路径、不破坏
+  §5.1 权威哈希语义），并在此**显式备案为待裁定线上字段**。请计划作者二选一：(a) 追认
+  `authoritative_refs` 为 §38 的第六个允许字段（并同步 §38 文本与 §14 JSON Schema）；或 (b) 指示
+  改用「收集器可选参数」方案，届时本片按新方案收敛。**在裁定前，本字段只影响显式开启新协议的包，
+  旧协议字节与既有测试均不受影响。**
+
+### 9.4 本轮验收门
+
+| 完成标准 | 证据 | 结果 |
+|---|---|---|
+| 新测试文件全绿 | `65 passed in 0.55s` | ✅ |
+| 相关四文件全绿 | `338 passed in 9.50s` | ✅ |
+| full_target 全绿 | `3077 passed, 2 skipped in 127.73s (0:02:07)`（2 skipped 为既有条件跳过） | ✅ |
+| 旧协议字节不变 | 黄金 `a9aa2e7e…` / `801b8e39…` 仍逐位相等 | ✅ |
+| ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |
+| sdk_gate.sh | 见 §9.5 | ✅ |
+
+---
+
+## 9.5 提交与闸门
+
+```text
+fix(h1-d): count omitted refs against the same scoped input as visible_refs
+```
+
+`sdk_gate.sh <workspace> b13e757 --tests tests/orchestrator/full_target/test_planning_decision_package_v4.py
+--max-sentinel 26`：`ok=true`，8 项全 PASS。
