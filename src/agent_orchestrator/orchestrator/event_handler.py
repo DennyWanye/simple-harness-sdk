@@ -1210,9 +1210,9 @@ class Orchestrator:
         current = self.store.get_mission(mission.id)
         status = mission.status if current is None else current.status
         if status is MissionStatus.PLANNING:
-            self.commit.fail_planning(mission.id, reason="plan_integrity", detail=detail)
+            self._commit_fail_planning(mission.id, reason="plan_integrity", detail=detail)
         elif status is MissionStatus.ACTIVE:
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 mission.id, stop_reason=MissionStopReason.PLANNING_FAILED, detail=detail
             )
         else:  # already terminal, or not yet planning: the record is the whole answer
@@ -1283,10 +1283,88 @@ class Orchestrator:
 
     def _release_mission_unknown_grants(self, mission_id: str) -> None:
         for intent in self.store.list_intents(
-            "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED", "FAILED"
+            "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED", "FAILED", "SETTLED"
         ):
             if intent.mission_id == mission_id:
                 self._release_unknown_grants(intent)
+
+    def _prepare_terminal_ledger(self, mission_id: str) -> None:
+        """Hierarchical only: drop HELD/UNKNOWN grants and settle known facts.
+
+        P2.3r / N9.  Unknown usage stays on the books (P2.3l P1-1); the
+        reservation is released so ``reserved`` is 0 at the Mission terminal.
+        Legacy is a no-op (ORCH §12.2 still holds the reservation).
+        """
+
+        mission = self.store.get_mission(mission_id)
+        if mission is None or not is_hierarchical(mission):
+            return
+        for intent in self.store.list_intents(
+            "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED", "FAILED", "SETTLED"
+        ):
+            if intent.mission_id != mission_id:
+                continue
+            try:
+                self._import_usage(intent)
+            except Exception as error:  # noqa: BLE001 - runtime ledger unreachable
+                self._note(f"{intent.subject_id}: terminal usage import failed ({error})")
+        self._release_mission_unknown_grants(mission_id)
+        report = self.commit.ledger.costs_report(mission_id)
+        for row in report["reservations"]:
+            if row["state"] == "SETTLED":
+                continue
+            subject_id = str(row["subject_id"])
+            task_id = subject_id.split(":attempt-")[0] if ":attempt-" in subject_id else None
+            try:
+                self.commit.settle_subject_known(subject_id, mission_id, task_id=task_id)
+            except BudgetError as error:
+                self._note(f"{subject_id}: terminal settle_known skipped ({error})")
+        # A SUBMITTED after-handoff UNKNOWN never settles on its own; leaving it
+        # open keeps ``run()`` waiting on ``_has_inflight`` after the Mission is
+        # already FAILED (C1-r0).  Close it now that usage is on the books.
+        for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"):
+            if intent.mission_id != mission_id:
+                continue
+            self._settle_intent(intent, "FAILED")
+
+    def _commit_fail_mission(
+        self,
+        mission_id: str,
+        *,
+        stop_reason: MissionStopReason,
+        detail: Mapping[str, Any],
+    ) -> Any:
+        self._prepare_terminal_ledger(mission_id)
+        return self.commit.fail_mission(mission_id, stop_reason=stop_reason, detail=detail)
+
+    def _commit_fail_planning(
+        self,
+        mission_id: str,
+        *,
+        reason: str,
+        detail: Mapping[str, Any],
+        stop_reason: MissionStopReason = MissionStopReason.PLANNING_FAILED,
+    ) -> Any:
+        self._prepare_terminal_ledger(mission_id)
+        return self.commit.fail_planning(
+            mission_id, reason=reason, detail=detail, stop_reason=stop_reason
+        )
+
+    def _commit_stop_task(
+        self,
+        task_id: str,
+        *,
+        stop_reason: MissionStopReason,
+        detail: Mapping[str, Any],
+    ) -> Any:
+        task = self.store.get_task(task_id)
+        if task is not None:
+            self._prepare_terminal_ledger(task.mission_id)
+        return self.commit.stop_task(task_id, stop_reason=stop_reason, detail=detail)
+
+    def _commit_cancel_mission(self, mission_id: str) -> Any:
+        self._prepare_terminal_ledger(mission_id)
+        return self.commit.cancel_mission(mission_id)
 
     def _reset_after_handoff_unknown_streak(self, mission_id: str) -> None:
         self._after_handoff_zero_streak[mission_id] = 0
@@ -1745,7 +1823,7 @@ class Orchestrator:
                 except ContractError as error:
                     self.assembled.gateway.unbind(intent.agent_id)
                     await self._cancel_turn(intent)
-                    self.commit.fail_mission(
+                    self._commit_fail_mission(
                         intent.mission_id,
                         stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
                         detail={"source_binding_error": str(error)},
@@ -2074,7 +2152,7 @@ class Orchestrator:
                             "remaining_fuel": int(account.remaining_fuel),
                         }
                     )
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 mission.id,
                 stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
                 detail={
@@ -2510,11 +2588,11 @@ class Orchestrator:
         if mission is None or mission.status in TERMINAL_MISSION:
             return
         if mission.status is MissionStatus.PLANNING:
-            self.commit.fail_planning(
+            self._commit_fail_planning(
                 mission_id, reason=reason, detail=detail, stop_reason=stop_reason
             )
             return
-        self.commit.fail_mission(
+        self._commit_fail_mission(
             mission_id, stop_reason=stop_reason, detail={"reason": reason, **dict(detail)}
         )
 
@@ -2630,7 +2708,7 @@ class Orchestrator:
                 # review P1-1: the Global pool is named as such — no Mission is to blame
                 "scope": "global" if error.account_id == GLOBAL_ACCOUNT else "mission",
             }
-            self.commit.fail_planning(
+            self._commit_fail_planning(
                 mission.id,
                 reason="budget_exhausted",
                 detail=detail,
@@ -3304,7 +3382,7 @@ class Orchestrator:
             except ArtifactConflict as error:  # an upstream artifact file moved / changed
                 self.commit.settle_intent(claimed.intent_id, "FAILED")
                 self.commit.mark_attempt_lost(attempt.id, reason="upstream_artifact_missing")
-                self.commit.stop_task(
+                self._commit_stop_task(
                     attempt.task_id,
                     stop_reason=MissionStopReason.ARTIFACT_CONFLICT,
                     detail={"error": str(error)},
@@ -4202,7 +4280,7 @@ class Orchestrator:
                 if reason == "provider_outcome_unknown"
                 else MissionStopReason.PLANNING_FAILED
             )
-            self.commit.fail_planning(
+            self._commit_fail_planning(
                 mission.id,
                 reason=reason,
                 detail={"attempts": ordinal, **dict(detail)},
@@ -4243,14 +4321,14 @@ class Orchestrator:
             self._settle_service_if_known(intent.subject_id, mission.id)
             detail = {"error": jsonable(result.error or {}), "auth": True}
             if mission.status is MissionStatus.PLANNING:
-                self.commit.fail_planning(
+                self._commit_fail_planning(
                     mission.id,
                     reason="provider_unavailable",
                     detail=detail,
                     stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
                 )
             else:
-                self.commit.fail_mission(
+                self._commit_fail_mission(
                     mission.id,
                     stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
                     detail={"reason": "provider_unavailable", **detail},
@@ -4265,7 +4343,7 @@ class Orchestrator:
         if echoed and echoed != {self._expected_model(intent)}:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
-            self.commit.fail_planning(
+            self._commit_fail_planning(
                 mission.id,
                 reason="model_echo_mismatch",
                 detail={"expected": self._expected_model(intent), "echoed": sorted(echoed)},
@@ -4630,7 +4708,7 @@ class Orchestrator:
             )
             return
         if not admitted and self._read_only_rewrite_repairs(mission_id) > 0:
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 mission_id,
                 stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
                 detail={
@@ -4855,7 +4933,7 @@ class Orchestrator:
             self._settle_intent(intent, "FAILED")
             self._settle_if_known(attempt)
             await self._release_attempt(attempt.id, cancel=False)
-            self.commit.stop_task(
+            self._commit_stop_task(
                 attempt.task_id,
                 stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
                 detail={"expected": self._expected_model(intent), "echoed": sorted(echoed)},
@@ -4899,7 +4977,7 @@ class Orchestrator:
                 self._settle_intent(intent, "FAILED")
                 self._settle_if_known(attempt)
                 await self._release_attempt(attempt.id, cancel=False)
-                self.commit.stop_task(
+                self._commit_stop_task(
                     attempt.task_id,
                     stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
                     detail={
@@ -4927,7 +5005,7 @@ class Orchestrator:
             self._settle_if_known(attempt)
             await self._release_attempt(attempt.id, cancel=False)
             if context_limit:
-                self.commit.stop_task(
+                self._commit_stop_task(
                     attempt.task_id, stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
                     detail={"source_kind": "runtime_context", "retryable": False,
                             "error": jsonable(error)},
@@ -4942,7 +5020,7 @@ class Orchestrator:
                     self._note(f"attempt {attempt.id}: admission waits for usage; no new Attempt")
                     return
                 if reason == "cancelled":
-                    self.commit.cancel_mission(attempt.mission_id)
+                    self._commit_cancel_mission(attempt.mission_id)
                 else:
                     # Runtime/deadline is the existing budget time-cap category.
                     # Other admission failures retain their exact configuration /
@@ -4950,7 +5028,7 @@ class Orchestrator:
                     stop = (MissionStopReason.BUDGET_EXHAUSTED
                             if reason in {"budget_exhausted", "deadline"}
                             else MissionStopReason.RUNTIME_UNAVAILABLE)
-                    self.commit.stop_task(
+                    self._commit_stop_task(
                         attempt.task_id, stop_reason=stop,
                         detail={"source_kind": "provider_admission", "retryable": False,
                                 "admission": dict(admission),
@@ -5480,12 +5558,12 @@ class Orchestrator:
             with self.store.transaction():
                 self.commit.fail_result(result_id, failures=admission_failures, owner=self._owner)
                 if reason == "cancelled":
-                    self.commit.cancel_mission(mission.id)
+                    self._commit_cancel_mission(mission.id)
                 else:
                     stop = (MissionStopReason.BUDGET_EXHAUSTED
                             if reason in {"budget_exhausted", "deadline"}
                             else MissionStopReason.RUNTIME_UNAVAILABLE)
-                    self.commit.stop_task(task.id, stop_reason=stop, detail={
+                    self._commit_stop_task(task.id, stop_reason=stop, detail={
                         "source_kind": "provider_admission", "retryable": False,
                         "admission": admission, "result_id": result_id,
                         **({"dimension": "runtime"} if reason == "deadline" else {}),
@@ -5611,7 +5689,7 @@ class Orchestrator:
             if undeployed:
                 # D6-9': a required verifier that is not deployed blocks — no retry can make
                 # it appear, and a missing layer is never a PASS
-                self.commit.stop_task(
+                self._commit_stop_task(
                     task.id,
                     stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
                     detail={"layers": undeployed, "result_id": result_id},
@@ -6143,7 +6221,7 @@ class Orchestrator:
         bound = self.policy_for(mission.id)  # step 9 (plan D9-4'): the Mission's version
         rounds_cap = int(bound["max_manager_rounds"])
         if rounds >= rounds_cap:
-            self.commit.stop_task(
+            self._commit_stop_task(
                 task.id,
                 stop_reason=MissionStopReason.MANAGEMENT_EXHAUSTED,
                 detail={
@@ -6395,7 +6473,7 @@ class Orchestrator:
         count = self.commit.no_progress_count(task.id)
         limit = int(self.policy_for(mission.id)["no_progress_limit"])
         if count >= limit:
-            self.commit.stop_task(
+            self._commit_stop_task(
                 task.id,
                 stop_reason=MissionStopReason.NO_PROGRESS,
                 detail={
@@ -6432,7 +6510,7 @@ class Orchestrator:
         if echoed and echoed != {self._expected_model(intent)}:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
-            self.commit.stop_task(
+            self._commit_stop_task(
                 task_id,
                 stop_reason=MissionStopReason.MODEL_ECHO_MISMATCH,
                 detail={"expected": self._expected_model(intent), "echoed": sorted(echoed)},
@@ -7226,14 +7304,14 @@ class Orchestrator:
             return
         payload = dict(detail)
         if current.status is MissionStatus.PLANNING:
-            self.commit.fail_planning(
+            self._commit_fail_planning(
                 current.id,
                 reason=reason,
                 detail=payload,
                 stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
             )
         else:
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 current.id,
                 stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
                 detail={"reason": reason, **payload},
@@ -7263,7 +7341,7 @@ class Orchestrator:
         if now - since < self._config.profile_wait_seconds:
             return False
         self._deferred.pop(task.id, None)
-        self.commit.stop_task(
+        self._commit_stop_task(
             task.id,
             stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
             detail={
@@ -7353,7 +7431,9 @@ class Orchestrator:
 
     async def _runtime_exhausted(self, mission: Mission, tasks: Sequence[Task]) -> bool:
         """D6-8 / §18.1 wall-clock dimension: a Mission (or Task) past ``max_runtime_seconds``
-        gets no new allocation; what was spent and reserved stays on the books."""
+        gets no new allocation.  Hierarchical Missions release HELD/UNKNOWN grants
+        through ``_commit_fail_mission`` (P2.3r / N9); unknown usage stays on the
+        books.  Legacy still holds the reservation (ORCH §12.2)."""
 
         now = self.store.now
         limit = mission.budget.max_runtime_seconds
@@ -7368,7 +7448,7 @@ class Orchestrator:
                 "max_runtime_seconds": limit,
                 "account": mission_account(mission.id),
             }
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 mission.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED, detail=detail
             )
             await self._release_mission(mission.id)
@@ -7383,7 +7463,7 @@ class Orchestrator:
                 continue
             started = min(a.created_at for a in attempts)
             if now - started >= cap and not any(a.status in OPEN_ATTEMPT_STATES for a in attempts):
-                self.commit.stop_task(
+                self._commit_stop_task(
                     task.id,
                     stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
                     detail={
@@ -7433,7 +7513,7 @@ class Orchestrator:
                         attempt_id=attempt_id,
                     )
                 except BudgetExhausted as error:
-                    self.commit.stop_task(
+                    self._commit_stop_task(
                         task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
                         detail={"reason": "selection_fragment_management_unfunded",
                                 "selection_round_id": selection["round_id"], "error": str(error)},
@@ -7463,7 +7543,7 @@ class Orchestrator:
             try:
                 self.commit.begin_selection_round(task.id, command_id="round:" + task.id)
             except BudgetExhausted:
-                self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                self._commit_stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
                                       detail={"reason": "selection_tail_unavailable"})
             return True
         if selection["state"] in {"COMMITTED", "EXHAUSTED", "INVALIDATED"}:
@@ -7632,7 +7712,7 @@ class Orchestrator:
             except ContractError as error:
                 if not requires_mission_source_binding(self.commit.domain_for(current.id)):
                     raise
-                self.commit.fail_mission(
+                self._commit_fail_mission(
                     current.id,
                     stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
                     detail={"source_assessment_error": str(error)},
@@ -8150,7 +8230,7 @@ class Orchestrator:
             )
         used = self._read_only_rewrite_repairs(mission.id)
         if used >= MAX_READ_ONLY_REWRITE_REPAIRS:
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 mission.id,
                 stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
                 detail={
@@ -8683,7 +8763,7 @@ class Orchestrator:
             await self._plan_integrity_stop(mission, error)
             return True
         except ArtifactConflict as error:
-            self.commit.stop_task(
+            self._commit_stop_task(
                 task.id,
                 stop_reason=MissionStopReason.ARTIFACT_CONFLICT,
                 detail={"error": str(error)},
@@ -8718,7 +8798,7 @@ class Orchestrator:
                 validated_context = consumer_fragment_context(validated_input)
                 assert_no_secrets(validated_input)
             except (ContractError, ContextRejected) as error:
-                self.commit.stop_task(
+                self._commit_stop_task(
                     task.id, stop_reason=MissionStopReason.CONTEXT_REJECTED,
                     detail={"error": str(error)[:300]},
                 )
@@ -8757,7 +8837,7 @@ class Orchestrator:
                 self._note(f"task {task.id}: retrieval unavailable, degraded ({error})")
             else:
                 if count >= self._config.max_retrieval_failures:
-                    self.commit.stop_task(
+                    self._commit_stop_task(
                         task.id,
                         stop_reason=MissionStopReason.RETRIEVAL_UNAVAILABLE,
                         detail={"failures": count, "reason": str(error)},
@@ -8861,7 +8941,7 @@ class Orchestrator:
                 ),
             )
         except ContextRejected as error:
-            self.commit.stop_task(
+            self._commit_stop_task(
                 task.id,
                 stop_reason=MissionStopReason.CONTEXT_REJECTED,
                 detail={"error": str(error)[:300]},
@@ -9031,7 +9111,7 @@ class Orchestrator:
                             self._config.critic_reserve_tokens if "critic_review" in task.verification_policy else 0)
             room = allowance["reserved_tokens"] - critic_share
             if allowance["state"] == "SETTLED" or room <= 0:
-                self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                self._commit_stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
                                       detail={"reason": "system_tail_exhausted", "dimension": "tokens"})
                 await self._release_mission(mission.id)
                 return True
@@ -9039,7 +9119,7 @@ class Orchestrator:
             if frozen_first is not None:
                 cost_room = allowance["reserved_cost_micros"] - frozen_first["cost_micros"]
                 if cost_room < 0:
-                    self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                    self._commit_stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
                                           detail={"reason": "system_first_critic_cost_insufficient", "dimension": "cost_micros"})
                     await self._release_mission(mission.id)
                     return True
@@ -9048,7 +9128,7 @@ class Orchestrator:
                 ).cost_micros > cost_room:
                     tokens //= 2
                 if tokens <= 0:
-                    self.commit.stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
+                    self._commit_stop_task(task.id, stop_reason=MissionStopReason.BUDGET_EXHAUSTED,
                                           detail={"reason": "system_first_critic_cost_insufficient", "dimension": "cost_micros"})
                     await self._release_mission(mission.id)
                     return True
@@ -9134,7 +9214,7 @@ class Orchestrator:
                 # review P1-1 / D6-1': the deployment-wide pool ran out — no Task and no
                 # Mission is to blame; the Mission stops with the Global scope named
                 reason = MissionStopReason.BUDGET_EXHAUSTED
-                self.commit.fail_mission(
+                self._commit_fail_mission(
                     mission.id, stop_reason=reason, detail={**detail, "scope": "global"}
                 )
                 self._note(
@@ -9144,7 +9224,7 @@ class Orchestrator:
                 # D3-12': the Mission pool itself is exhausted (any dimension) — no Task
                 # is to blame and the stop reason is the pool's: budget_exhausted
                 reason = MissionStopReason.BUDGET_EXHAUSTED
-                self.commit.fail_mission(
+                self._commit_fail_mission(
                     mission.id, stop_reason=reason, detail={**detail, "scope": "mission"}
                 )
                 self._note(
@@ -9157,14 +9237,14 @@ class Orchestrator:
                     and self.commit.domain_for(mission.id).id != "doc-research-v1"
                 ):
                     return self._arbitrate_conflict(mission, task, detail)  # D7-8' ①
-                self.commit.stop_task(task.id, stop_reason=reason, detail=detail)
+                self._commit_stop_task(task.id, stop_reason=reason, detail=detail)
                 self._note(f"task {task.id} stopped: {reason} ({error.dimension})")
             await self._release_mission(mission.id)
             return True
         except BudgetError as error:
             if system_hold is None:
                 raise
-            self.commit.stop_task(
+            self._commit_stop_task(
                 task.id, stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
                 detail={"reason": "system_tail_binding_unavailable", "error": str(error)},
             )
@@ -9234,7 +9314,7 @@ class Orchestrator:
         try:
             stopped = self.commit.stop_insufficient_mission(mission.id)
         except ContractError as error:
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 mission.id,
                 stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
                 detail={"assessment_error": str(error)},
@@ -9287,7 +9367,7 @@ class Orchestrator:
                 )
             )
         except ArtifactConflict as error:
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 mission.id,
                 stop_reason=MissionStopReason.ARTIFACT_CONFLICT,
                 detail={"error": str(error)},
@@ -9305,7 +9385,7 @@ class Orchestrator:
                 files[item.path] = read_verified(artifact)  # P3.2 D3: hash re-checked
                 artifacts.append(artifact)
         except ArtifactStoreError as error:
-            self.commit.fail_mission(
+            self._commit_fail_mission(
                 mission.id,
                 stop_reason=MissionStopReason.ARTIFACT_CONFLICT,
                 detail={"error": str(error)},
@@ -9357,7 +9437,7 @@ class Orchestrator:
                     {**mission_sources, "attempt_id": view_id},
                 )
             except ContractError as error:
-                self.commit.fail_mission(
+                self._commit_fail_mission(
                     mission.id,
                     stop_reason=MissionStopReason.VERIFIER_UNAVAILABLE,
                     detail={"source_binding_error": str(error)},
@@ -9544,7 +9624,7 @@ class Orchestrator:
         for criterion, action in actions.items():
             state = None if action is None else str(action["state"])
             if action is not None and state in {"REJECTED", "REVOKED", "EXPIRED"}:
-                self.commit.fail_mission(
+                self._commit_fail_mission(
                     mission.id,
                     stop_reason=MissionStopReason.APPROVAL_REJECTED,
                     detail={
@@ -9556,7 +9636,7 @@ class Orchestrator:
                 await self._release_mission(mission.id)
                 return True
             if action is not None and state == "FAILED":
-                self.commit.fail_mission(
+                self._commit_fail_mission(
                     mission.id,
                     stop_reason=MissionStopReason.ACTION_FAILED,
                     detail={
@@ -9586,7 +9666,7 @@ class Orchestrator:
             after = self.store.get_action(key_) if done is None else done
             if after is not None and after["state"] in HANDOFF_READY_STATES:
                 # the deployment will not run it (cap, budget, switched off): it cannot happen
-                self.commit.fail_mission(
+                self._commit_fail_mission(
                     mission.id,
                     stop_reason=MissionStopReason.ACTION_FAILED,
                     detail={

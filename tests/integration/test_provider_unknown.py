@@ -101,6 +101,47 @@ def test_error_after_handoff_records_error_class_and_http_status() -> None:
     assert "Authorization" not in dumped
 
 
+def test_wrapped_unknown_usage_records_the_underlying_class_and_http_status() -> None:
+    """N11: MeteredProvider wraps the transport error; diagnostics must unwrap it."""
+
+    from agent_orchestrator.evaluation.metered_provider import UnknownProviderUsage
+
+    uow = FakeProviderInvocationUnitOfWork()
+
+    class WrappingProvider(RecordingProvider):
+        async def invoke(self, request, *, cancel):  # type: ignore[no-untyped-def]
+            try:
+                return await super().invoke(request, cancel=cancel)
+            except Exception as error:
+                raise UnknownProviderUsage("physical call failed; usage unknown") from error
+
+    provider = WrappingProvider(
+        error=ProviderTransportError(
+            public_message="scripted transport loss after handoff",
+            status_code=503,
+        )
+    )
+
+    async def exercise() -> None:
+        coordinator = _coordinator(uow, provider)
+        with pytest.raises(ProviderInvocationUnknownError):
+            await coordinator.invoke(
+                RunId("run-1"), _request(), cancel=CancelToken(), execution_lease=LEASE
+            )
+
+    asyncio.run(exercise())
+    record = next(iter(uow.records.values()))
+    payload = thaw_json(record.usage_json) if record.usage_json is not None else {}
+    assert isinstance(payload, dict)
+    assert payload.get("error_class") == "ProviderTransportError", payload
+    assert payload.get("wrapper_class") == "UnknownProviderUsage", payload
+    assert payload.get("http_status") == 503, payload
+    dumped = str(payload)
+    assert "scripted transport loss" not in dumped
+    assert "api_key" not in dumped
+    assert "Authorization" not in dumped
+
+
 def test_unclassified_runtime_error_after_handoff_records_the_short_class_name() -> None:
     uow = FakeProviderInvocationUnitOfWork()
 

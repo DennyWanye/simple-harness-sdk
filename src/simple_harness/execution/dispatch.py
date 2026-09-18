@@ -235,12 +235,44 @@ _DEFINITE_PROVIDER_FAILURES = (
 )
 
 
-def _handoff_unknown_diagnostics(exc: BaseException) -> dict[str, object]:
-    """Short class name and HTTP status only. Never body, headers, or secrets."""
+def _underlying_handoff_error(exc: BaseException) -> BaseException:
+    """Innermost ``__cause__`` / ``__context__``; cycle-safe."""
 
-    payload: dict[str, object] = {"error_class": type(exc).__name__}
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and not isinstance(status, bool):
+    seen: set[int] = set()
+    current = exc
+    while True:
+        ident = id(current)
+        if ident in seen:
+            return current
+        seen.add(ident)
+        nxt = current.__cause__ if current.__cause__ is not None else current.__context__
+        if nxt is None:
+            return current
+        current = nxt
+
+
+def _handoff_unknown_diagnostics(exc: BaseException) -> dict[str, object]:
+    """Short class name and HTTP status only. Never body, headers, or secrets.
+
+    Walk ``__cause__`` / ``__context__`` so a wrapper (MeteredProvider's
+    ``UnknownProviderUsage``) does not hide the underlying class and HTTP
+    status.  The wrapper is recorded separately as ``wrapper_class``.
+    """
+
+    root = _underlying_handoff_error(exc)
+    payload: dict[str, object] = {"error_class": type(root).__name__}
+    if type(root) is not type(exc):
+        payload["wrapper_class"] = type(exc).__name__
+    status = None
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        candidate = getattr(current, "status_code", None)
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            status = candidate
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    if status is not None:
         payload["http_status"] = status
     return payload
 
@@ -804,6 +836,9 @@ class ProviderInvocationCoordinator:
             class_name = diagnostics.get("error_class")
             if isinstance(class_name, str) and class_name.isidentifier():
                 usage["error_class"] = class_name
+            wrapper_name = diagnostics.get("wrapper_class")
+            if isinstance(wrapper_name, str) and wrapper_name.isidentifier():
+                usage["wrapper_class"] = wrapper_name
             status = diagnostics.get("http_status")
             if isinstance(status, int) and not isinstance(status, bool):
                 usage["http_status"] = status

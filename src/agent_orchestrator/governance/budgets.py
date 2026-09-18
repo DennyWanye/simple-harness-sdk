@@ -489,6 +489,40 @@ class BudgetLedger:
                 for row in reservations
                 if row["state"] != "SETTLED" and self.has_unknown_usage(row["subject_id"])
             ],
+            "usage_fully_known": self._usage_fully_known(mission_id, usage),
+            "budget_conserved": self._budget_conserved(rows),
+        }
+
+    def _usage_fully_known(self, mission_id: str, usage: Sequence[Any]) -> bool:
+        if any(int(row["unknown"] or 0) == 1 for row in usage):
+            return False
+        if not self._store.has_table("provider_token_grants"):
+            return True
+        held = self._store.connection.execute(
+            "SELECT 1 FROM provider_token_grants"
+            " WHERE mission_id=? AND state IN ('RESERVED','HANDED_OFF','UNKNOWN') LIMIT 1",
+            (mission_id,),
+        ).fetchone()
+        return held is None
+
+    def _budget_conserved(self, account_rows: Sequence[Any]) -> bool:
+        for row in account_rows:
+            snapshot = self.account(row["account_id"])
+            if snapshot.scope != "mission":
+                continue
+            remaining = snapshot.remaining_tokens()
+            pool = snapshot.limits.max_tokens
+            if remaining is None or pool is None:
+                continue
+            if remaining + snapshot.reserved_tokens + snapshot.settled_tokens != pool:
+                return False
+        return True
+
+    def usage_flags(self, mission_id: str) -> dict[str, bool]:
+        report = self.costs_report(mission_id)
+        return {
+            "usage_fully_known": bool(report["usage_fully_known"]),
+            "budget_conserved": bool(report["budget_conserved"]),
         }
 
 
