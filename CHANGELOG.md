@@ -1,4 +1,4 @@
-## 0.12.2 — P2.3e–P2.3r：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放（2026-09-18）
+## 0.12.2 — P2.3e–P2.3s：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路、终态 UNKNOWN 预留释放、修复轮 reconcile 仍在跑的兄弟 attempt（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -7,6 +7,14 @@
 3. **根评审 v3**：准则解释权以 `mission_goal` 为准，与「准则以 goal signature 为准」相反。
 
 **计划一致性审计必须修项**：`c-composition` 无 coverage 映射时不得因「有子验收」填 PASS → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。审计全文 Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`。
+
+**P2.3s：修复轮编译前 reconcile 被退役方法下仍 OPEN 的兄弟 attempt。** 分支 `p2.3s-repair-reconcile-running-siblings`，基 f2dfa64；版本号不动。真实局第 5 批 H-L3-C1-r0：inspect（task-c07e…）两次改写 → `TaskCancelled{read_only_leaf_needs_write}` → 合成准入 → Planner r3–r6 四次 `running_work_not_reconciled`（兄弟 verify task-cb9e… 的 attempt 仍 RUNNING）→ 最后 `MissionFailed{no_dispatchable_work}`。
+
+- **Reconcile**：retire+refine 在 `apply_planner_reply` 编译前取消被退役实例下仍 OPEN 的兄弟 attempt / READY·ACTIVE 叶，原因 `method_retired_by_repair`（TaskCancelled / AttemptCancelled）；释放预留、结算已知用量。P2.3q 可复用的已验收只读叶（facts/reproduce）不取消任务。只读升级与根评审修复打开时同样 reconcile，并 `_release_attempt(cancel=True)` 以免占并发槽。
+- **Pending**：活的外国 lease 不抢；提案写入 `RepairCompileDeferred`，blocker settle/cancel/reject 后自动重试编译，不再把同一提案打成 `proposal_not_grounded` 白烧 Planner。
+- **终态**：有 pending 修复或未处置 `rejected_refinements` 时确认空转走 `planning_failed`（detail `repair_blocked_by_running_work` 或既有修复理由），不得 `no_dispatchable_work`。
+- **P2.3m**：取消只读叶时关闭仍 OPEN 的 attempt；已 `RETRY_WAIT` 的（`ResultRejected` 后）本身已是终态，状态机无边到 CANCELLED。
+- 测试：`test_repair_reconcile_running_siblings.py` 6；4 变异 KILLED。full_target **2917 passed / 2 skipped**（基线 2911/2，+6）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2u。
 
 **P2.3q：修复轮复用已验收只读叶、空 Planner 短路、合成方法宽度硬上限、拒绝理由分字段。** 分支 `p2.3q-repair-reuse-and-synthesis-shortcut`，基 d360750；版本号不动。第 4 批 4 局全部撞调用/attempt 上限：retire+refine 整网重铺（C2-r0 `funded_now=10`）、开局与修复轮空 Planner、10 叶合成方法、C1-r1 把只读取消说成 `rejected_by_root_review`。
 

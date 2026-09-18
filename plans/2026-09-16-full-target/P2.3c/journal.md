@@ -3882,6 +3882,42 @@ N11：C1-r0 唯一 UNKNOWN invocation 的 `usage_json.error_class=UnknownProvide
 - 真实模型第 4 批未重跑。
 - 有 token 的 UNKNOWN 仍不从异常抄 usage（P2.3p 未做项）。
 
+## 2u. P2.3s：修复轮 reconcile 仍在跑的兄弟 attempt（2026-09-18，分支 `p2.3s-repair-reconcile-running-siblings`，基 `f2dfa64` = 0.12.2 候选第 5 版）
+
+输入：用户任务书 + 真实局只读 `H-L3-C1-r0`（`file:...?immutable=1`）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 证据（只读）
+
+seq 483 `ResultRejected{read_only_leaf_rewrote_workspace}`（inspect task-c07e… 第 2 次）→ 486 `TaskCancelled{read_only_leaf_needs_write}` → 487 `PlanningRejected{read_only_leaf_needs_write}` → 488/489 跳过 Planner → 500 合成准入 → 512/520/539/549 `PlanningRejected{running_work_not_reconciled}`（提案退役 `mi-8e0b…`，兄弟 verify task-cb9e… 的 attempt-1 然后 attempt-2 仍 OPEN）→ 525/559 该兄弟自己也被只读拒绝 → 562 取消 → 565 `MissionFailed{no_dispatchable_work}`。103/320 次调用。seq 486 之后 c07e 的 attempt 停在 `RETRY_WAIT`（`ResultRejected` 已把它送进终态；`RETRY_WAIT → CANCELLED` 无合法边），全库零条 `AttemptCancelled`。
+
+### 修法
+
+1. **编译前 reconcile**：`apply_planner_reply` 对 retire+refine 先 `reconcile_retiring_instance`：被退役实例下仍 OPEN 的兄弟 attempt 按既有口径取消（`method_retired_by_repair`），READY/ACTIVE/VERIFYING 非复用叶一并 `TaskCancelled`。P2.3q 可复用的已验收只读叶不取消任务，但其上残留 OPEN attempt 仍关闭。只读升级与根评审修复打开时同样 reconcile，并 `_release_attempt(cancel=True)` 以免占并发槽。
+2. **Pending 重试**：活的外国 lease 不抢，写 `RepairCompileDeferred`，blocker 结束后 `_retry_deferred_repair` 用同一提案文本再编译；有 pending 时不再开新 Planner 轮。
+3. **终态**：确认空转时若有 pending 或未处置 `rejected_refinements`，`fail_mission(PLANNING_FAILED)`（detail `repair_blocked_by_running_work` 或既有修复理由），不得 `no_dispatchable_work`。合成拒绝后的只读修复同样改 `planning_failed`。
+4. **P2.3m**：取消只读叶时关闭仍 OPEN 的 attempt；已 `RETRY_WAIT` 的保持终态（契约状态机无出边）。
+
+### 测试
+
+新文件 `test_repair_reconcile_running_siblings.py` 6 条（compile 安全网仍点名；`apply_planner_reply` 取消后提交；六叶 inspect 两次改写 + 兄弟 verify 仍跑 → 取消 → COMPLETED；取消叶无 OPEN attempt；修复上限用尽 `planning_failed`；外国 lease → Deferred）。先红后绿。既有 `test_repeated_rejections…` / `test_persistent_rewrites…` 的 stop_reason 改为 `planning_failed`。
+
+变异 4/4 KILLED（临时改源，从 `/tmp/p23s-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `reconcile_retiring_instance` 立即 `return ()` | 取消后提交 + 六叶 e2e | **KILLED**（2 failed：`running_work_not_reconciled` / `budget_exhausted`） |
+| M2 | 空转/合成拒绝仍 `no_dispatchable_work` | 具名停机 + persistent rewrite + 根评审有界 | **KILLED**（3 failed） |
+| M3 | `_lease_blocks_cancel` 恒 False | 外国 lease deferred | **KILLED**（1 failed：未抛 `RepairBlockedByRunningWork`） |
+| M4 | 取消理由改成 `cancelled` | 取消后提交 + 六叶 e2e | **KILLED**（2 failed：不见 `method_retired_by_repair`） |
+
+回归：full_target **2917 passed / 2 skipped**（基线 2911/2，+6）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**。ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变；冻结提示词 sha256 不变。
+
+### 未做
+
+- 真实模型第 5 批未重跑。
+- `RETRY_WAIT → CANCELLED` 需要改 `contracts/` 状态机，本片不做。
+- Host runner 侧未动。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

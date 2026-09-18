@@ -544,6 +544,11 @@ def test_persistent_rewrites_stop_with_the_named_reason_and_release_reservations
         outcome["stop_reason"],
         outcome["report"],
     )
+    assert outcome["stop_reason"] != str(MissionStopReason.NO_DISPATCHABLE_WORK), (
+        outcome["stop_reason"],
+        outcome["report"],
+    )
+    assert outcome["stop_reason"] == str(MissionStopReason.PLANNING_FAILED)
     detail = outcome["report"].get("detail") or {}
     blob = json.dumps(detail, ensure_ascii=False)
     assert READ_ONLY_REWRITE_REPAIR_REASON in blob or "read_only_leaf_needs_write" in blob, (

@@ -246,7 +246,9 @@ logger = logging.getLogger("agent_orchestrator")
 # name is kept here so nothing that imported it from this module moves.
 from .hierarchical_dispatch import (  # noqa: E402
     READ_ONLY_REWRITE_REPAIR_REASON,
+    REPAIR_BLOCKED_BY_RUNNING_WORK,
     ROOT_REVIEW_REPAIR_REASON,
+    RepairBlockedByRunningWork,
 )
 
 #: Deterministic 4xx provider refusals.  Runtime already settles
@@ -2152,6 +2154,40 @@ class Orchestrator:
                             "remaining_fuel": int(account.remaining_fuel),
                         }
                     )
+            pending = new_mode.repair_compile_pending(mission.id)
+            rejected = new_mode.rejected_refinements(mission.id)
+            if pending or rejected:
+                if await self._retry_deferred_repair():
+                    carry_on = True
+                    continue
+                pending = new_mode.repair_compile_pending(mission.id)
+                rejected = new_mode.rejected_refinements(mission.id)
+                if pending or rejected:
+                    reason = (
+                        REPAIR_BLOCKED_BY_RUNNING_WORK
+                        if pending
+                        else str(rejected[0].reason)
+                    )
+                    self._commit_fail_mission(
+                        mission.id,
+                        stop_reason=MissionStopReason.PLANNING_FAILED,
+                        detail={
+                            "reason": reason,
+                            "plan_revision": int(admissions.plan_revision),
+                            "withheld": [item.to_json() for item in admissions.refusals],
+                            "admitted_not_dispatched": sorted(admissions.readiness),
+                            "outstanding_obligations": outstanding,
+                            "fingerprint": after,
+                            "confirmed_after_one_more_cycle": True,
+                            **self._root_review_stop_detail(mission, new_mode),
+                            **self._read_only_rewrite_stop_detail(mission, new_mode),
+                        },
+                    )
+                    self._note(
+                        f"mission {mission.id}: unresolved repair ({reason}); "
+                        "this execution cycle ends"
+                    )
+                    continue
             self._commit_fail_mission(
                 mission.id,
                 stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
@@ -2253,6 +2289,8 @@ class Orchestrator:
                 # could be proposed and could never run.
                 progressed = True
         if await self._retry_deferred_planning():
+            progressed = True
+        if await self._retry_deferred_repair():
             progressed = True
         active = {mission.id for mission in self._active_missions()}
         for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
@@ -2611,6 +2649,9 @@ class Orchestrator:
         One Mission's exhaustion is one Mission's stop (§24.1 decision 11).
         """
 
+        dispatch = self._hierarchical
+        if dispatch is not None and dispatch.repair_compile_pending(mission_id):
+            return False
         try:
             return await self._try_planner_intent(mission_id, ordinal=ordinal)
         except BudgetExhausted as error:
@@ -2651,6 +2692,70 @@ class Orchestrator:
             if await self._try_planner_intent(mission_id, ordinal=ordinal):
                 progressed = True
         return progressed
+
+    async def _retry_deferred_repair(self) -> bool:
+        """P2.3s: compile a stored retire+refine once sibling work is gone."""
+
+        dispatch = self._hierarchical
+        if dispatch is None:
+            return False
+        progressed = False
+        for mission in self._active_missions():
+            if not is_hierarchical(mission):
+                continue
+            pending = dispatch.repair_compile_pending(mission.id)
+            if pending is None:
+                continue
+            remaining = dispatch.reconcile_retiring_instance(
+                mission.id, str(pending.get("instance_id") or ""), owner=self._owner
+            )
+            await self._release_cancelled_repair_work(mission.id)
+            if remaining:
+                continue
+            try:
+                outcome = dispatch.apply_planner_reply(
+                    mission.id,
+                    str(pending.get("text") or ""),
+                    principal=PlanPrincipal(
+                        principal_id=self._owner,
+                        scope_id="mission",
+                        manager_epoch=dispatch.semantics().epoch(mission.id, "mission"),
+                    ),
+                    command_id=str(
+                        pending.get("command_id")
+                        or f"plan:repair-resume:{pending.get('proposal_id')}"
+                    ),
+                    owner=self._owner,
+                )
+            except RepairBlockedByRunningWork:
+                continue
+            except (ContractError, GraphIntegrityError, StoreConflict) as error:
+                self._note(
+                    f"mission {mission.id}: deferred repair compile failed ({error})"
+                )
+                continue
+            if outcome.committed and outcome.receipt is not None:
+                dispatch.record_repair_compile_resumed(
+                    mission.id,
+                    proposal_id=str(pending.get("proposal_id") or ""),
+                    plan_revision=int(outcome.receipt.new_plan_revision),
+                )
+                dispatch.advance_compound_phases(mission.id)
+                progressed = True
+                self._note(
+                    f"mission {mission.id}: deferred repair "
+                    f"{pending.get('proposal_id')} committed as revision "
+                    f"{outcome.receipt.new_plan_revision}"
+                )
+        return progressed
+
+    async def _release_cancelled_repair_work(self, mission_id: str) -> None:
+        """Abort SDK turns of Attempts a repair just cancelled so they do not hold slots."""
+
+        for task in self.store.list_tasks(mission_id):
+            for attempt in self.store.list_attempts(task.id):
+                if attempt.status is AttemptStatus.CANCELLED:
+                    await self._release_attempt(attempt.id, cancel=True)
 
     def _record_planner_skipped(
         self, mission: Mission, new_mode: HierarchicalDispatch, *, phase: str
@@ -4679,7 +4784,10 @@ class Orchestrator:
             return
         if self._planner_intents_in_flight(mission_id):
             return  # one question at a time; that round carries the new method already
+        new_mode = self._hierarchical
         if admitted:
+            if new_mode is not None and new_mode.repair_compile_pending(mission_id):
+                return
             ordinal = self._next_planning_ordinal(mission_id)
             self._note(
                 f"mission {mission_id}: a synthesised method was admitted; asking the "
@@ -4693,7 +4801,6 @@ class Orchestrator:
             event.type == PLANNER_SKIPPED_FOR_SYNTHESIS
             for event in self.store.list_events(mission_id)
         )
-        new_mode = self._hierarchical
         skip_now = bool(
             new_mode is not None and new_mode.empty_planner_should_skip(mission_id)
         )
@@ -4710,7 +4817,7 @@ class Orchestrator:
         if not admitted and self._read_only_rewrite_repairs(mission_id) > 0:
             self._commit_fail_mission(
                 mission_id,
-                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                stop_reason=MissionStopReason.PLANNING_FAILED,
                 detail={
                     "reason": READ_ONLY_REWRITE_REPAIR_REASON,
                     "synthesis": "refused",
@@ -4811,7 +4918,17 @@ class Orchestrator:
                     "agent_id": intent.agent_id,
                     "turn_id": result.turn_id,
                 },
+                owner=self._owner,
             )
+        except RepairBlockedByRunningWork as blocked:
+            self._settle_intent(intent, "SETTLED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            await self._release_cancelled_repair_work(mission.id)
+            self._note(
+                f"mission {mission.id}: repair compile deferred on "
+                f"{list(blocked.attempts)} ({REPAIR_BLOCKED_BY_RUNNING_WORK})"
+            )
+            return
         except GraphIntegrityError as error:
             # Corruption is not a bad proposal: asking the Planner again cannot add a
             # semantic binding, so this Mission stops instead of burning its attempts.
@@ -4899,6 +5016,7 @@ class Orchestrator:
         receipt = outcome.receipt
         assert receipt is not None
         new_mode.advance_compound_phases(mission.id)
+        await self._release_cancelled_repair_work(mission.id)
         self._note(
             f"plan revision {receipt.new_plan_revision} committed for {mission.id} "
             f"(attempts={outcome.attempts})"
@@ -8057,6 +8175,11 @@ class Orchestrator:
             f"mission {mission.id}: root review rejected with {len(blocking)} blocking "
             f"finding(s); asking the Planner again (ordinal {ordinal}, revision {revision})"
         )
+        if rejected.get("method_instance_id"):
+            new_mode.reconcile_retiring_instance(
+                mission.id, str(rejected["method_instance_id"]), owner=self._owner
+            )
+            await self._release_cancelled_repair_work(mission.id)
         if new_mode.empty_planner_should_skip(mission.id):
             self._record_planner_skipped(mission, new_mode, phase="root_review_repair")
             return await self._request_method_synthesis(mission)
@@ -8228,11 +8351,26 @@ class Orchestrator:
             self.commit._cancel_task_entity(  # noqa: SLF001
                 task.id, reason=READ_ONLY_REWRITE_REPAIR_REASON, replaced_by=None
             )
+        try:
+            network = new_mode.network(mission.id)
+            root = network.root_occurrence_ids[0] if network.root_occurrence_ids else None
+            adopted = None if root is None else network.adopted_instance_for(root)
+            if adopted is not None:
+                new_mode.reconcile_retiring_instance(
+                    mission.id, str(adopted.instance_id), owner=self._owner
+                )
+                await self._release_cancelled_repair_work(mission.id)
+        except (GraphIntegrityError, ContractError, StoreError, KeyError):
+            pass
         used = self._read_only_rewrite_repairs(mission.id)
         if used >= MAX_READ_ONLY_REWRITE_REPAIRS:
+            if new_mode.rejected_refinements(mission.id) or new_mode.repair_compile_pending(
+                mission.id
+            ):
+                return
             self._commit_fail_mission(
                 mission.id,
-                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                stop_reason=MissionStopReason.PLANNING_FAILED,
                 detail={
                     "reason": READ_ONLY_REWRITE_REPAIR_REASON,
                     "task_id": task.id,
