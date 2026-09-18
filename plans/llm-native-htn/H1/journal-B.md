@@ -59,11 +59,11 @@
 - **绿：** 实现 `planning_decision_schema.py` / `planning_decision_store.py` 并追加 migration 19 后，
   两个新文件 **35 passed**（下表给出实现后实测尾行）。
 
-### 实测（命令与尾行原样）
+### 实测（命令与尾行原样；数字为处置轮复跑后的最终值 `6ec2cff`）
 
 ```text
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_store.py tests/orchestrator/full_target/test_planning_decision_request_binding.py -q -p no:cacheprovider
-35 passed in 0.41s
+35 passed in 0.40s
 ```
 
 ```text
@@ -73,7 +73,7 @@ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_htn_s
 
 ```text
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
-3046 passed, 2 skipped in 125.99s (0:02:05)
+3047 passed, 2 skipped in 126.92s (0:02:06)
 ```
 
 ```text
@@ -139,7 +139,7 @@ M1 的第一次尝试**SURVIVED**：我的 S8 用了「不同 raw ⇒ 不同 `de
 - [x] 同 raw replay 幂等；同 ordinal 不同 raw → `StoreConflict`（S7 / S8）。
 - [x] 无 `PlanningDecision*` 事件被 append（本片 diff 零 `append_event`）。
 - [x] 未改 `policy_snapshot` / `SNAPSHOT_FIELDS` / `hierarchical_dispatch` / `event_handler`。
-- [x] full_target 0 新失败（3046 passed）；旧模式 560/13/0；哨兵 19。
+- [x] full_target 0 新失败（3047 passed）；旧模式 560/13/0；哨兵 19。
 - [x] 钉死 18 的测试已改为 19 并在本文点名（§4）。
 - [x] 变异 ≥3 全 killed（§5）。
 - [x] §59 至少覆盖：同 raw replay、同 ordinal 不同 raw、写入后 rollback（S10 `InjectedCrash`、调用方事务回滚）。
@@ -194,12 +194,12 @@ M1 的第一次尝试**SURVIVED**：我的 S8 用了「不同 raw ⇒ 不同 `de
 
 ```text
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_store.py tests/orchestrator/full_target/test_planning_decision_request_binding.py -q -p no:cacheprovider
-35 passed in 0.41s
+35 passed in 0.40s
 ```
 
 ```text
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
-3046 passed, 2 skipped in 125.99s (0:02:05)
+3047 passed, 2 skipped in 126.92s (0:02:06)
 ```
 
 ```text
