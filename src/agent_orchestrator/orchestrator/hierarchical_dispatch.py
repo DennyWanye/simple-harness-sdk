@@ -60,7 +60,14 @@ from ..artifacts.input_bindings import (
     TargetRules,
 )
 from ..artifacts.versioning import UpstreamInput, manifest_upstream_inputs, resolve_input_manifest
-from ..contracts import TERMINAL_MISSION, ContractError, Event, TaskStatus, ids
+from ..contracts import (
+    TERMINAL_MISSION,
+    TERMINAL_TASK,
+    ContractError,
+    Event,
+    TaskStatus,
+    ids,
+)
 from ..contracts.evidence_state import (
     Availability,
     TruthValue,
@@ -280,6 +287,19 @@ REPAIR_REASONS = frozenset(
         REPEATED_VERIFICATION_FAILURE_REASON,
     }
 )
+#: P2.3s: sibling Attempts under a method instance a repair round is about to
+#: retire.  Their results cannot survive the replacement, so the loop cancels
+#: them under this name (TaskCancelled / AttemptCancelled) before compile.
+METHOD_RETIRED_BY_REPAIR = "method_retired_by_repair"
+#: The compile of a stored retire+refine is waiting on a live lease / heartbeat
+#: it must not steal.  Stop reason when the repair bound is spent in that state
+#: (never ``no_dispatchable_work``).
+REPAIR_BLOCKED_BY_RUNNING_WORK = "repair_blocked_by_running_work"
+#: Durable record of a repair proposal that compiled except for running sibling
+#: work.  The next settle/cancel/reject of the last blocker retries this text
+#: instead of asking the Planner again (Grok H-L3-C1-r0 r3–r6).
+REPAIR_COMPILE_DEFERRED = "RepairCompileDeferred"
+REPAIR_COMPILE_RESUMED = "RepairCompileResumed"
 
 #: How many refusals one :data:`METHOD_APPLICABILITY_ASSESSED` payload carries.  Far
 #: larger than the prompt's own cap (that one protects the model's attention; this one
@@ -381,6 +401,35 @@ class PlanIntegrityError(GraphIntegrityError):
         """A description a person can act on.  Never an order a machine can run."""
 
         return self._message
+
+
+class RepairBlockedByRunningWork(Exception):
+    """A retire+refine compiled except for sibling Attempts still under a live lease.
+
+    P2.3s: the proposal is stored as :data:`REPAIR_COMPILE_DEFERRED` and retried
+    when the last blocker settles, rather than being filed as
+    ``proposal_not_grounded`` (which re-asks the Planner).
+    """
+
+    def __init__(
+        self,
+        *,
+        mission_id: str,
+        proposal_id: str,
+        text: str,
+        instance_id: str,
+        attempts: Sequence[str],
+    ) -> None:
+        self.mission_id = mission_id
+        self.proposal_id = proposal_id
+        self.text = text
+        self.instance_id = instance_id
+        self.attempts = tuple(str(item) for item in attempts)
+        super().__init__(
+            f"proposal {proposal_id!r} retires {instance_id!r} while attempt(s) "
+            f"{list(self.attempts)} still have a live foreign lease "
+            f"({REPAIR_BLOCKED_BY_RUNNING_WORK})"
+        )
 
 
 def missing_bindings(mission_id: str, task_ids: Sequence[str]) -> PlanIntegrityError:
@@ -3632,6 +3681,7 @@ class HierarchicalDispatch:
         principal: PlanPrincipal,
         command_id: str,
         source: Mapping[str, Any] | None = None,
+        owner: str | None = None,
     ) -> PlanRoundOutcome:
         """One Planner reply → at most one committed plan revision (§18.3, §9.4).
 
@@ -3641,11 +3691,38 @@ class HierarchicalDispatch:
         never reachable from here (C19) and the number of attempts is bounded, so a
         Mission moving underneath the proposer ends with a named refusal rather than
         a busy loop.
+
+        P2.3s: a retire+refine first reconciles still-open sibling Attempts under
+        the instance being retired.  A live foreign lease defers the compile
+        (:class:`RepairBlockedByRunningWork`) instead of burning another Planner
+        round on ``running_work_not_reconciled``.
         """
 
         mission = self.require_hierarchical(mission_id)
         del mission
         proposal = parse_plan_proposal(text, mission_id=mission_id)
+        retirements = [item for item in proposal.operations if _is_retirement(item)]
+        if retirements:
+            instance_id = str(retirements[0].method_instance_id)
+            remaining = self.reconcile_retiring_instance(
+                mission_id, instance_id, owner=owner
+            )
+            if remaining:
+                self.record_repair_compile_deferred(
+                    mission_id,
+                    proposal_id=str(proposal.proposal_id),
+                    text=text,
+                    instance_id=instance_id,
+                    attempts=remaining,
+                    command_id=command_id,
+                )
+                raise RepairBlockedByRunningWork(
+                    mission_id=mission_id,
+                    proposal_id=str(proposal.proposal_id),
+                    text=text,
+                    instance_id=instance_id,
+                    attempts=remaining,
+                )
         refusals: list[PlanRefusal] = []
         limit = int(self.compile_attempts)
         for attempt in range(1, limit + 1):
@@ -3853,6 +3930,157 @@ class HierarchicalDispatch:
             compiled_from_proposal_id=proposal.proposal_id,
         )
 
+    def _lease_blocks_cancel(self, attempt: Any, owner: str | None) -> bool:
+        """A live lease held by somebody else must not be stolen (P2.3s)."""
+
+        expires = getattr(attempt, "lease_expires_at", None)
+        holder = str(getattr(attempt, "lease_owner", "") or "")
+        if expires is None or holder == "":
+            return False
+        try:
+            if float(expires) <= float(self.store.now):
+                return False
+        except (TypeError, ValueError):
+            return False
+        if owner is None:
+            return False
+        return holder != str(owner)
+
+    def reconcile_retiring_instance(
+        self, mission_id: str, instance_id: str, *, owner: str | None = None
+    ) -> tuple[str, ...]:
+        """Cancel still-open sibling work under a method instance a repair will retire.
+
+        Accepted P2.3q-reusable read-only leaves are left alone.  A live foreign
+        lease is reported, not stolen — the caller stores the proposal and retries.
+        """
+
+        network = self.network(mission_id)
+        try:
+            adopted = network.instance(MethodInstanceId(instance_id))
+        except KeyError:
+            return ()
+        reusable: set[str] = set()
+        try:
+            world = self._world()
+            index = self._repair_read_only_share_index(
+                mission_id,
+                network,
+                catalog=world.catalog,
+                retiring=(MethodInstanceId(instance_id),),
+            )
+            reusable = {str(item.occurrence_id) for item in index.entries}
+        except (ContractError, StoreError, GraphIntegrityError, KeyError, AttributeError):
+            reusable = set()
+        open_states = {
+            AttemptStatus.PENDING,
+            AttemptStatus.CLAIMED,
+            AttemptStatus.RUNNING,
+            AttemptStatus.SUBMITTED,
+            AttemptStatus.VERIFYING,
+        }
+        remaining: list[str] = []
+        for child in adopted.child_bindings:
+            try:
+                spec = network.occurrence(child.occurrence_id)
+            except KeyError:
+                continue
+            task_id = str(spec.task_id)
+            task = self.store.get_task(task_id)
+            if task is None:
+                continue
+            open_attempts = [
+                item
+                for item in self.store.list_attempts(task_id)
+                if item.status in open_states
+            ]
+            keep_task = str(child.occurrence_id) in reusable
+            blocked = [
+                item.id for item in open_attempts if self._lease_blocks_cancel(item, owner)
+            ]
+            if blocked:
+                remaining.extend(blocked)
+                continue
+            for item in open_attempts:
+                self.commit._close_attempt(  # noqa: SLF001
+                    item, AttemptStatus.CANCELLED, reason=METHOD_RETIRED_BY_REPAIR
+                )
+            if keep_task:
+                continue
+            if task.status in TERMINAL_TASK:
+                continue
+            if task.status is TaskStatus.BLOCKED:
+                continue
+            if task.status in {TaskStatus.READY, TaskStatus.ACTIVE, TaskStatus.VERIFYING}:
+                self.commit._cancel_task_entity(  # noqa: SLF001
+                    task_id, reason=METHOD_RETIRED_BY_REPAIR, replaced_by=None
+                )
+        return tuple(remaining)
+
+    def record_repair_compile_deferred(
+        self,
+        mission_id: str,
+        *,
+        proposal_id: str,
+        text: str,
+        instance_id: str,
+        attempts: Sequence[str],
+        command_id: str,
+    ) -> Event:
+        return append_hierarchical_event(
+            self.store,
+            REPAIR_COMPILE_DEFERRED,
+            mission_id,
+            key=f"{mission_id}:repair-deferred:{proposal_id}",
+            payload={
+                "proposal_id": proposal_id,
+                "text": text,
+                "instance_id": instance_id,
+                "attempts": [str(item) for item in attempts],
+                "command_id": command_id,
+                "reason": REPAIR_BLOCKED_BY_RUNNING_WORK,
+            },
+        )
+
+    def record_repair_compile_resumed(
+        self, mission_id: str, *, proposal_id: str, plan_revision: int
+    ) -> Event:
+        return append_hierarchical_event(
+            self.store,
+            REPAIR_COMPILE_RESUMED,
+            mission_id,
+            key=f"{mission_id}:repair-resumed:{proposal_id}",
+            payload={
+                "proposal_id": proposal_id,
+                "plan_revision": int(plan_revision),
+            },
+        )
+
+    def repair_compile_pending(self, mission_id: str) -> dict[str, Any] | None:
+        """The stored retire+refine that is waiting on sibling work, if any."""
+
+        latest: dict[str, Any] | None = None
+        resumed: set[str] = set()
+        for event in self.store.list_events(mission_id):
+            if event.type == REPAIR_COMPILE_RESUMED:
+                resumed.add(str((event.payload or {}).get("proposal_id", "")))
+            if event.type == REPAIR_COMPILE_DEFERRED:
+                latest = dict(event.payload or {})
+        if latest is None:
+            return None
+        if str(latest.get("proposal_id", "")) in resumed:
+            return None
+        instance_id = str(latest.get("instance_id", "") or "")
+        if not instance_id:
+            return None
+        try:
+            network = self.network(mission_id)
+        except (GraphIntegrityError, ContractError, StoreError):
+            return latest
+        if instance_id not in {str(item) for item in network.adopted_instance_ids}:
+            return None
+        return latest
+
     def _check_retirement_is_a_repair(
         self,
         mission_id: str,
@@ -3860,18 +4088,13 @@ class HierarchicalDispatch:
         proposal: PlanProposal,
         adopted: Any,
     ) -> None:
-        """A Planner may retire only what the root review rejected, and only when its
-        work is over (verification P1-2).
+        """A Planner may retire only a rejected instance; open sibling work is
+        reconciled by :meth:`reconcile_retiring_instance` *before* this runs.
 
-        ``retire_method`` compiled for *any* adopted instance, and the command then
-        carried ``request_stop_then_reconcile`` — a policy nothing in this slice
-        implements: the retired leaves' RUNNING attempts stayed RUNNING, their
-        reservations stayed held, and the dirty marks had no consumer.  The one case
-        P2.3j is about has neither problem — the review only cuts a package once
-        every leaf is terminal — so that is the case the compiler accepts: the
-        instance must be one :meth:`rejected_refinements` names, and none of its
-        child occurrences may have an attempt still open.  Anything wider waits for
-        the slice that actually stops and reconciles running work.
+        This check is the safety net: if the loop skipped reconcile, compile still
+        names ``running_work_not_reconciled`` rather than committing over RUNNING
+        Attempts.  P2.3s implements the stop-then-reconcile the command already
+        labelled ``request_stop_then_reconcile``.
         """
 
         rejected = {item.method_instance_id for item in self.rejected_refinements(mission_id)}
@@ -4419,6 +4642,10 @@ class _RepairReadOnlyShareIndex:
 
     def __init__(self, entries: Sequence[SharedGoalEntry] = ()) -> None:
         self._entries = tuple(entries)
+
+    @property
+    def entries(self) -> tuple[SharedGoalEntry, ...]:
+        return self._entries
 
     def lookup(
         self, signature: SharingSignature, *, reuse_policy: ReusePolicy

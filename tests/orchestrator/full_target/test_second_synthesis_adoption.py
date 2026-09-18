@@ -328,7 +328,11 @@ def test_read_only_leaf_rejection_then_round2_method_is_adopted_and_completes(tm
         success_criteria=(FREE_TEXT_CRITERION,),
         max_attempts=20,
     )
-    worker = _LeafWorker(mode="new", rewrite_limit=2)
+    worker = _LeafWorker(
+        mode="new",
+        rewrite_limit=2,
+        workspace_root=evidence / "workspaces",
+    )
     invented = _four_step("code.fix-by-patch-then-verify.repair", suffix="-v2")
     provider = RoleScriptedProvider(
         {

@@ -204,9 +204,20 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "worker-hierarchical-v1",
         "e82e74aff9b37d4746da0e982b38855e3cb639efe848fb1a15116a18023e7de2",
     ),
-    "WORKER_HIERARCHICAL": (
+    "WORKER_HIERARCHICAL_V2": (
         "worker-hierarchical-v2",
         "120372b8a49162ab1d96c6cf2725d6fcf7adec1988c7c8646f378c21649870b7",
+    ),
+    # P2.3t: v3 = v2 plus "report missing tests as a finding".  v2 keeps its bytes.
+    "WORKER_HIERARCHICAL_V3": (
+        "worker-hierarchical-v3",
+        "ed827cf56debe82de0fdf5604ce8ba570b84a3500ecc63beba89e4ba01efc19d",
+    ),
+    # P2.3s+t+u merge: v4 carries t's finding sentence and u's "do not rewrite
+    # existing files; put the suggestion in the report".  v3 keeps t's bytes.
+    "WORKER_HIERARCHICAL": (
+        "worker-hierarchical-v4",
+        "d59d78049330d71d8a837f709b7b72003275be3999e36f8c3b20ce2ea6d61c52",
     ),
     # P2.3g: the synthesiser's v1 is what the Grok episode ran on and stays pinnable;
     # v2 spells the codec's field list.  The hierarchical Planner's v3 is frozen for
@@ -239,9 +250,15 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
     ),
     # P2.3m: v6 = v5 plus "a code-change method must contain a write/patch step;
     # read_only_leaf_needs_write in review_feedback".
-    "METHOD_SYNTHESIZER": (
+    "METHOD_SYNTHESIZER_V6": (
         "method-synthesizer-v6",
         "75a8a4a1a888e2ac165d16a711df9e981ad44da92c15b652bbc29bbc97774c42",
+    ),
+    # P2.3t: v7 = v6 plus "read-only verify must not write files; added tests
+    # come from a write-step tests port".
+    "METHOD_SYNTHESIZER": (
+        "method-synthesizer-v7",
+        "4aa25e682ede38479a09a2a8d00da023aaed617e32384e7da85c44641a4e2f9b",
     ),
     "PLANNER_HIERARCHICAL_V3": (
         "planner-hierarchical-v3",
@@ -329,6 +346,12 @@ def test_the_frozen_digests_cover_the_prompts_this_slice_depends_on() -> None:
     assert "WORKER_HIERARCHICAL_V1" in FROZEN_PROMPT_DIGESTS, (
         "a superseded version is still replayed by every Attempt that pinned it"
     )
+    assert "WORKER_HIERARCHICAL_V2" in FROZEN_PROMPT_DIGESTS, (
+        "worker-hierarchical-v2 stays pinnable after later hierarchical Worker versions"
+    )
+    assert "WORKER_HIERARCHICAL_V3" in FROZEN_PROMPT_DIGESTS, (
+        "worker-hierarchical-v3 keeps P2.3t's bytes after the P2.3u merge added v4"
+    )
     assert {"PLANNER", "CRITIC", "CRITIC_V2"} <= set(FROZEN_PROMPT_DIGESTS)
     assert FROZEN_PROMPT_DIGESTS["WORKER_HIERARCHICAL"][0] == WORKER_HIERARCHICAL_VERSION
     assert WORKER.prompt_version == "worker-v3"
@@ -349,6 +372,8 @@ def test_the_hierarchical_worker_version_is_registered_and_pinnable() -> None:
     assert HIERARCHICAL_WORKER_VERSIONS == frozenset(
         {
             WORKER_HIERARCHICAL_VERSION,
+            "worker-hierarchical-v3",
+            "worker-hierarchical-v2",
             "worker-hierarchical-v1",
             "worker-appworld-hierarchical-v1",
         }

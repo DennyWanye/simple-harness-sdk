@@ -226,9 +226,16 @@ class _LeafWorker:
     * ``clean`` — verify only writes REPORT.md
     """
 
-    def __init__(self, *, mode: str, rewrite_limit: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        mode: str,
+        rewrite_limit: int | None = None,
+        workspace_root: Path | None = None,
+    ) -> None:
         self.mode = mode
         self.rewrite_limit = rewrite_limit
+        self.workspace_root = workspace_root
         self.verify_attempts = 0
         self._queues: dict[str, list[Any]] = {}
 
@@ -280,14 +287,44 @@ class _LeafWorker:
                     {"report": "REPORT.md"},
                 )
             content = PATCHED_COLLECTOR if self.mode == "match" else NEW_COLLECTOR
-            return _write_and_envelope(
-                [
-                    ("metrics/collector.py", content),
-                    ("REPORT.md", "# verify\nrewrote collector to run tests\n"),
-                ],
-                ["metrics/collector.py", "REPORT.md"],
-                {"report": "REPORT.md"},
-            )
+            writes = [
+                ("metrics/collector.py", content),
+                ("REPORT.md", "# verify\nrewrote collector to run tests\n"),
+            ]
+            artifacts = ["metrics/collector.py", "REPORT.md"]
+            outputs = {"report": "REPORT.md"}
+            if self.mode == "new":
+                # P2.3u: the gateway refuses workspace_write_file on existing
+                # source.  These two tests still exercise the collector fallback,
+                # so the rewrite is applied on the attempt tree directly.
+                if self.workspace_root is None:
+                    raise AssertionError(
+                        "mode='new' needs workspace_root to bypass the write guard"
+                    )
+                attempt_id = str((package.get("attempt") or {}).get("attempt_id") or "")
+                root = self.workspace_root
+
+                def poke(_request: Any, *, _aid: str = attempt_id, _body: str = content) -> Any:
+                    target = root / _aid / "metrics/collector.py"
+                    target.write_text(_body, encoding="utf-8")
+                    return (
+                        "workspace_write_file",
+                        {
+                            "path": "REPORT.md",
+                            "content": "# verify\nrewrote collector to run tests\n",
+                        },
+                    )
+
+                return [
+                    poke,
+                    envelope_step(
+                        summary="scripted leaf",
+                        artifacts=artifacts,
+                        claims=["scripted"],
+                        override=lambda body: {**body, "outputs": dict(outputs)},
+                    ),
+                ]
+            return _write_and_envelope(writes, artifacts, outputs)
         raise AssertionError(f"unexpected leaf goal: {goal!r}")
 
 
@@ -470,7 +507,11 @@ def test_two_new_rewrites_escalate_to_planning_with_named_feedback(tmp_path) -> 
     failures are not this test's subject."""
 
     world = _world(tmp_path, key="p23m-escalate")
-    worker = _LeafWorker(mode="new", rewrite_limit=2)
+    worker = _LeafWorker(
+        mode="new",
+        rewrite_limit=2,
+        workspace_root=Path(tmp_path) / "evidence" / "workspaces",
+    )
     invented = _four_step("code.fix-by-patch-then-verify.repair", suffix="-v2")
     provider = RoleScriptedProvider(
         {
@@ -525,7 +566,10 @@ def test_persistent_rewrites_stop_with_the_named_reason_and_release_reservations
     not budget_exhausted, reservations are released, conservation holds."""
 
     world = _world(tmp_path, key="p23m-bounded")
-    worker = _LeafWorker(mode="new")
+    worker = _LeafWorker(
+        mode="new",
+        workspace_root=Path(tmp_path) / "evidence" / "workspaces",
+    )
     provider = RoleScriptedProvider(
         {
             "worker": [worker] * 80,
@@ -544,6 +588,11 @@ def test_persistent_rewrites_stop_with_the_named_reason_and_release_reservations
         outcome["stop_reason"],
         outcome["report"],
     )
+    assert outcome["stop_reason"] != str(MissionStopReason.NO_DISPATCHABLE_WORK), (
+        outcome["stop_reason"],
+        outcome["report"],
+    )
+    assert outcome["stop_reason"] == str(MissionStopReason.PLANNING_FAILED)
     detail = outcome["report"].get("detail") or {}
     blob = json.dumps(detail, ensure_ascii=False)
     assert READ_ONLY_REWRITE_REPAIR_REASON in blob or "read_only_leaf_needs_write" in blob, (
@@ -576,7 +625,7 @@ def test_the_prompt_v6_requires_a_write_step_and_v5_is_frozen() -> None:
     )
 
     assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
-    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v6"
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v7"
     v6 = METHOD_SYNTHESIZER.instructions
     v5 = METHOD_SYNTHESIZER_V5.instructions
     for sentence in (

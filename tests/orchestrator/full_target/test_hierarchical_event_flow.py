@@ -91,6 +91,8 @@ from agent_orchestrator.orchestrator.hierarchical_dispatch import (  # noqa: E40
     PLAN_INTEGRITY_FAILED,
     PLANNER_SKIPPED_FOR_SYNTHESIS,
     RECOMPILABLE_REFUSALS,
+    REPAIR_COMPILE_DEFERRED,
+    REPAIR_COMPILE_RESUMED,
     SYNTHESIS_REPLY_REJECTED,
     SYNTHESIS_REPLY_UNREADABLE,
     SYNTHESIS_ROUND_RECORDED,
@@ -1414,6 +1416,8 @@ NEW_EVENT_TYPES = frozenset(
         ARTIFACT_MERGE_NOT_APPLICABLE,
         # P2.3q: the empty-Planner shortcut (evidence saturated, nothing applies).
         PLANNER_SKIPPED_FOR_SYNTHESIS,
+        REPAIR_COMPILE_DEFERRED,
+        REPAIR_COMPILE_RESUMED,
     }
 )
 

@@ -296,11 +296,21 @@ TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list")
 
 
 def _collect_facts_leaf(
-    tmp_path, *, key: str, writes: list[tuple[str, str]], artifacts: list[str]
+    tmp_path,
+    *,
+    key: str,
+    writes: list[tuple[str, str]],
+    artifacts: list[str],
+    mutate: Any | None = None,
 ):
     """Dispatch the C1-r1 method's ``read-facts`` leaf to a scripted Worker that writes
     ``writes`` and submits ``artifacts`` with ``facts.json`` claimed at its port, then
-    collect the result through the real ``_collect_attempt``."""
+    collect the result through the real ``_collect_attempt``.
+
+    ``mutate(loop, intent)`` runs after the Worker returns and before collection, so a
+    test can change workspace bytes without going through the write tool (P2.3u
+    fallback).
+    """
 
     import asyncio
 
@@ -366,32 +376,48 @@ def _collect_facts_leaf(
                     await asyncio.sleep(0.01)
 
             result = await asyncio.wait_for(completed(), timeout=10)
+            if mutate is not None:
+                mutate(loop, intent)
             await loop._collect_attempt(intent, result)
             events = loop.store.list_events(mission.id)
             return {
                 "rejections": [e.payload for e in events if e.type == "ResultRejected"],
                 "submitted": [e.type for e in events if e.type == "ResultSubmitted"],
                 "artifacts": sorted(a.path for a in loop.store.list_mission_artifacts(mission.id)),
+                "gateway": [
+                    {
+                        "tool": call.get("tool"),
+                        "outcome": call.get("outcome"),
+                        "error_code": call.get("error_code"),
+                    }
+                    for call in loop.assembled.gateway.calls
+                ],
             }
 
     return asyncio.run(case())
 
 
 def test_a_read_only_leaf_that_rewrites_a_seed_file_is_refused_at_collection(tmp_path) -> None:
-    """C3's ``facts`` leaf, replayed: it patched ``stats/window.py`` and reported facts.
+    """C3's ``facts`` leaf, replayed at collection: bytes on ``stats/window.py``
+    changed outside the write tool (P2.3u's gateway now blocks the tool itself).
     The result is refused with the reason written down; nothing is registered."""
+
+    rewritten = (
+        "def window_sum(values, start, end):\n    return sum(values[start:end])\n"
+    )
+
+    def mutate(loop: Any, intent: Any) -> None:
+        workspace = loop.assembled.workspaces.get(str(intent.config["attempt_id"]))
+        workspace.write_text("stats/window.py", rewritten)
 
     outcome = _collect_facts_leaf(
         tmp_path,
         key="p23k-p12-rewrite",
         writes=[
-            (
-                "stats/window.py",
-                "def window_sum(values, start, end):\n    return sum(values[start:end])\n",
-            ),
             ("facts.json", '{"tests": ["tests/test_public_window.py"]}'),
         ],
         artifacts=["stats/window.py", "facts.json"],
+        mutate=mutate,
     )
     assert outcome["rejections"], outcome
     last = outcome["rejections"][-1]

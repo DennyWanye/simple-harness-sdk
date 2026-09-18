@@ -3882,6 +3882,181 @@ N11：C1-r0 唯一 UNKNOWN invocation 的 `usage_json.error_class=UnknownProvide
 - 真实模型第 4 批未重跑。
 - 有 token 的 UNKNOWN 仍不从异常抄 usage（P2.3p 未做项）。
 
+## 2u. P2.3s：修复轮 reconcile 仍在跑的兄弟 attempt（2026-09-18，分支 `p2.3s-repair-reconcile-running-siblings`，基 `f2dfa64` = 0.12.2 候选第 5 版）
+
+输入：用户任务书 + 真实局只读 `H-L3-C1-r0`（`file:...?immutable=1`）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 证据（只读）
+
+seq 483 `ResultRejected{read_only_leaf_rewrote_workspace}`（inspect task-c07e… 第 2 次）→ 486 `TaskCancelled{read_only_leaf_needs_write}` → 487 `PlanningRejected{read_only_leaf_needs_write}` → 488/489 跳过 Planner → 500 合成准入 → 512/520/539/549 `PlanningRejected{running_work_not_reconciled}`（提案退役 `mi-8e0b…`，兄弟 verify task-cb9e… 的 attempt-1 然后 attempt-2 仍 OPEN）→ 525/559 该兄弟自己也被只读拒绝 → 562 取消 → 565 `MissionFailed{no_dispatchable_work}`。103/320 次调用。seq 486 之后 c07e 的 attempt 停在 `RETRY_WAIT`（`ResultRejected` 已把它送进终态；`RETRY_WAIT → CANCELLED` 无合法边），全库零条 `AttemptCancelled`。
+
+### 修法
+
+1. **编译前 reconcile**：`apply_planner_reply` 对 retire+refine 先 `reconcile_retiring_instance`：被退役实例下仍 OPEN 的兄弟 attempt 按既有口径取消（`method_retired_by_repair`），READY/ACTIVE/VERIFYING 非复用叶一并 `TaskCancelled`。P2.3q 可复用的已验收只读叶不取消任务，但其上残留 OPEN attempt 仍关闭。只读升级与根评审修复打开时同样 reconcile，并 `_release_attempt(cancel=True)` 以免占并发槽。
+2. **Pending 重试**：活的外国 lease 不抢，写 `RepairCompileDeferred`，blocker 结束后 `_retry_deferred_repair` 用同一提案文本再编译；有 pending 时不再开新 Planner 轮。
+3. **终态**：确认空转时若有 pending 或未处置 `rejected_refinements`，`fail_mission(PLANNING_FAILED)`（detail `repair_blocked_by_running_work` 或既有修复理由），不得 `no_dispatchable_work`。合成拒绝后的只读修复同样改 `planning_failed`。
+4. **P2.3m**：取消只读叶时关闭仍 OPEN 的 attempt；已 `RETRY_WAIT` 的保持终态（契约状态机无出边）。
+
+### 测试
+
+新文件 `test_repair_reconcile_running_siblings.py` 6 条（compile 安全网仍点名；`apply_planner_reply` 取消后提交；六叶 inspect 两次改写 + 兄弟 verify 仍跑 → 取消 → COMPLETED；取消叶无 OPEN attempt；修复上限用尽 `planning_failed`；外国 lease → Deferred）。先红后绿。既有 `test_repeated_rejections…` / `test_persistent_rewrites…` 的 stop_reason 改为 `planning_failed`。合入 P2.3t 后 `test_repeated_rejections…` 改为期望 `root_review_repairs_exhausted`（见 §2u/§2v 合并说明）。
+
+变异 4/4 KILLED（临时改源，从 `/tmp/p23s-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `reconcile_retiring_instance` 立即 `return ()` | 取消后提交 + 六叶 e2e | **KILLED**（2 failed：`running_work_not_reconciled` / `budget_exhausted`） |
+| M2 | 空转/合成拒绝仍 `no_dispatchable_work` | 具名停机 + persistent rewrite + 根评审有界 | **KILLED**（3 failed） |
+| M3 | `_lease_blocks_cancel` 恒 False | 外国 lease deferred | **KILLED**（1 failed：未抛 `RepairBlockedByRunningWork`） |
+| M4 | 取消理由改成 `cancelled` | 取消后提交 + 六叶 e2e | **KILLED**（2 failed：不见 `method_retired_by_repair`） |
+
+回归：full_target **2917 passed / 2 skipped**（基线 2911/2，+6）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**。ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变；冻结提示词 sha256 不变。
+
+### 未做
+
+- 真实模型第 5 批未重跑。
+- `RETRY_WAIT → CANCELLED` 需要改 `contracts/` 状态机，本片不做。
+- Host runner 侧未动。
+
+## 2v. P2.3t：准则驱动的写型步骤测试端口 + 只读叶不得写文件 + 根评审修复上限具名停机（2026-09-18，分支 `p2.3t-criteria-driven-write-step`，基 `f2dfa64` = 0.12.2 候选第 5 版）
+
+输入：用户任务书 + 真实局只读 `H-L3-C1-r1`（`orchestrator.db?immutable=1` + `construction.json`）。证据目录零写入。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 指挥者假设（先核实）
+
+指挥者假设三件事叠在一起：
+
+1. Worker 在**只读 verify 叶**里写了测试文件；只读叶工作区改动不会成为已验收产物，也不进 delivery / 下游 bound inputs，所以测试文件「消失」，REPORT 变成空口声明。
+2. 合成出来的三个方法里没有任何**写型步骤的输出端口包含测试文件**（apply/patch 步只被理解为「改实现」），于是准则 `c-contract-tests-pass` 要求的证据在结构上不可能产生。
+3. 两次根评审 REJECT 且 `max_root_review_repairs` 用尽后，停机走 idle stall，`stop_reason=no_dispatchable_work`，detail 挂着 `admitted_not_dispatched`。
+
+**核实结论：假设成立，不推翻。** 只读证据：
+
+- 隐藏评分 PASS，Mission FAILED，`stop_reason=no_dispatchable_work`，115/320 次调用。
+- r0 `…by-diagnose-patch-verify-explain`：只读 verify 改写 `metrics/reporter.py` → P2.3m 取消退役。
+- r1 / r2 两次根评审 REJECT 理由一致且正确：`c-contract-tests-pass` FAIL——verify 的 REPORT.md 声称加入了 `tests/test_concurrent_contract.py`（第二轮 `tests/test_concurrent_summary.py`）且全绿，inspect / summarize 在同一棵树上证明该文件不在树中；可见套件只有 `tests/test_public_collector.py` 4 passed。
+- r1 方法虽有 `add-red-tests`（`code.apply-patch` + `repo.write`），其输出端口仍只是 `patch`，没有 tests 产物端口；r2 同形。verify 只读，写进去的测试不会成为已验收产物。
+- 终态 `repairs_used=1` / `max_root_review_repairs=1`，detail 有 `admitted_not_dispatched` 一串 READY 任务。
+
+### 修法
+
+1. **写型 tests 端口**：目录新增 `code.apply-patch@2`（可选 `tests` 输出）与 `code.verify-tests@2`（可选 `tests` 输入），@1 行字节/哈希约定不动。种子新增 compound `code.implement-contract`（`c-contract-tests-pass` + `c-change-explained`，statement 含「tests covering the user goal must be added…」；content_hash = `seed_content_hash(id, version)`，与 Host 注入约定一致）。
+2. **准入**：`evidence_requires_added_tests` 认 `c-contract-tests-pass` / 「tests covering」/ 「added or turned from red to green」等。命中则必须有非只读步声明 `tests` 输出端口，且有消费者绑定该端口；否则 `ROOT_COVERAGE_GAP` + `reason=tests_port_required`（P2.3i 可修正重问）。种子 `c-test-passes`「named failing test」不触发。
+3. **请求包**：`SynthesisRequest.criterion_evidence` = 各 coverage 准则 id + goal statement。
+4. **提示词**：只加 `method-synthesizer-v7`、`worker-hierarchical-v3`；v6 / worker-v2 字节钉住。
+5. **Worker 反馈**：修复轮 `PlanningRejected` 的 findings 写入派发包 `review_feedback`（retired 实例已离开 `rejected_refinements`，必须读事件）。
+6. **overlay**：绑定生产者 `tests/` 或 `test_*` 路径即使不在 seed 也并进下游工作区。
+7. **具名停机**：stall 确认时若根评审 REJECTED 且 `repairs_used >= max_root_review_repairs ≥ 1`，`stop_reason=root_review_repairs_exhausted`（Mission.stop_reason 本就是 str，不改 contracts 枚举），`admitted_not_dispatched=[]`，`fail_mission` 级联取消 READY。
+
+### 测试
+
+`test_criteria_driven_write_step.py` 11 条：overlay；准则探测；请求包 criterion_evidence；缺端口可修正拒绝；有端口准入；真 `Orchestrator.run()` COMPLETED；synthesizer 缺端口→采用；两次 REJECT 具名停机；legacy；v7/v3 提示词。冻结 digest +2（synthesizer v6、worker v2 现单独成行）。
+
+变异 4/4 KILLED（`/tmp/p23t-mutant-backup/` 恢复，sha256 一致，不用 git checkout）：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| M1 | `evidence_requires_added_tests` 恒 False | 3 failed → KILLED |
+| M2 | `_check_tests_port_coverage` 立即 return | 2 failed → KILLED |
+| M3 | stall 停机 `exhausted=False` | 2 failed（仍 no_dispatchable_work）→ KILLED |
+| M4 | `_is_test_artifact` 恒 False | 1 failed（overlay 缺 tests/）→ KILLED |
+
+回归：full_target **2924 passed / 2 skipped**（基线 2911/2，+13）；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变。
+
+### 未做
+
+- 真实模型第 5 批未重跑。
+- (b) 全链路「REJECT → 合成缺端口 → 重问 → 采用 → COMPLETED」未用 `run()` 走根评审修复轮（P2.3i 重问环 + 本片准入已覆盖该正确理由码）；写型 Worker 看到 findings 靠派发包接线，无单独 e2e 断言。
+- Host 仍可 `ensure_host_root_type(code.implement-contract)`；SDK 种子已有同 id@version 哈希。
+
+## 2u/2v. §2u/§2v 合并说明（2026-09-18，本 worktree 合入 `p2.3t-criteria-driven-write-step` 75146d2）
+
+P2.3s（fe84c91）与 P2.3t（75146d2）同基 `f2dfa64`。文档两边都留：§2u 在前、§2v 在后；CHANGELOG 单一 `## 0.12.2`。
+
+代码冲突只在 `event_handler.py` 空转确认路径，以及 `test_root_review_repair_library.py` 的 `test_repeated_rejections_end_honestly_with_the_reason_written_down`：
+
+1. **根评审修复上限用尽**（`REVIEW_REJECTED` 且 `repairs_used >= max_root_review_repairs ≥ 1`）→ `stop_reason=root_review_repairs_exhausted`，`admitted_not_dispatched=[]`，READY 由 `fail_mission` 级联取消。这是 P2.3t 的具名停机。P2.3s 曾因未处置 `rejected_refinements` 把同一路径改成 `planning_failed`；合后让位给更具体的名字。
+2. **其他修复受阻**（pending `RepairCompileDeferred`、只读叶升级的 `rejected_refinements` 等，且根评审未用尽）→ `planning_failed`（detail `repair_blocked_by_running_work` 或既有修复理由），不得 `no_dispatchable_work`。
+3. 真·无活修复时才 `no_dispatchable_work`。根评审已用尽时不再重试 deferred compile。
+4. 其余互不重叠，两边都留：P2.3s 的 reconcile / Deferred / 取消叶关 OPEN attempt；P2.3t 的 tests 端口准入、findings 进写型 Worker `review_feedback`、overlay。
+
+回归（合后）：定向 5 文件 **155 passed**；full_target **2930 passed / 2 skipped**（基线 2911/2，+6 s +13 t）；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 改动文件清；`_new_mode` 仍 19；`contracts/` 零改动；冻结提示词旧版本 sha256 不变（t 新增 v7 / worker-v3 各一行）。
+
+## 2w. P2.3u：只读叶写守卫（事前拒绝已存在文件）（2026-09-18，分支 `p2.3u-read-only-leaf-write-guard`，基 `f2dfa64` = 0.12.2 候选第 5 版）
+
+输入：用户任务书 + 第 4 批诊断「可省调用」#3 + 第 5 批只读证据（H-L3-{C1-r0,C1-r1,C2-r1} orchestrator.db，`file:...?immutable=1`）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。P2.3t 在另一 worktree 改分层 verify/inspect 模板，本片改的是代码域 `worker-hierarchical-v3`（v2 字节不动）。
+
+### 根因
+
+只读叶（`side_effect_kind=external_read`，能力 `tests.run` / `repo.read`）Worker 仍暴露 `workspace_write_file`。提示词已写「this leaf's task type is read-only … do not change existing files」，模型照样改 `metrics/collector.py` 等。P2.3k/P2.3m 在 `_collect_attempt` **事后** `ResultRejected{read_only_leaf_rewrote_workspace}`：整次 Attempt（5–8 次模型调用）作废，满 2 次取消叶 → 修复轮 → 新方法的只读叶又改写。C2-r1 隐藏评分 PASS，第 3 轮方法以 `no_dispatchable_work` 收场。
+
+P2.3o 已把上游已验收源码预铺进下游工作区，所以「已存在文件」= 种子 ∪ 绑定 overlay，与 `read_only_rewrites` 的 `initial` 同一集合。
+
+### 修法
+
+1. **网关事前拒绝**：`WorkspaceBinding.read_only_existing`（绑定瞬间 `list_files()`，即种子 + P2.3o overlay）。分层只读叶在 `_next_attempt` 用已有的 `new_mode` 调 `read_only_leaf(binding)`，intent 只在 True 时写 `read_only_leaf`（legacy / 写型叶不加键）。`_bind_agent` 快照已有路径。`workspace_write_file` 对已存在文件返回 `read_only_existing_file`（给模型看：该叶只读、把发现写进声明端口 / REPORT.md），文件不变，不 `ResultRejected`、不消耗 Attempt。新文件（报告、端口产物）允许写；写型叶 `read_only_existing=()` 不受影响。路径判断复用网关已有的 `_canonical` / `list_files`，不另造一套。
+2. **暴露清单**：`effective_tools(..., read_only_leaf=)` 对只读叶去掉 `apply_patch` / `workspace_apply_patch`（今天未部署；selftest 用四向交集证明裁剪）。`workspace_write_file` 保留——报告要用。
+3. **事后兜底**：P2.3m `read_only_rewrites` 同哈希规则不动。绕过工具的直接改写仍 `ResultRejected`。
+4. **提示词**：只加 `worker-hierarchical-v3`（「若本叶任务类型是只读……不能改已有文件；需要改动时在报告里写明建议」）。`worker-hierarchical-v2` 字节不动，digest `120372b8…` 登记为 `WORKER_HIERARCHICAL_V2`。合并时若 P2.3t 对 verify/inspect 模板写了同类句子，以两边一致为准；本片模板名/版本：`worker` / `worker-hierarchical-v3`。
+
+### 测试
+
+新文件 `test_read_only_leaf_write_guard.py` 9 条（网关 3；effective_tools 1；收集无 ResultRejected 1；事后兜底 1；真 `Orchestrator.run()` COMPLETED 1；v3/v2 冻结 1；legacy 绑定 1）+ 冻结表 +1（V2）。先红后绿。P2.3m/P2.3n 里「verify 真改源码」的脚本改为 `workspace_root` 直写，专门走收集兜底。
+
+变异 4/4 KILLED（临时改源，从 `/tmp/p23u-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | 网关 `if False and binding.read_only_existing` | 网关单测 + 收集 + e2e | **KILLED**（3 failed：写成功 / ResultRejected / TimeoutError） |
+| M2 | `_bind_agent` 不快照已有文件 | 收集 + e2e | **KILLED**（2 failed：ResultRejected / TimeoutError） |
+| M3 | `effective_tools` 忽略 `read_only_leaf` | 裁剪单测 | **KILLED**（`apply_patch` 仍在只读清单） |
+| M4 | v3 去掉「不能改已有文件」句 | v3 冻结 + digest | **KILLED**（2 failed：句子缺失 / digest 回到 v2） |
+
+回归：full_target **2921 passed / 2 skipped**（基线 2911/2，+10 = 新文件 9 + 冻结参数化 +1）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**（一次 `test_queued_planner_cancel` TimeoutError 复跑即过，与本片无关）；`step06` 网关/隔离 23 过。ruff `src/agent_orchestrator` + `tests/orchestrator/full_target` 清；`_new_mode` 仍 19；legacy 事件字节 golden 不变。
+
+### 未做
+
+- 真实模型第 5 批未重跑（验收在跑，不碰 `.local-test-evidence` / grok CLI / llm_runtime）。
+- 没有部署中的 patch/apply 工具可从只读叶清单拿掉；常量预留名字，selftest 钉住。
+- P2.3t 的 verify/inspect 模板若另有措辞，合并时对齐，本片不改那些模板。
+
+## 2w. §2w 合并说明（2026-09-18，本 worktree 合入 `p2.3u-read-only-leaf-write-guard` b67fc9e）
+
+P2.3s+t（合并 c2f7ffe，核验归档 d3b81e4）与 P2.3u（b67fc9e）同基 `f2dfa64`。文档两边都留：§2u=s、§2v=t、§2w=u；CHANGELOG 单一 `## 0.12.2`。
+
+此前 §2u/§2v 合入时的停机口径仍成立：根评审修复上限用尽 → `root_review_repairs_exhausted`；其他修复受阻 → `planning_failed`；真·无活修复才 `no_dispatchable_work`。
+
+本片合入：
+
+1. **提示词同名冲突**：两边都登记了 `worker` / `worker-hierarchical-v3`（t：缺测试写成 finding、不要自己创建或修改文件；u：不能改已有文件、需要改动时在报告里写明建议）。v3 保留 t 的字节（digest `ed827cf5…`）；默认改为 **`worker-hierarchical-v4`**，`_revise` 自 v3，两句话都在。v1/v2/v3 字节不动。两片的 digest 测试改钉 v4。
+2. **event_handler.py**：git 自动合并。P2.3u 在 `_next_attempt` / `_bind_agent` 接线 `read_only_leaf` + `read_only_existing`；P2.3s/t 的 reconcile / Deferred / 停机路径都留。
+3. 其余互不重叠，两边都留：网关事前拒绝 `read_only_existing_file`、`effective_tools(read_only_leaf=)` 裁 patch/apply、`WorkspaceBinding.read_only_existing` 绑定时快照。
+4. **测试脚本**：P2.3s 六叶 inspect 改写改为 `workspace_root` 直写（与 P2.3u 对 P2.3m 脚本同一手法），专门走收集兜底 + reconcile；网关事前拒绝由 `test_read_only_leaf_write_guard.py` 覆盖。
+
+回归（合后）：定向 6 文件 **80 passed**；full_target **2940 passed / 2 skipped**（基线 2911/2，+6 s +13 t +10 u）；旧模式 step02/05/06/07/p34/p35 **560/13/0**；ruff 改动文件 `check` 清；`_new_mode` 仍 19；`contracts/` 零改动；冻结提示词旧版本 sha256 不变（v3 钉 t 字节 `ed827cf5…`，默认 v4 `d59d7804…`）。
+
+### 核验处置（2026-09-18，对照 `reviews/核验-P2.3u-1a6b320-2026-09-18.md`，结论「修后可合」）
+
+独立核验 P0 无，P1-1 必修。处置：
+
+- **P1-1**：`_bind_agent` 快照不再 `list_files()` 整棵已拷贝的前树。`_read_only_initial` 与 `read_only_existing_paths` 给出 seed ∪ overlay/upstream ∪ fragment baseline，与 P2.3m `read_only_rewrites` 的 `initial` 同一函数口径；收集路径改调同一 helper。retry 拷贝的上一 Attempt `REPORT.md` / 端口产物不进快照，第二轮仍能重写自己的报告，仍不能改 seed/overlay 源码。红测：`test_a_read_only_retry_after_verification_failed_may_rewrite_its_report`（第一轮写 REPORT.md + 失败测试 → `verification_failed` → retry 重写 REPORT.md、改 collector 仍 `read_only_existing_file`）。
+- **P2-2**：同一 Attempt 连续 `read_only_existing_file` 上限 `MAX_READ_ONLY_EXISTING_REJECTIONS=3`（与 `max_consecutive_same_tool` 同宽，非配置项）。达上限后网关返回 `read_only_leaf_kept_writing`，`_audit_tool_rejection` 取消 turn 并 `AttemptLost{read_only_leaf_kept_writing}`，不再烧满 `max_model_calls_per_turn`。写新文件会重置连拒计数。
+- **P2-3**：`_bind_agent` 遇 `WorkspaceError` 快照落空改为 fail-closed：`read_only_writes_blocked=True`，该叶所有 `workspace_write_file` 返回 `read_only_snapshot_unavailable`。
+- **P2-1**：`overlay_bound_producer_files(..., read_only_producers=)` 过滤只读生产者新写的 `tests/`，不预铺给下游。写型步的 tests 端口产物仍 overlay（既有 `test_overlay_places_new_test_files_that_are_not_on_the_seed`）。
+- **P2-4**：核验指出合入时除冲突文件外还改了 s 的 inspect / P2.3m 夹具（`workspace_root` 直写）。未放松产品断言，网关事前拒绝由 `test_read_only_leaf_write_guard.py` 覆盖。记录，不改代码。
+- **P2-5**：全库 `pytest tests -k "gateway or tool_gateway or policies"` 被 `gap_phase1` / `tests/integration` 缺 `asyncio` marker 打断，既有非本片。记录，不改。
+
+变异 2/2 KILLED（临时改源，从 `/tmp/p23u-disp-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `_bind_agent` 改回 `list_files()` | P1 retry e2e | **KILLED**（REPORT.md 停在 round 1） |
+| M2 | 连拒上限 `if False and streak >= N` | 连拒上限单测 | **KILLED**（第 3 次仍是 `read_only_existing_file`） |
+
+回归：full_target **2948 passed / 2 skipped**（核验基线 2940/2，+8）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变；冻结提示词 sha256 不变。
+
+未做：真实第 5 批未重跑（验收在跑，不碰 `.local-test-evidence` / grok CLI / llm_runtime）。
+
 ## 2x. P2.3v：上游写型产物记录/套用 diff + 相同验证失败有界早停（2026-09-18，分支 `p2.3v-repeated-failure-early-stop`，基 `f2dfa64` = 0.12.2 候选第 5 版）
 
 输入：用户任务书 + 真实局只读 `H-L4-M2-r1` / `H-L4-M3-r0`（`file:...?immutable=1`，证据目录零写入）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。第四部分编号：§2u=s、§2v=t、§2w=u，本片为 §2x。
@@ -3922,6 +4097,20 @@ N11：C1-r0 唯一 UNKNOWN invocation 的 `usage_json.error_class=UnknownProvide
 - 真实模型第 5 批未重跑。
 - M3-r0 的 reproduce 叶对红基线跑 `code_test`（题目构造的 SyntaxError）未改判定层，只靠相同失败有界早停。
 - 不把 `repeated_verification_failure` 写成第三套 `rejected_by_*` 包字段（冻结提示词不动；仍进 `REPAIR_REASONS` / `rejected_refinements`）。
+
+## 2x. §2x 合并说明（2026-09-18，本 worktree 合入 main `3607c22` = P2.3s/t/u）
+
+P2.3v（976d0d0）与 main（P2.3s/t/u，3607c22）同基 `f2dfa64`。文档两边都留：§2u=s、§2v=t、§2w=u、§2x=v；CHANGELOG 单一 `## 0.12.2` 覆盖 P2.3e–P2.3v。
+
+此前 §2u/§2v/§2w 合入时的停机口径仍成立：根评审修复上限用尽 → `root_review_repairs_exhausted`；其他修复受阻（含 `repeated_verification_failure` 未处置）→ `planning_failed`；真·无活修复才 `no_dispatchable_work`。
+
+本片合入：
+
+1. **overlay 口径统一**（`bound_workspace.overlay_bound_producer_files`）：写型叶产物（含 `tests/`，P2.3t）进 overlay；只读叶新写 `tests/` 不进（P2.3u P2-1）；P2.3v 收集处套用 unified diff 并登记 seed 路径，之后走同一 overlay。
+2. **event_handler.py**：P2.3v 的 `_accepted_path_hashes(current_task_ids=)` / `_record_applied_diff_files` / 相同验证失败早停，与 P2.3s reconcile/Deferred、P2.3t 具名停机、P2.3u `_read_only_initial` 都留。`REPAIR_REASONS` 含三理由。空转 detail 同时挂根评审 / 只读改写 / 相同验证失败。
+3. **hierarchical_dispatch.py**：P2.3v 把 `repeated_verification_failure` 纳入 `REPAIR_REASONS`；P2.3s 的 `METHOD_RETIRED_BY_REPAIR` / `RepairCompileDeferred` 都留。
+
+回归（合后）：定向 6 文件 **56 passed**；full_target **2955 passed / 2 skipped**（main 核验基线 2948/2，+7 v）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；ruff 改动文件清；`_new_mode` 仍 19；`contracts/` 零改动；冻结提示词旧版本 sha256 不变。
 
 ## 3. 旧模式 golden 是否变
 

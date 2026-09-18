@@ -355,6 +355,33 @@ def occurrence_policy(
     return chosen
 
 
+def read_only_existing_paths(
+    seed: Mapping[str, Any] | Iterable[str],
+    upstream: Iterable[Any] = (),
+    extra: Mapping[str, Any] | Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Paths a read-only leaf started from: seed ∪ overlay/upstream ∪ extras.
+
+    Same set :func:`read_only_rewrites` uses as ``initial``.  A retry tree that
+    copied the previous Attempt still lets the leaf rewrite files it created
+    (REPORT.md, port outputs) — those paths are not in this snapshot.
+    """
+
+    paths: set[str] = set()
+    if isinstance(seed, Mapping):
+        paths.update(str(path) for path in seed)
+    else:
+        paths.update(str(path) for path in seed)
+    for item in upstream:
+        path = getattr(item, "path", item)
+        paths.add(str(path))
+    if isinstance(extra, Mapping):
+        paths.update(str(path) for path in extra)
+    else:
+        paths.update(str(path) for path in extra)
+    return tuple(sorted(path for path in paths if path))
+
+
 #: P2.3m.  How many times one occurrence may be refused
 #: ``read_only_leaf_rewrote_workspace`` before the named feedback goes to planning
 #: instead of another Attempt.  Same bound as ``MAX_SYNTHESIS_ASKS`` /
@@ -551,6 +578,7 @@ __all__ = (
     "occurrence_criteria",
     "occurrence_policy",
     "occurrence_task",
+    "read_only_existing_paths",
     "read_only_leaf",
     "read_only_rewrites",
     "share_tokens",

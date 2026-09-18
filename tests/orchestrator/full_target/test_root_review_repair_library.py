@@ -654,9 +654,8 @@ def test_a_retirement_of_an_instance_the_review_did_not_reject_is_refused(tmp_pa
 
 
 def test_a_replacement_waits_for_the_retired_leaves_open_attempts(tmp_path) -> None:
-    """Verification P1-2: a leaf still being worked on is not retired out from under
-    its attempt; the review only cuts a package once every leaf is terminal, so the
-    P2.3j path never meets this, and anything else is refused by name."""
+    """P2.3s: compile still names running work if the loop has not reconciled.
+    ``apply_planner_reply`` cancels first; the safety net is ``compile_proposal``."""
 
     world = _rejected_open(tmp_path, key="p23j-retire-running", alt=True)
     network = world.network()
@@ -664,11 +663,14 @@ def test_a_replacement_waits_for_the_retired_leaves_open_attempts(tmp_path) -> N
         str(spec.task_id) for spec in network.occurrences if spec.form is TaskForm.PRIMITIVE
     )
     attempt = _running_attempt(world, leaf)
+    from agent_orchestrator.planning.planner import parse_plan_proposal
+
+    proposal = parse_plan_proposal(
+        _replacement(world, _alt_method(), instance_id=_adopted_root(world), revision=1),
+        mission_id=world.mission.id,
+    )
     with pytest.raises(ContractError, match="running_work_not_reconciled") as caught:
-        world.plan(
-            _replacement(world, _alt_method(), instance_id=_adopted_root(world), revision=1),
-            command_id="cmd-running",
-        )
+        world.dispatch.compile_proposal(world.mission.id, proposal, network)
     assert attempt in str(caught.value)
     assert int(world.network().plan_revision) == 1
     stored = world.store.get_attempt(attempt)
@@ -1191,7 +1193,7 @@ def test_repeated_rejections_end_honestly_with_the_reason_written_down(tmp_path)
     assert outcome["status"] is MissionStatus.FAILED, (
         f"{outcome['status']}: {outcome['types']} roles={outcome['roles']}"
     )
-    assert outcome["stop_reason"] == "no_dispatchable_work"
+    assert outcome["stop_reason"] == "root_review_repairs_exhausted"
     detail = outcome["report"]["detail"]
     assert detail["root_review"]["reason"] == ROOT_REVIEW_REPAIR_REASON
     assert detail["root_review"]["status"] == "REVIEW_REJECTED"

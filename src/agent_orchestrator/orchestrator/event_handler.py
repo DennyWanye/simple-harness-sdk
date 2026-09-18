@@ -233,6 +233,7 @@ from .occurrence_tasks import (
     MAX_IDENTICAL_VERIFICATION_REPAIRS,
     MAX_READ_ONLY_REWRITE_REJECTIONS,
     MAX_READ_ONLY_REWRITE_REPAIRS,
+    read_only_existing_paths,
     read_only_leaf,
     read_only_rewrites,
     verification_failure_fingerprint,
@@ -251,9 +252,16 @@ logger = logging.getLogger("agent_orchestrator")
 # name is kept here so nothing that imported it from this module moves.
 from .hierarchical_dispatch import (  # noqa: E402
     READ_ONLY_REWRITE_REPAIR_REASON,
+    REPAIR_BLOCKED_BY_RUNNING_WORK,
     REPEATED_VERIFICATION_FAILURE_REASON,
     ROOT_REVIEW_REPAIR_REASON,
+    RepairBlockedByRunningWork,
 )
+
+#: P2.3t / §9.1: the Mission has spent ``max_root_review_repairs`` and the
+#: last root review still rejected.  A named stop, not idle
+#: ``no_dispatchable_work`` with hanging ``admitted_not_dispatched`` rows.
+ROOT_REVIEW_REPAIRS_EXHAUSTED = "root_review_repairs_exhausted"
 
 #: Deterministic 4xx provider refusals.  Runtime already settles
 #: ``ProviderAuthenticationError`` / ``ProviderPaymentRequiredError`` as FAILED
@@ -1044,6 +1052,8 @@ class Orchestrator:
             call_key=f"{run_id}:{record.get('call_id')}",
             record=record,
         )
+        if record.get("error_code") == "read_only_leaf_kept_writing" and attempt is not None:
+            self._schedule_read_only_kept_writing_stop(attempt)
 
     def _record_tool_call(self, run_id: str, record: Mapping[str, Any]) -> None:
         """Review P1-3: an executed Worker tool call is a durable fact (once per SDK call id)."""
@@ -1337,7 +1347,7 @@ class Orchestrator:
         self,
         mission_id: str,
         *,
-        stop_reason: MissionStopReason,
+        stop_reason: MissionStopReason | str,
         detail: Mapping[str, Any],
     ) -> Any:
         self._prepare_terminal_ledger(mission_id)
@@ -2158,6 +2168,66 @@ class Orchestrator:
                             "remaining_fuel": int(account.remaining_fuel),
                         }
                     )
+            exhausted = self._root_review_repairs_are_exhausted(mission, new_mode)
+            pending = new_mode.repair_compile_pending(mission.id)
+            rejected = new_mode.rejected_refinements(mission.id)
+            if pending or rejected:
+                if not exhausted and await self._retry_deferred_repair():
+                    carry_on = True
+                    continue
+                pending = new_mode.repair_compile_pending(mission.id)
+                rejected = new_mode.rejected_refinements(mission.id)
+            # P2.3s+t: two named stops share this idle path and must not collapse
+            # into no_dispatchable_work.  Root-review bound (t) is more specific
+            # than "unresolved rejected_refinements" (s) and wins when both apply.
+            if exhausted:
+                self._commit_fail_mission(
+                    mission.id,
+                    stop_reason=ROOT_REVIEW_REPAIRS_EXHAUSTED,
+                    detail={
+                        "plan_revision": int(admissions.plan_revision),
+                        "withheld": [item.to_json() for item in admissions.refusals],
+                        "admitted_not_dispatched": [],
+                        "outstanding_obligations": outstanding,
+                        "fingerprint": after,
+                        "confirmed_after_one_more_cycle": True,
+                        **self._root_review_stop_detail(mission, new_mode),
+                        **self._read_only_rewrite_stop_detail(mission, new_mode),
+                        **self._repeated_verification_stop_detail(mission, new_mode),
+                    },
+                )
+                self._note(
+                    f"mission {mission.id}: root review repairs exhausted; "
+                    "this execution cycle ends"
+                )
+                continue
+            if pending or rejected:
+                reason = (
+                    REPAIR_BLOCKED_BY_RUNNING_WORK
+                    if pending
+                    else str(rejected[0].reason)
+                )
+                self._commit_fail_mission(
+                    mission.id,
+                    stop_reason=MissionStopReason.PLANNING_FAILED,
+                    detail={
+                        "reason": reason,
+                        "plan_revision": int(admissions.plan_revision),
+                        "withheld": [item.to_json() for item in admissions.refusals],
+                        "admitted_not_dispatched": sorted(admissions.readiness),
+                        "outstanding_obligations": outstanding,
+                        "fingerprint": after,
+                        "confirmed_after_one_more_cycle": True,
+                        **self._root_review_stop_detail(mission, new_mode),
+                        **self._read_only_rewrite_stop_detail(mission, new_mode),
+                        **self._repeated_verification_stop_detail(mission, new_mode),
+                    },
+                )
+                self._note(
+                    f"mission {mission.id}: unresolved repair ({reason}); "
+                    "this execution cycle ends"
+                )
+                continue
             self._commit_fail_mission(
                 mission.id,
                 stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
@@ -2176,6 +2246,7 @@ class Orchestrator:
                     # leaving "no dispatchable work" to be read as a scheduling problem.
                     **self._root_review_stop_detail(mission, new_mode),
                     **self._read_only_rewrite_stop_detail(mission, new_mode),
+                    **self._repeated_verification_stop_detail(mission, new_mode),
                 },
             )
             self._note(
@@ -2259,6 +2330,8 @@ class Orchestrator:
                 # could be proposed and could never run.
                 progressed = True
         if await self._retry_deferred_planning():
+            progressed = True
+        if await self._retry_deferred_repair():
             progressed = True
         active = {mission.id for mission in self._active_missions()}
         for intent in self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
@@ -2476,6 +2549,26 @@ class Orchestrator:
             return ()
         return tuple(str(item) for item in payload.get("review_feedback", ()) or ())
 
+    def _leaf_repair_findings(self, mission_id: str) -> list[dict[str, Any]]:
+        """Root-review, read-only-rewrite, and repeated-verification findings for a repair-round Worker."""
+
+        findings: list[dict[str, Any]] = []
+        for event in self.store.list_events(mission_id):
+            if event.type != "PlanningRejected":
+                continue
+            reason = str(event.payload.get("reason") or "")
+            if reason not in {
+                ROOT_REVIEW_REPAIR_REASON,
+                READ_ONLY_REWRITE_REPAIR_REASON,
+                REPEATED_VERIFICATION_FAILURE_REASON,
+            }:
+                continue
+            detail = event.payload.get("detail") or {}
+            for item in list(detail.get("findings") or [])[:8]:
+                if isinstance(item, Mapping):
+                    findings.append(dict(item))
+        return findings[:16]
+
     @staticmethod
     def _synthesizer_subject(
         mission_id: str, goal_task_id: str, *, ordinal: int, synthesis_round: int = 1
@@ -2625,6 +2718,9 @@ class Orchestrator:
         One Mission's exhaustion is one Mission's stop (§24.1 decision 11).
         """
 
+        dispatch = self._hierarchical
+        if dispatch is not None and dispatch.repair_compile_pending(mission_id):
+            return False
         try:
             return await self._try_planner_intent(mission_id, ordinal=ordinal)
         except BudgetExhausted as error:
@@ -2665,6 +2761,70 @@ class Orchestrator:
             if await self._try_planner_intent(mission_id, ordinal=ordinal):
                 progressed = True
         return progressed
+
+    async def _retry_deferred_repair(self) -> bool:
+        """P2.3s: compile a stored retire+refine once sibling work is gone."""
+
+        dispatch = self._hierarchical
+        if dispatch is None:
+            return False
+        progressed = False
+        for mission in self._active_missions():
+            if not is_hierarchical(mission):
+                continue
+            pending = dispatch.repair_compile_pending(mission.id)
+            if pending is None:
+                continue
+            remaining = dispatch.reconcile_retiring_instance(
+                mission.id, str(pending.get("instance_id") or ""), owner=self._owner
+            )
+            await self._release_cancelled_repair_work(mission.id)
+            if remaining:
+                continue
+            try:
+                outcome = dispatch.apply_planner_reply(
+                    mission.id,
+                    str(pending.get("text") or ""),
+                    principal=PlanPrincipal(
+                        principal_id=self._owner,
+                        scope_id="mission",
+                        manager_epoch=dispatch.semantics().epoch(mission.id, "mission"),
+                    ),
+                    command_id=str(
+                        pending.get("command_id")
+                        or f"plan:repair-resume:{pending.get('proposal_id')}"
+                    ),
+                    owner=self._owner,
+                )
+            except RepairBlockedByRunningWork:
+                continue
+            except (ContractError, GraphIntegrityError, StoreConflict) as error:
+                self._note(
+                    f"mission {mission.id}: deferred repair compile failed ({error})"
+                )
+                continue
+            if outcome.committed and outcome.receipt is not None:
+                dispatch.record_repair_compile_resumed(
+                    mission.id,
+                    proposal_id=str(pending.get("proposal_id") or ""),
+                    plan_revision=int(outcome.receipt.new_plan_revision),
+                )
+                dispatch.advance_compound_phases(mission.id)
+                progressed = True
+                self._note(
+                    f"mission {mission.id}: deferred repair "
+                    f"{pending.get('proposal_id')} committed as revision "
+                    f"{outcome.receipt.new_plan_revision}"
+                )
+        return progressed
+
+    async def _release_cancelled_repair_work(self, mission_id: str) -> None:
+        """Abort SDK turns of Attempts a repair just cancelled so they do not hold slots."""
+
+        for task in self.store.list_tasks(mission_id):
+            for attempt in self.store.list_attempts(task.id):
+                if attempt.status is AttemptStatus.CANCELLED:
+                    await self._release_attempt(attempt.id, cancel=True)
 
     def _record_planner_skipped(
         self, mission: Mission, new_mode: HierarchicalDispatch, *, phase: str
@@ -3696,6 +3856,59 @@ class Orchestrator:
         files.update(self.commit.fragment_validation_inputs(attempt.task_id))
         return files
 
+    def _read_only_initial(self, attempt: Attempt) -> dict[str, str]:
+        """Path → hash of seed ∪ overlay/upstream ∪ fragment baseline.
+
+        Same set ``read_only_rewrites`` uses as ``initial`` and the gateway
+        snapshot uses as ``read_only_existing``.  Retry copies of a previous
+        Attempt's new outputs are not in this map.
+        """
+
+        mission = self.store.get_mission(attempt.mission_id)
+        if mission is None:
+            raise WorkspaceError("read-only snapshot: mission missing")
+        seed = dict((mission.final_report or {}).get("workspace_seed", {}))
+        upstream = self._upstream_inputs(attempt)
+        baseline = self.commit.fragment_collection_baseline(attempt.id)
+        allowed = set(read_only_existing_paths(seed, (item.path for item in upstream), baseline))
+        initial: dict[str, str] = {}
+        for path, content in seed.items():
+            if path in allowed:
+                initial[path] = sha256_hex_text(content)
+        for item in upstream:
+            if item.path in allowed:
+                initial[item.path] = item.content_hash
+        for path, digest in dict(baseline).items():
+            if path in allowed:
+                initial[path] = str(digest)
+        return initial
+
+    def _schedule_read_only_kept_writing_stop(self, attempt: Attempt) -> None:
+        """End the Attempt after consecutive existing-file writes (P2.3u P2-2)."""
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._stop_read_only_leaf_kept_writing(attempt.id))
+
+    async def _stop_read_only_leaf_kept_writing(self, attempt_id: str) -> None:
+        attempt = self.store.get_attempt(attempt_id)
+        if attempt is None or attempt.status in TERMINAL_ATTEMPT:
+            return
+        intent = self.store.get_intent_for_subject(attempt_id)
+        if intent is not None:
+            await self._cancel_turn(intent)
+        attempt = self.store.get_attempt(attempt_id)
+        if attempt is None or attempt.status in TERMINAL_ATTEMPT:
+            return
+        self.commit.mark_attempt_lost(attempt_id, reason="read_only_leaf_kept_writing")
+        if intent is not None:
+            self._settle_intent(intent, "FAILED")
+        self._settle_if_known(attempt)
+        await self._release_attempt(attempt_id, cancel=True)
+        self._note(f"attempt {attempt_id}: read-only leaf kept writing → LOST")
+
     def _bind_agent(self, agent_id: str, config: Mapping[str, Any]) -> None:
         cap = config.get("max_tool_calls")
         context_profile = self._context_profile_for(config)
@@ -3708,6 +3921,16 @@ class Orchestrator:
             self.assembled.gateway.bind_agentdojo(attempt.mission_id)
         if self.commit.domain_for(attempt.mission_id).id == "are-v1":
             self.assembled.gateway.bind_are(attempt.mission_id)
+        read_only_existing: tuple[str, ...] = ()
+        read_only_writes_blocked = False
+        if config.get("read_only_leaf"):
+            # P2.3u: seed ∪ overlay/upstream, the same set ``read_only_rewrites``
+            # uses as ``initial``.  A retry copy of the previous Attempt's REPORT.md
+            # is not in this snapshot, so the leaf can update its own report.
+            try:
+                read_only_existing = tuple(sorted(self._read_only_initial(attempt)))
+            except WorkspaceError:
+                read_only_writes_blocked = True
         self.assembled.gateway.bind(
             agent_id,
             WorkspaceBinding(
@@ -3723,6 +3946,8 @@ class Orchestrator:
                 denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
                 context_policy=context_profile.context_policy,
                 tokenizer=context_profile.tokenizer,
+                read_only_existing=read_only_existing,
+                read_only_writes_blocked=read_only_writes_blocked,
             ),
         )
 
@@ -4693,7 +4918,10 @@ class Orchestrator:
             return
         if self._planner_intents_in_flight(mission_id):
             return  # one question at a time; that round carries the new method already
+        new_mode = self._hierarchical
         if admitted:
+            if new_mode is not None and new_mode.repair_compile_pending(mission_id):
+                return
             ordinal = self._next_planning_ordinal(mission_id)
             self._note(
                 f"mission {mission_id}: a synthesised method was admitted; asking the "
@@ -4707,7 +4935,6 @@ class Orchestrator:
             event.type == PLANNER_SKIPPED_FOR_SYNTHESIS
             for event in self.store.list_events(mission_id)
         )
-        new_mode = self._hierarchical
         skip_now = bool(
             new_mode is not None and new_mode.empty_planner_should_skip(mission_id)
         )
@@ -4724,7 +4951,7 @@ class Orchestrator:
         if not admitted and self._read_only_rewrite_repairs(mission_id) > 0:
             self._commit_fail_mission(
                 mission_id,
-                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                stop_reason=MissionStopReason.PLANNING_FAILED,
                 detail={
                     "reason": READ_ONLY_REWRITE_REPAIR_REASON,
                     "synthesis": "refused",
@@ -4825,7 +5052,17 @@ class Orchestrator:
                     "agent_id": intent.agent_id,
                     "turn_id": result.turn_id,
                 },
+                owner=self._owner,
             )
+        except RepairBlockedByRunningWork as blocked:
+            self._settle_intent(intent, "SETTLED")
+            self._settle_service_if_known(intent.subject_id, mission.id)
+            await self._release_cancelled_repair_work(mission.id)
+            self._note(
+                f"mission {mission.id}: repair compile deferred on "
+                f"{list(blocked.attempts)} ({REPAIR_BLOCKED_BY_RUNNING_WORK})"
+            )
+            return
         except GraphIntegrityError as error:
             # Corruption is not a bad proposal: asking the Planner again cannot add a
             # semantic binding, so this Mission stops instead of burning its attempts.
@@ -4913,6 +5150,7 @@ class Orchestrator:
         receipt = outcome.receipt
         assert receipt is not None
         new_mode.advance_compound_phases(mission.id)
+        await self._release_cancelled_repair_work(mission.id)
         self._note(
             f"plan revision {receipt.new_plan_revision} committed for {mission.id} "
             f"(attempts={outcome.attempts})"
@@ -5131,15 +5369,8 @@ class Orchestrator:
         # D3-7': the Attempt's artifact set = what it listed ∪ what it changed relative to
         # its initial inputs (seed + upstream); protected paths are never registered as
         # produced work (a rewrite there is tampering, reported by rule_check instead).
-        initial = {
-            path: sha256_hex_text(content)
-            for path, content in dict(
-                (mission.final_report or {}).get("workspace_seed", {})
-            ).items()
-        }
-        for item in self._upstream_inputs(attempt):
-            initial[item.path] = item.content_hash
-        initial.update(self.commit.fragment_collection_baseline(attempt.id))
+        # P2.3u: same function ``_read_only_initial`` the gateway snapshot uses.
+        initial = self._read_only_initial(attempt)
         guarded = {
             path: sha256_hex_text(content)
             for path, content in self._protected_files(mission, task, attempt).items()
@@ -8116,6 +8347,11 @@ class Orchestrator:
             f"mission {mission.id}: root review rejected with {len(blocking)} blocking "
             f"finding(s); asking the Planner again (ordinal {ordinal}, revision {revision})"
         )
+        if rejected.get("method_instance_id"):
+            new_mode.reconcile_retiring_instance(
+                mission.id, str(rejected["method_instance_id"]), owner=self._owner
+            )
+            await self._release_cancelled_repair_work(mission.id)
         if new_mode.empty_planner_should_skip(mission.id):
             self._record_planner_skipped(mission, new_mode, phase="root_review_repair")
             return await self._request_method_synthesis(mission)
@@ -8203,6 +8439,20 @@ class Orchestrator:
                 "detail": str(state.detail)[:600],
             }
         }
+
+    def _root_review_repairs_are_exhausted(
+        self, mission: Mission, new_mode: HierarchicalDispatch
+    ) -> bool:
+        """True when a REJECTED root review has spent ``max_root_review_repairs``."""
+
+        if int(self._config.max_root_review_repairs) < 1:
+            return False
+        detail = self._root_review_stop_detail(mission, new_mode).get("root_review") or {}
+        if str(detail.get("status") or "") != "REVIEW_REJECTED":
+            return False
+        return int(detail.get("repairs_used") or 0) >= int(
+            self._config.max_root_review_repairs
+        )
 
     def _accepted_path_hashes(
         self,
@@ -8350,11 +8600,26 @@ class Orchestrator:
             self.commit._cancel_task_entity(  # noqa: SLF001
                 task.id, reason=READ_ONLY_REWRITE_REPAIR_REASON, replaced_by=None
             )
+        try:
+            network = new_mode.network(mission.id)
+            root = network.root_occurrence_ids[0] if network.root_occurrence_ids else None
+            adopted = None if root is None else network.adopted_instance_for(root)
+            if adopted is not None:
+                new_mode.reconcile_retiring_instance(
+                    mission.id, str(adopted.instance_id), owner=self._owner
+                )
+                await self._release_cancelled_repair_work(mission.id)
+        except (GraphIntegrityError, ContractError, StoreError, KeyError):
+            pass
         used = self._read_only_rewrite_repairs(mission.id)
         if used >= MAX_READ_ONLY_REWRITE_REPAIRS:
+            if new_mode.rejected_refinements(mission.id) or new_mode.repair_compile_pending(
+                mission.id
+            ):
+                return
             self._commit_fail_mission(
                 mission.id,
-                stop_reason=MissionStopReason.NO_DISPATCHABLE_WORK,
+                stop_reason=MissionStopReason.PLANNING_FAILED,
                 detail={
                     "reason": READ_ONLY_REWRITE_REPAIR_REASON,
                     "task_id": task.id,
@@ -9030,12 +9295,20 @@ class Orchestrator:
                 producers = [
                     all_tasks[item.task_id] for item in inputs if item.task_id in all_tasks
                 ]
+                read_only_producers: set[str] = set()
+                for producer in producers:
+                    semantic = new_mode.semantics().task_semantics_of(
+                        mission.id, producer.id
+                    )
+                    if semantic is not None and read_only_leaf(semantic):
+                        read_only_producers.add(producer.id)
                 inputs = overlay_bound_producer_files(
                     inputs,
                     seed_paths=set(
                         (mission.final_report or {}).get("workspace_seed", {})
                     ),
                     artifacts_by_producer=self._artifacts_by_task(producers),
+                    read_only_producers=read_only_producers,
                 )
         except GraphIntegrityError as error:
             await self._plan_integrity_stop(mission, error)
@@ -9267,6 +9540,22 @@ class Orchestrator:
                     ),
                     "criteria": [dict(item) for item in carried],
                 }})
+            # P2.3t: repair-round findings must reach the *write* Worker, not
+            # only the Planner / synthesizer.  Read from the durable repair
+            # records (retired instances leave ``rejected_refinements`` empty).
+            leaf_findings = self._leaf_repair_findings(mission.id)
+            if leaf_findings:
+                from ..context.context_builder import _seal
+                package = _seal({**dict(package.package), "review_feedback": {
+                    "data_not_instruction": True,
+                    "version": "leaf-review-feedback-v1",
+                    "note": (
+                        "the MISSION_FINAL review rejected the previous method; "
+                        "write-type steps must put the missing evidence (for example "
+                        "test files) on a declared output port in the tree"
+                    ),
+                    "findings": leaf_findings,
+                }})
         fragment_context = self.commit.fragment_validation_context(task.id)
         if fragment_context:
             from ..context.context_builder import _seal
@@ -9284,6 +9573,12 @@ class Orchestrator:
         if remaining_selection <= 0:
             return False
         # D6-7: Mission ∩ Task ∩ Role ∩ Deployment, frozen into the intent below
+        # P2.3u: a hierarchical read-only leaf also drops patch/apply-class tools.
+        # ``new_mode`` was already asked at the top of this function (no extra site).
+        read_only = False
+        if new_mode is not None:
+            semantic = new_mode.semantics().task_semantics_of(mission.id, task.id)
+            read_only = semantic is not None and read_only_leaf(semantic)
         allowed = effective_tools(
             mission_tools=mission.allowed_tools,
             task_tools=task.allowed_tools,
@@ -9295,6 +9590,7 @@ class Orchestrator:
                 else role.tool_names
             ),
             deployment=self._config.deployment_policy,
+            read_only_leaf=read_only,
         )
         # D6-8: the Attempt's tool-call cap = the deployment's per-turn cap, narrowed by the
         # Task budget's own dimension; it is reserved up front and enforced at the gateway
@@ -9451,6 +9747,7 @@ class Orchestrator:
                     "untrusted_sources": untrusted,
                     **({"validated_fragment_input": validated_input}
                        if validated_input is not None else {}),
+                    **({"read_only_leaf": True} if read_only else {}),
                     **source_binding,
                     "allocation": dict(
                         allocation or {}

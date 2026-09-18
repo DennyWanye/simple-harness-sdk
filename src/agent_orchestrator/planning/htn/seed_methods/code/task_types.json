@@ -32,6 +32,37 @@
   },
   {
     "task_type_ref": {
+      "id": "code.implement-contract",
+      "version": 1
+    },
+    "form": "compound",
+    "goal_signature": {
+      "signature_id": "code.implement-contract",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "implement the user-stated contract that the visible suite does not cover; tests covering the user goal must be added or turned from red to green and pass; explain the change",
+      "coverage_criteria": [
+        "c-contract-tests-pass",
+        "c-change-explained"
+      ]
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "domain": "code"
+  },
+  {
+    "task_type_ref": {
       "id": "code.review-changes",
       "version": 1
     },
@@ -279,6 +310,94 @@
   },
   {
     "task_type_ref": {
+      "id": "code.apply-patch",
+      "version": 2
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.apply-patch",
+      "version": 2,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "apply a patch that addresses the diagnosis; declare new or modified tests on the tests port when the parent criterion requires them",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "diagnosis",
+        "schema_ref": {
+          "id": "code.diagnosis",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "patch",
+        "schema_ref": {
+          "id": "code.patch",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      },
+      {
+        "port_key": "tests",
+        "schema_ref": {
+          "id": "code.tests",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": false
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-apply-patch",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.write"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "preconditions": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "code.working-tree-clean",
+          "version": 1
+        },
+        "arguments": {
+          "repository": {
+            "op": "parameter",
+            "name": "repository"
+          }
+        }
+      }
+    ],
+    "resource_writes": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
       "id": "code.verify-tests",
       "version": 1
     },
@@ -306,6 +425,79 @@
         },
         "cardinality": "single",
         "required": true
+      }
+    ],
+    "output_ports": [
+      {
+        "port_key": "report",
+        "schema_ref": {
+          "id": "code.report",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "code.repository-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "code.op-verify-tests",
+      "version": 1
+    },
+    "required_capabilities": [
+      "tests.run"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "code",
+    "resource_reads": [
+      {
+        "namespace": "repo",
+        "object_id": "workspace"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "code.verify-tests",
+      "version": 2
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "code.verify-tests",
+      "version": 2,
+      "parameter_schema_ref": {
+        "id": "code.repository-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "code.outputs",
+        "version": 1
+      },
+      "statement": "run the test suite, including tests bound from a write step, and record the report; do not create or modify files",
+      "coverage_criteria": []
+    },
+    "input_ports": [
+      {
+        "port_key": "patch",
+        "schema_ref": {
+          "id": "code.patch",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      },
+      {
+        "port_key": "tests",
+        "schema_ref": {
+          "id": "code.tests",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": false
       }
     ],
     "output_ports": [

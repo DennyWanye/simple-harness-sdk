@@ -118,6 +118,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 TOOL_NAMES = tuple(TOOL_SCHEMAS)
 WORKER_TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list", "run_tests")
 CRITIC_TOOLS = ("workspace_read_file", "workspace_list")
+#: P2.3u P2-2: consecutive ``read_only_existing_file`` refusals on one Attempt
+#: before the Attempt ends as ``read_only_leaf_kept_writing``.  Same width as
+#: ``TerminationLimits.max_consecutive_same_tool``.  Not a config item.
+MAX_READ_ONLY_EXISTING_REJECTIONS = 3
 
 
 UNTRUSTED_NOTICE = (
@@ -250,6 +254,11 @@ class WorkspaceBinding:
     context_policy: ContextPolicy | None = None
     tokenizer: TokenizerPort | None = None
     mission_id: str | None = None
+    # P2.3u: files that already existed when a read-only leaf bound (seed + P2.3o
+    # overlay).  Empty on a writing leaf and on every legacy Attempt.
+    read_only_existing: tuple[str, ...] = ()
+    # P2.3u P2-3: snapshot of those files failed; every write is refused.
+    read_only_writes_blocked: bool = False
 
 
 def is_untrusted(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -405,6 +414,7 @@ class WorkspaceToolGateway:
             Callable[[str, str, Mapping[str, Any]], Mapping[str, Any]] | None
         ) = None
         self.calls: list[dict[str, Any]] = []
+        self._read_only_existing_streak: dict[str, int] = {}
         # step 6 (§21.1 last step): every refusal is reported to the orchestrator, which
         # writes it to the Mission's timeline through the Commit Service
         self.on_rejected: Callable[[str, Mapping[str, Any]], None] | None = None
@@ -468,6 +478,7 @@ class WorkspaceToolGateway:
 
     def unbind(self, run_id: str) -> None:
         self._bindings.pop(run_id, None)
+        self._read_only_existing_streak.pop(run_id, None)
 
     def bind_agentdojo(self, mission_id: str) -> None:
         if self._agentdojo_invoke is None:
@@ -530,6 +541,8 @@ class WorkspaceToolGateway:
         record["outcome"] = f"rejected:{outcome}"
         record["stage"] = stage
         record["error_code"] = code
+        if code not in {"read_only_existing_file", "read_only_leaf_kept_writing"}:
+            self._read_only_existing_streak.pop(str(record.get("run_id") or ""), None)
         if self.on_rejected is not None:  # review P2-5: every refusal, bound or not
             try:
                 self.on_rejected(str(record["run_id"]), dict(record))
@@ -636,6 +649,54 @@ class WorkspaceToolGateway:
                         stage="policy",
                         message=f"{path} is a read-only input from an upstream Task",
                     )
+                if call.name == "workspace_write_file" and binding.read_only_writes_blocked:
+                    return self._reject(
+                        call,
+                        record,
+                        code="read_only_snapshot_unavailable",
+                        outcome="read_only_snapshot_unavailable",
+                        stage="policy",
+                        message=(
+                            "this read-only leaf has no snapshot of files it started "
+                            "from; every write is refused"
+                        ),
+                    )
+                if call.name == "workspace_write_file" and binding.read_only_existing:
+                    existing = {
+                        _canonical(p).casefold() for p in binding.read_only_existing
+                    }
+                    if canonical.casefold() in existing:
+                        streak = self._read_only_existing_streak.get(run_id, 0) + 1
+                        self._read_only_existing_streak[run_id] = streak
+                        if streak >= MAX_READ_ONLY_EXISTING_REJECTIONS:
+                            return self._reject(
+                                call,
+                                record,
+                                code="read_only_leaf_kept_writing",
+                                outcome="read_only_leaf_kept_writing",
+                                stage="policy",
+                                message=(
+                                    f"{path} already exists in this workspace. This "
+                                    "read-only leaf kept rewriting existing files "
+                                    f"({streak}/{MAX_READ_ONLY_EXISTING_REJECTIONS}); "
+                                    "the Attempt is ending. Write findings to a "
+                                    "declared output port or REPORT.md."
+                                ),
+                            )
+                        return self._reject(
+                            call,
+                            record,
+                            code="read_only_existing_file",
+                            outcome="read_only_existing_file",
+                            stage="policy",
+                            message=(
+                                f"{path} already exists in this workspace. This leaf's "
+                                "task type is read-only (observe and report): do not "
+                                "change existing files. Write findings to a declared "
+                                "output port or REPORT.md."
+                            ),
+                        )
+                    self._read_only_existing_streak.pop(run_id, None)
         except WorkspaceError as error:
             return self._reject(
                 call,
@@ -883,6 +944,7 @@ class WorkspaceToolGateway:
             )
             raise
         # 6. record
+        self._read_only_existing_streak.pop(run_id, None)
         record["outcome"] = "succeeded"
         if self.on_executed is not None:
             try:
@@ -940,6 +1002,7 @@ def _schema_problem(name: str, arguments: Mapping[str, Any], *, large: bool = Fa
 
 __all__ = (
     "CRITIC_TOOLS",
+    "MAX_READ_ONLY_EXISTING_REJECTIONS",
     "UNTRUSTED_NOTICE",
     "TOOL_NAMES",
     "TOOL_SCHEMAS",
