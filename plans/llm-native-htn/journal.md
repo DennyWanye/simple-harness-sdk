@@ -65,3 +65,16 @@
 - 新增 `git-status.txt`：写入基线提交 `7f839f0` 完整哈希、移动前 `git status --short`（空）、`python3 --version`、`sqlite3 --version`。
 - `baseline.md` 顶部新增「与 V2 计划的对应」小节；全部数字仍取自 2026-09-18 实测，本次未重跑。
 - 提交信息：`docs(h0): realign the baseline package to the V2 plan layout`。未 push。
+
+---
+
+## 2026-09-18 H1-A1：PlanningDecision 合同核心（enums / refs / request binding / feedback / decision_id）
+
+- **基线 HEAD：** `e1684b7a617cba1a18ba9f70215a39c4aa805c3a`。
+- **片范围：** 只做协议核心，详见 `plans/llm-native-htn/H1/journal.md`。
+- **新增：** `src/agent_orchestrator/contracts/planning_decisions.py`、`tests/orchestrator/full_target/test_planning_decision_contract.py`。未改任何既有 `src/` 文件（含 `contracts/__init__.py`）。
+- **红→绿：** 先 `ModuleNotFoundError`（红）→ 实现后 `39 passed`。
+- **ruff：** 两新文件 All checks passed。
+- **变异：** M1 codec 版本 / M2 丢 content_hash 校验 / M3 `PROPOSE_METHOD` 启用项，均 KILLED。
+- **未做（等 BL-1…BL-6 裁定）：** Envelope、payload、`$defs`、JSON Schema 文件、黄金样例目录、`PlanningDecisionEvaluated` 事件载荷字段集。
+- 未 push。
