@@ -1,25 +1,26 @@
 # SPDX-FileCopyrightText: 2026 DennyWanye
 # SPDX-License-Identifier: Apache-2.0
 
-"""Planning-decision protocol core (HTN-LLM-NATIVE §11–§17, §33–§40).
+"""Planning-decision protocol core and envelope (HTN-LLM-NATIVE V2).
 
 H1 makes "what the planner suggests the system should do next" a single wire
-object, the ``PlanningDecisionEnvelopeV1``.  This module holds the *core* of that
-protocol and nothing else:
+object, the ``PlanningDecisionEnvelopeV1``.  This module owns the protocol:
 
-* the decision limits of §16;
-* the five closed enums of §11, §17, §33 and §36, with the exact V2 values;
-* the H1 slice of the §12 phase-enablement matrix;
-* the strict ``to_json`` / ``from_json`` dataclasses that are already fully
-  specified — references, the request binding, feedback, the problem detail and
-  the retry-budget view;
-* the deterministic ``decision_id`` of §35.
+* the decision limits of section 16;
+* every closed enum: sections 11, 17, 33, 36 and the addendum-2 small enums;
+* the H1 slice of the section 12 phase-enablement matrix;
+* the strict ``to_json`` / ``from_json`` dataclasses: references, the request
+  binding, feedback, the problem detail, the retry-budget view, the four
+  sub-structures (sections 20-23), all ten payloads (sections 24-31) and the
+  ten-field envelope (section 13);
+* the deterministic ``decision_id`` of section 35 and the canonical decision
+  JSON / hash of section 15.
 
-The envelope, the per-type payload variants, the JSON Schema file and the golden
-fixture directories are deliberately absent: they still wait on the plan author
-(BL-1…BL-6).  Everything here is data; validated in ``__post_init__`` and never
-executed.  Unknown keys, missing keys and wrongly-typed values raise
-:class:`~.models.ContractError`, exactly as the rest of the contract package does.
+The JSON Schema file, the golden fixture directories and the packaging work are
+deliberately absent: they belong to the H1-A2b slice.  Everything here is data;
+validated in ``__post_init__`` and never executed.  Unknown keys, missing keys
+and wrongly-typed values raise :class:`~.models.ContractError`, exactly as the
+rest of the contract package does.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
+from simple_harness.contracts import canonical_json
+
 from .models import ContractError
 from .semantic_base import (
     enum_of,
@@ -39,7 +42,9 @@ from .semantic_base import (
     hash_hex,
     identifier,
     index,
+    json_object,
     optional_index,
+    schema_version,
     sequence_of,
     text,
 )
@@ -64,8 +69,11 @@ MAX_PD_WAIT_REFS = 32
 MAX_PD_BLOCKERS = 16
 MAX_PD_HUMAN_OPTIONS = 12
 MAX_PD_ARGUMENTS = 32
+MIN_PD_EVIDENCE_QUESTIONS = 1
+MAX_PD_EVIDENCE_QUESTIONS = 8
 
 MAX_PLANNING_REF_ID = 256
+MAX_SUBJECT_KEY_CHARS = 256
 
 
 # --------------------------------------------------------------------------------------
@@ -88,11 +96,11 @@ class PlanningDecisionType(StrEnum):
 
 
 class PlanningRefKind(StrEnum):
-    """§17: the fifteen kinds a planning reference may carry.
+    """Section 17 plus BL-1: the sixteen kinds a planning reference may name.
 
-    ``fact`` does not exist here — a planning fact is ``observation``.  The H1
-    ``method_instance`` kind is *not* added in this slice; it waits on the plan
-    author (BL-1) so the wire contract is never invented ahead of the ruling.
+    ``fact`` does not exist here; a planning fact is ``observation``.
+    ``method_instance`` is the sixteenth kind added by the V2 addendum so a
+    REPLACE_METHOD payload can name the instance it retires.
     """
 
     TASK = "task"
@@ -110,6 +118,7 @@ class PlanningRefKind(StrEnum):
     KNOWLEDGE = "knowledge"
     AUTHORITY = "authority"
     CAPABILITY = "capability"
+    METHOD_INSTANCE = "method_instance"
 
 
 class PlanningDecisionRejectionCode(StrEnum):
@@ -167,11 +176,62 @@ class PlanningDecisionStatus(StrEnum):
 
 
 class AssumptionRisk(StrEnum):
-    """§20: an assumption never upgrades itself to TRUE; it carries a risk band."""
+    """Section 20: an assumption never upgrades itself to TRUE; it carries a risk band."""
 
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+
+
+class UncertaintySeverity(StrEnum):
+    """Addendum 2 section 2: how much an uncertainty should worry a reader."""
+
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class AlternativeDisposition(StrEnum):
+    """Addendum 2 section 2: what happened to a considered alternative."""
+
+    CONSIDERED = "CONSIDERED"
+    REJECTED = "REJECTED"
+    DEFERRED = "DEFERRED"
+
+
+class BlockerCode(StrEnum):
+    """Addendum 2 section 2: the closed set of reasons a decision may declare."""
+
+    NO_USABLE_METHOD = "NO_USABLE_METHOD"
+    EVIDENCE_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
+    AUTHORIZATION_MISSING = "AUTHORIZATION_MISSING"
+    CAPABILITY_MISSING = "CAPABILITY_MISSING"
+    STRUCTURE_UNSAT = "STRUCTURE_UNSAT"
+    OTHER = "OTHER"
+
+
+class ResumableIf(StrEnum):
+    """Addendum 2 section 2: the closed set of events that may resume a blocked plan."""
+
+    NEW_METHOD_ADMITTED = "new_method_admitted"
+    EVIDENCE_UPDATED = "evidence_updated"
+    AUTHORIZATION_GRANTED = "authorization_granted"
+    HUMAN_RESOLVED = "human_resolved"
+    PLAN_REVISION_CHANGED = "plan_revision_changed"
+
+
+class RepairKind(StrEnum):
+    """Section 25/26: the H1 repair sub-kinds.  H4 may add more."""
+
+    REPLACE_METHOD = "REPLACE_METHOD"
+    PROPOSE_SUCCESSOR = "PROPOSE_SUCCESSOR"
+
+
+class BindExistingGoalMode(StrEnum):
+    """Section 27: why an existing goal is being bound."""
+
+    REUSE_ACCEPTED = "REUSE_ACCEPTED"
+    SHARE_ACTIVE = "SHARE_ACTIVE"
 
 
 # --------------------------------------------------------------------------------------
@@ -638,6 +698,1049 @@ class PlanningFeedbackV1:
 
 
 # --------------------------------------------------------------------------------------
+# Sub-structures (V2 section 20-23) and the versioned type reference (addendum 1)
+# --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VersionedTypeRefV1:
+    """A type reference to ``(id, version, content_hash)`` (V2 section 26).
+
+    It is deliberately distinct from :class:`~.semantic_base.VersionedRef`: the
+    two shapes are identical on the wire but only this type is the ``goal_type_ref``
+    of a PROPOSE_SUCCESSOR payload, registered as ``$defs/versionedTypeRef``.
+    """
+
+    id: str
+    version: int
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", identifier(self.id, "versioned_type_ref.id"))
+        object.__setattr__(
+            self, "version", index(self.version, "versioned_type_ref.version", minimum=1)
+        )
+        object.__setattr__(
+            self,
+            "content_hash",
+            hash_hex(self.content_hash, "versioned_type_ref.content_hash"),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {"id": self.id, "version": self.version, "content_hash": self.content_hash}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "versioned_type_ref") -> VersionedTypeRefV1:
+        data = fields_of(value, name, required=("id", "version", "content_hash"))
+        return cls(
+            id=data["id"],
+            version=data["version"],
+            content_hash=data["content_hash"],
+        )
+
+
+def _versioned_type_ref(value: object, name: str) -> VersionedTypeRefV1:
+    if isinstance(value, VersionedTypeRefV1):
+        return value
+    return VersionedTypeRefV1.from_json(value, name)
+
+
+def _decision_type(value: object, name: str) -> PlanningDecisionType:
+    return enum_of(PlanningDecisionType, value, name)
+
+
+@dataclass(frozen=True, slots=True)
+class AssumptionV1:
+    """V2 section 20: one assumption.  It never upgrades itself to TRUE."""
+
+    key: str
+    statement: str
+    required_for: tuple[PlanningDecisionType, ...]
+    risk: AssumptionRisk
+    suggested_predicate_key: str | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", identifier(self.key, "assumption.key"))
+        object.__setattr__(self, "statement", text(self.statement, "assumption.statement"))
+        object.__setattr__(
+            self,
+            "required_for",
+            sequence_of(
+                self.required_for,
+                "assumption.required_for",
+                _decision_type,
+                limit=len(PlanningDecisionType),
+            ),
+        )
+        object.__setattr__(
+            self, "risk", enum_of(AssumptionRisk, self.risk, "assumption.risk")
+        )
+        object.__setattr__(
+            self,
+            "suggested_predicate_key",
+            None
+            if self.suggested_predicate_key is None
+            else identifier(self.suggested_predicate_key, "assumption.suggested_predicate_key"),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "statement": self.statement,
+            "required_for": [str(entry) for entry in self.required_for],
+            "risk": str(self.risk),
+            "suggested_predicate_key": self.suggested_predicate_key,
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "assumption") -> AssumptionV1:
+        data = fields_of(
+            value,
+            name,
+            required=("key", "statement", "required_for", "risk", "suggested_predicate_key"),
+        )
+        return cls(
+            key=data["key"],
+            statement=data["statement"],
+            required_for=data["required_for"],
+            risk=data["risk"],
+            suggested_predicate_key=data["suggested_predicate_key"],
+        )
+
+
+def _assumption(value: object, name: str) -> AssumptionV1:
+    if isinstance(value, AssumptionV1):
+        return value
+    return AssumptionV1.from_json(value, name)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningUncertaintyV1:
+    """V2 section 21: trace/UI/review context only; never a safety verdict."""
+
+    statement: str
+    severity: UncertaintySeverity
+    affects: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "statement", text(self.statement, "uncertainty.statement"))
+        object.__setattr__(
+            self, "severity", enum_of(UncertaintySeverity, self.severity, "uncertainty.severity")
+        )
+        object.__setattr__(
+            self,
+            "affects",
+            sequence_of(
+                self.affects,
+                "uncertainty.affects",
+                lambda entry, where: identifier(entry, where),
+            ),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "statement": self.statement,
+            "severity": str(self.severity),
+            "affects": list(self.affects),
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "uncertainty") -> PlanningUncertaintyV1:
+        data = fields_of(value, name, required=("statement", "severity", "affects"))
+        return cls(
+            statement=data["statement"],
+            severity=data["severity"],
+            affects=data["affects"],
+        )
+
+
+def _uncertainty(value: object, name: str) -> PlanningUncertaintyV1:
+    if isinstance(value, PlanningUncertaintyV1):
+        return value
+    return PlanningUncertaintyV1.from_json(value, name)
+
+
+@dataclass(frozen=True, slots=True)
+class AlternativeSummaryV1:
+    """V2 section 22: one alternative that was not selected.  Not an admission input."""
+
+    method_ref: PlanningRefV1 | None
+    label: str
+    disposition: AlternativeDisposition
+    reason: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "method_ref",
+            _optional_planning_ref(self.method_ref, "alternative.method_ref"),
+        )
+        object.__setattr__(self, "label", text(self.label, "alternative.label"))
+        object.__setattr__(
+            self,
+            "disposition",
+            enum_of(AlternativeDisposition, self.disposition, "alternative.disposition"),
+        )
+        object.__setattr__(self, "reason", text(self.reason, "alternative.reason"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "method_ref": None if self.method_ref is None else self.method_ref.to_json(),
+            "label": self.label,
+            "disposition": str(self.disposition),
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "alternative") -> AlternativeSummaryV1:
+        data = fields_of(
+            value, name, required=("method_ref", "label", "disposition", "reason")
+        )
+        return cls(
+            method_ref=data["method_ref"],
+            label=data["label"],
+            disposition=data["disposition"],
+            reason=data["reason"],
+        )
+
+
+def _alternative(value: object, name: str) -> AlternativeSummaryV1:
+    if isinstance(value, AlternativeSummaryV1):
+        return value
+    return AlternativeSummaryV1.from_json(value, name)
+
+
+@dataclass(frozen=True, slots=True)
+class ReplanTriggerHintV1:
+    """V2 section 23: an H1 hint only; no callback is installed from it."""
+
+    description: str
+    referenced_predicates: tuple[str, ...]
+    suggested_decision: PlanningDecisionType
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "description", text(self.description, "replan_trigger.description")
+        )
+        object.__setattr__(
+            self,
+            "referenced_predicates",
+            sequence_of(
+                self.referenced_predicates,
+                "replan_trigger.referenced_predicates",
+                lambda entry, where: identifier(entry, where),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "suggested_decision",
+            enum_of(
+                PlanningDecisionType,
+                self.suggested_decision,
+                "replan_trigger.suggested_decision",
+            ),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "description": self.description,
+            "referenced_predicates": list(self.referenced_predicates),
+            "suggested_decision": str(self.suggested_decision),
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "replan_trigger") -> ReplanTriggerHintV1:
+        data = fields_of(
+            value,
+            name,
+            required=("description", "referenced_predicates", "suggested_decision"),
+        )
+        return cls(
+            description=data["description"],
+            referenced_predicates=data["referenced_predicates"],
+            suggested_decision=data["suggested_decision"],
+        )
+
+
+def _replan_trigger(value: object, name: str) -> ReplanTriggerHintV1:
+    if isinstance(value, ReplanTriggerHintV1):
+        return value
+    return ReplanTriggerHintV1.from_json(value, name)
+
+
+# --------------------------------------------------------------------------------------
+# Payload helpers: arbitrary JSON maps are never key-scanned (V2 section 32)
+# --------------------------------------------------------------------------------------
+
+
+def _json_arg_map(value: object, name: str, *, limit: int) -> Mapping[str, Any]:
+    """A model-supplied ``bindings`` / ``arguments`` map.
+
+    The keys are *domain* names: the contract never inspects them for system
+    fields (V2 section 32).  Only the entry count and JSON-plainness are enforced.
+    """
+
+    if not isinstance(value, Mapping):
+        raise ContractError(f"{name} must be an object")
+    if len(value) > limit:
+        raise ContractError(f"{name} has more than {limit} entries")
+    return MappingProxyType(dict(json_object(value, name)))
+
+
+def _has_method_instance_kind(ref: PlanningRefV1, name: str) -> PlanningRefV1:
+    if ref.kind is not PlanningRefKind.METHOD_INSTANCE:
+        raise ContractError(f"{name} must have kind=method_instance")
+    return ref
+
+
+# --------------------------------------------------------------------------------------
+# The seven executable payloads plus three decode-only payloads (V2 section 24-31)
+# --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RefineDecision:
+    """V2 section 24: refine with one registered method."""
+
+    method_ref: PlanningRefV1
+    bindings: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "method_ref", _planning_ref(self.method_ref, "refine.method_ref"))
+        object.__setattr__(
+            self, "bindings", _json_arg_map(self.bindings, "refine.bindings", limit=MAX_PD_BINDINGS)
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {"method_ref": self.method_ref.to_json(), "bindings": dict(self.bindings)}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "refine") -> RefineDecision:
+        data = fields_of(value, name, required=("method_ref", "bindings"))
+        return cls(method_ref=data["method_ref"], bindings=data["bindings"])
+
+
+@dataclass(frozen=True, slots=True)
+class RepairReplaceMethodDecision:
+    """V2 section 25: REPAIR / REPLACE_METHOD."""
+
+    repair_kind: RepairKind
+    rejected_method_instance: PlanningRefV1
+    replacement_method_ref: PlanningRefV1
+    bindings: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        repair_kind = enum_of(RepairKind, self.repair_kind, "repair_replace.repair_kind")
+        if repair_kind is not RepairKind.REPLACE_METHOD:
+            raise ContractError("repair_replace.repair_kind must be REPLACE_METHOD")
+        object.__setattr__(self, "repair_kind", repair_kind)
+        object.__setattr__(
+            self,
+            "rejected_method_instance",
+            _has_method_instance_kind(
+                _planning_ref(
+                    self.rejected_method_instance, "repair_replace.rejected_method_instance"
+                ),
+                "repair_replace.rejected_method_instance",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "replacement_method_ref",
+            _planning_ref(
+                self.replacement_method_ref, "repair_replace.replacement_method_ref"
+            ),
+        )
+        object.__setattr__(
+            self,
+            "bindings",
+            _json_arg_map(self.bindings, "repair_replace.bindings", limit=MAX_PD_BINDINGS),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "repair_kind": str(self.repair_kind),
+            "rejected_method_instance": self.rejected_method_instance.to_json(),
+            "replacement_method_ref": self.replacement_method_ref.to_json(),
+            "bindings": dict(self.bindings),
+        }
+
+    @classmethod
+    def from_json(
+        cls, value: object, name: str = "repair_replace"
+    ) -> RepairReplaceMethodDecision:
+        data = fields_of(
+            value,
+            name,
+            required=(
+                "repair_kind",
+                "rejected_method_instance",
+                "replacement_method_ref",
+                "bindings",
+            ),
+        )
+        return cls(
+            repair_kind=data["repair_kind"],
+            rejected_method_instance=data["rejected_method_instance"],
+            replacement_method_ref=data["replacement_method_ref"],
+            bindings=data["bindings"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RepairProposeSuccessorDecision:
+    """V2 section 26: REPAIR / PROPOSE_SUCCESSOR."""
+
+    repair_kind: RepairKind
+    old_task_ref: PlanningRefV1
+    obligation_ref: PlanningRefV1
+    goal_type_ref: VersionedTypeRefV1
+    bindings: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        repair_kind = enum_of(RepairKind, self.repair_kind, "repair_successor.repair_kind")
+        if repair_kind is not RepairKind.PROPOSE_SUCCESSOR:
+            raise ContractError("repair_successor.repair_kind must be PROPOSE_SUCCESSOR")
+        object.__setattr__(self, "repair_kind", repair_kind)
+        object.__setattr__(
+            self,
+            "old_task_ref",
+            _planning_ref(self.old_task_ref, "repair_successor.old_task_ref"),
+        )
+        object.__setattr__(
+            self,
+            "obligation_ref",
+            _planning_ref(self.obligation_ref, "repair_successor.obligation_ref"),
+        )
+        object.__setattr__(
+            self,
+            "goal_type_ref",
+            _versioned_type_ref(self.goal_type_ref, "repair_successor.goal_type_ref"),
+        )
+        object.__setattr__(
+            self,
+            "bindings",
+            _json_arg_map(self.bindings, "repair_successor.bindings", limit=MAX_PD_BINDINGS),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "repair_kind": str(self.repair_kind),
+            "old_task_ref": self.old_task_ref.to_json(),
+            "obligation_ref": self.obligation_ref.to_json(),
+            "goal_type_ref": self.goal_type_ref.to_json(),
+            "bindings": dict(self.bindings),
+        }
+
+    @classmethod
+    def from_json(
+        cls, value: object, name: str = "repair_successor"
+    ) -> RepairProposeSuccessorDecision:
+        data = fields_of(
+            value,
+            name,
+            required=("repair_kind", "old_task_ref", "obligation_ref", "goal_type_ref", "bindings"),
+        )
+        return cls(
+            repair_kind=data["repair_kind"],
+            old_task_ref=data["old_task_ref"],
+            obligation_ref=data["obligation_ref"],
+            goal_type_ref=data["goal_type_ref"],
+            bindings=data["bindings"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BindExistingGoalDecision:
+    """V2 section 27: bind an existing goal.
+
+    ``REUSE_ACCEPTED`` requires a CURRENT resolution; ``SHARE_ACTIVE`` must carry a
+    null ``resolution_ref`` because nothing is being reused.
+    """
+
+    mode: BindExistingGoalMode
+    consumer_method_instance_ref: PlanningRefV1
+    step: str
+    goal_ref: PlanningRefV1
+    resolution_ref: PlanningRefV1 | None
+
+    def __post_init__(self) -> None:
+        mode = enum_of(BindExistingGoalMode, self.mode, "bind_goal.mode")
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(
+            self,
+            "consumer_method_instance_ref",
+            _has_method_instance_kind(
+                _planning_ref(
+                    self.consumer_method_instance_ref, "bind_goal.consumer_method_instance_ref"
+                ),
+                "bind_goal.consumer_method_instance_ref",
+            ),
+        )
+        object.__setattr__(self, "step", identifier(self.step, "bind_goal.step"))
+        object.__setattr__(
+            self, "goal_ref", _planning_ref(self.goal_ref, "bind_goal.goal_ref")
+        )
+        resolution_ref = _optional_planning_ref(self.resolution_ref, "bind_goal.resolution_ref")
+        if mode is BindExistingGoalMode.SHARE_ACTIVE:
+            if resolution_ref is not None:
+                raise ContractError("bind_goal.resolution_ref must be null when mode=SHARE_ACTIVE")
+        elif resolution_ref is None:
+            raise ContractError(
+                "bind_goal.resolution_ref is required when mode=REUSE_ACCEPTED"
+            )
+        object.__setattr__(self, "resolution_ref", resolution_ref)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "mode": str(self.mode),
+            "consumer_method_instance_ref": self.consumer_method_instance_ref.to_json(),
+            "step": self.step,
+            "goal_ref": self.goal_ref.to_json(),
+            "resolution_ref": (
+                None if self.resolution_ref is None else self.resolution_ref.to_json()
+            ),
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "bind_goal") -> BindExistingGoalDecision:
+        data = fields_of(
+            value,
+            name,
+            required=(
+                "mode",
+                "consumer_method_instance_ref",
+                "step",
+                "goal_ref",
+                "resolution_ref",
+            ),
+        )
+        return cls(
+            mode=data["mode"],
+            consumer_method_instance_ref=data["consumer_method_instance_ref"],
+            step=data["step"],
+            goal_ref=data["goal_ref"],
+            resolution_ref=data["resolution_ref"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedItemV1:
+    """One entry of a DECLARE_BLOCKED payload; ``OTHER`` must carry a detail."""
+
+    code: BlockerCode
+    detail: str | None
+
+    def __post_init__(self) -> None:
+        code = enum_of(BlockerCode, self.code, "blocked_item.code")
+        object.__setattr__(self, "code", code)
+        detail = None if self.detail is None else text(self.detail, "blocked_item.detail")
+        if code is BlockerCode.OTHER and detail is None:
+            raise ContractError("blocked_item.detail is required when code=OTHER")
+        object.__setattr__(self, "detail", detail)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"code": str(self.code), "detail": self.detail}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "blocked_item") -> BlockedItemV1:
+        data = fields_of(value, name, required=("code",), optional=("detail",))
+        return cls(code=data["code"], detail=data.get("detail"))
+
+
+def _blocked_item(value: object, name: str) -> BlockedItemV1:
+    if isinstance(value, BlockedItemV1):
+        return value
+    return BlockedItemV1.from_json(value, name)
+
+
+@dataclass(frozen=True, slots=True)
+class DeclareBlockedDecision:
+    """V2 section 28: record a blockage; never a Mission FAIL by itself."""
+
+    blockers: tuple[BlockedItemV1, ...]
+    resumable_if: tuple[ResumableIf, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "blockers",
+            sequence_of(
+                self.blockers,
+                "declare_blocked.blockers",
+                _blocked_item,
+                limit=MAX_PD_BLOCKERS,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "resumable_if",
+            sequence_of(
+                self.resumable_if,
+                "declare_blocked.resumable_if",
+                lambda entry, where: enum_of(ResumableIf, entry, where),
+            ),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "blockers": [item.to_json() for item in self.blockers],
+            "resumable_if": [str(item) for item in self.resumable_if],
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "declare_blocked") -> DeclareBlockedDecision:
+        data = fields_of(value, name, required=("blockers", "resumable_if"))
+        return cls(blockers=data["blockers"], resumable_if=data["resumable_if"])
+
+
+@dataclass(frozen=True, slots=True)
+class WaitDecision:
+    """V2 section 29: wait for already-dispatched work; no plan change."""
+
+    wait_for: tuple[PlanningRefV1, ...]
+    reason: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "wait_for",
+            sequence_of(self.wait_for, "wait.wait_for", _planning_ref, limit=MAX_PD_WAIT_REFS),
+        )
+        object.__setattr__(self, "reason", text(self.reason, "wait.reason"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"wait_for": [ref.to_json() for ref in self.wait_for], "reason": self.reason}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "wait") -> WaitDecision:
+        data = fields_of(value, name, required=("wait_for", "reason"))
+        return cls(wait_for=data["wait_for"], reason=data["reason"])
+
+
+@dataclass(frozen=True, slots=True)
+class NoChangeDecision:
+    """V2 section 30: no state change at all; the payload carries one reason."""
+
+    reason: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reason", text(self.reason, "no_change.reason"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"reason": self.reason}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "no_change") -> NoChangeDecision:
+        data = fields_of(value, name, required=("reason",))
+        return cls(reason=data["reason"])
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceQuestionV1:
+    """One entry of a REQUEST_EVIDENCE payload (addendum 2 section 3)."""
+
+    predicate_key: str
+    arguments: Mapping[str, Any]
+    purpose: str
+    blocking: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "predicate_key", identifier(self.predicate_key, "question.predicate_key")
+        )
+        object.__setattr__(
+            self,
+            "arguments",
+            _json_arg_map(self.arguments, "question.arguments", limit=MAX_PD_ARGUMENTS),
+        )
+        object.__setattr__(self, "purpose", text(self.purpose, "question.purpose"))
+        object.__setattr__(self, "blocking", flag(self.blocking, "question.blocking"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "predicate_key": self.predicate_key,
+            "arguments": dict(self.arguments),
+            "purpose": self.purpose,
+            "blocking": self.blocking,
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "question") -> EvidenceQuestionV1:
+        data = fields_of(
+            value, name, required=("predicate_key", "arguments", "purpose", "blocking")
+        )
+        return cls(
+            predicate_key=data["predicate_key"],
+            arguments=data["arguments"],
+            purpose=data["purpose"],
+            blocking=data["blocking"],
+        )
+
+
+def _evidence_question(value: object, name: str) -> EvidenceQuestionV1:
+    if isinstance(value, EvidenceQuestionV1):
+        return value
+    return EvidenceQuestionV1.from_json(value, name)
+
+
+@dataclass(frozen=True, slots=True)
+class RequestEvidenceDecision:
+    """Addendum 2 section 3: decode-only in H1; 1-8 questions."""
+
+    questions: tuple[EvidenceQuestionV1, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "questions",
+            sequence_of(
+                self.questions,
+                "request_evidence.questions",
+                _evidence_question,
+                limit=MAX_PD_EVIDENCE_QUESTIONS,
+                minimum=MIN_PD_EVIDENCE_QUESTIONS,
+            ),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {"questions": [question.to_json() for question in self.questions]}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "request_evidence") -> RequestEvidenceDecision:
+        data = fields_of(value, name, required=("questions",))
+        return cls(questions=data["questions"])
+
+
+@dataclass(frozen=True, slots=True)
+class HumanOptionV1:
+    """One selectable option of a REQUEST_HUMAN payload (addendum 2 section 3)."""
+
+    key: str
+    label: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", identifier(self.key, "human_option.key"))
+        object.__setattr__(self, "label", text(self.label, "human_option.label"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"key": self.key, "label": self.label}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "human_option") -> HumanOptionV1:
+        data = fields_of(value, name, required=("key", "label"))
+        return cls(key=data["key"], label=data["label"])
+
+
+def _human_option(value: object, name: str) -> HumanOptionV1:
+    if isinstance(value, HumanOptionV1):
+        return value
+    return HumanOptionV1.from_json(value, name)
+
+
+@dataclass(frozen=True, slots=True)
+class RequestHumanDecision:
+    """Addendum 2 section 3: decode-only in H1; 0-12 options."""
+
+    question: str
+    options: tuple[HumanOptionV1, ...]
+    blocking: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "question", text(self.question, "request_human.question"))
+        object.__setattr__(
+            self,
+            "options",
+            sequence_of(
+                self.options,
+                "request_human.options",
+                _human_option,
+                limit=MAX_PD_HUMAN_OPTIONS,
+            ),
+        )
+        object.__setattr__(self, "blocking", flag(self.blocking, "request_human.blocking"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "question": self.question,
+            "options": [option.to_json() for option in self.options],
+            "blocking": self.blocking,
+        }
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "request_human") -> RequestHumanDecision:
+        data = fields_of(value, name, required=("question", "options", "blocking"))
+        return cls(
+            question=data["question"],
+            options=data["options"],
+            blocking=data["blocking"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProposeMethodDecision:
+    """Addendum 2 section 3: decode-only in H1.
+
+    The contract layer deliberately does not import the planning package: the
+    inner ``method_proposal`` is only required to be a JSON object and is kept
+    verbatim.  Validating it against ``MethodProposal`` is H1-C's job.
+    """
+
+    method_proposal: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "method_proposal",
+            MappingProxyType(json_object(self.method_proposal, "propose_method.method_proposal")),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {"method_proposal": dict(self.method_proposal)}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "propose_method") -> ProposeMethodDecision:
+        data = fields_of(value, name, required=("method_proposal",))
+        return cls(method_proposal=data["method_proposal"])
+
+
+# --------------------------------------------------------------------------------------
+# PlanningDecisionEnvelopeV1 (V2 section 13), canonical JSON / hash (V2 section 15)
+# --------------------------------------------------------------------------------------
+
+
+PAYLOAD_BY_DECISION_TYPE: Mapping[PlanningDecisionType, type[Any]] = MappingProxyType(
+    {
+        PlanningDecisionType.REFINE: RefineDecision,
+        PlanningDecisionType.BIND_EXISTING_GOAL: BindExistingGoalDecision,
+        PlanningDecisionType.DECLARE_BLOCKED: DeclareBlockedDecision,
+        PlanningDecisionType.WAIT: WaitDecision,
+        PlanningDecisionType.NO_CHANGE: NoChangeDecision,
+        PlanningDecisionType.REQUEST_EVIDENCE: RequestEvidenceDecision,
+        PlanningDecisionType.REQUEST_HUMAN: RequestHumanDecision,
+        PlanningDecisionType.PROPOSE_METHOD: ProposeMethodDecision,
+    }
+)
+
+REPAIR_PAYLOAD_BY_KIND: Mapping[RepairKind, type[Any]] = MappingProxyType(
+    {
+        RepairKind.REPLACE_METHOD: RepairReplaceMethodDecision,
+        RepairKind.PROPOSE_SUCCESSOR: RepairProposeSuccessorDecision,
+    }
+)
+
+
+def _payload_class(
+    decision_type: PlanningDecisionType, payload: object, name: str
+) -> type[Any]:
+    if decision_type is PlanningDecisionType.REPAIR:
+        if isinstance(payload, RepairReplaceMethodDecision):
+            return RepairReplaceMethodDecision
+        if isinstance(payload, RepairProposeSuccessorDecision):
+            return RepairProposeSuccessorDecision
+        if not isinstance(payload, Mapping):
+            raise ContractError(f"{name} must be an object")
+        try:
+            kind = RepairKind(str(payload.get("repair_kind")))
+        except (ValueError, TypeError) as error:
+            raise ContractError(f"{name}.repair_kind must be a known RepairKind") from error
+        return REPAIR_PAYLOAD_BY_KIND[kind]
+    try:
+        return PAYLOAD_BY_DECISION_TYPE[decision_type]
+    except KeyError as error:  # pragma: no cover - decision_type is a closed enum
+        raise ContractError(f"{name} has no payload for {decision_type}") from error
+
+
+_ALL_PAYLOAD_CLASSES = (
+    RefineDecision,
+    RepairReplaceMethodDecision,
+    RepairProposeSuccessorDecision,
+    BindExistingGoalDecision,
+    DeclareBlockedDecision,
+    WaitDecision,
+    NoChangeDecision,
+    RequestEvidenceDecision,
+    RequestHumanDecision,
+    ProposeMethodDecision,
+)
+
+
+def _decode_payload(
+    decision_type: PlanningDecisionType, payload: object, name: str
+) -> object:
+    kind = _payload_class(decision_type, payload, name)
+    if isinstance(payload, kind):
+        return payload
+    if isinstance(payload, _ALL_PAYLOAD_CLASSES):
+        raise ContractError(f"{name} does not match decision type {decision_type}")
+    return kind.from_json(payload, name)  # type: ignore[attr-defined]
+
+
+ENVELOPE_FIELDS = (
+    "schema_version",
+    "decision_type",
+    "subject_key",
+    "rationale",
+    "reason_refs",
+    "assumptions",
+    "payload",
+    "uncertainties",
+    "alternatives",
+    "replan_triggers",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningDecisionEnvelopeV1:
+    """V2 section 13: the ten-field wire object a planner reply decodes into."""
+
+    schema_version: int
+    decision_type: PlanningDecisionType
+    subject_key: str
+    rationale: str
+    reason_refs: tuple[PlanningRefV1, ...]
+    assumptions: tuple[AssumptionV1, ...]
+    payload: object
+    uncertainties: tuple[PlanningUncertaintyV1, ...]
+    alternatives: tuple[AlternativeSummaryV1, ...]
+    replan_triggers: tuple[ReplanTriggerHintV1, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "schema_version",
+            schema_version(
+                self.schema_version,
+                "decision.schema_version",
+                expected=PLANNING_DECISION_SCHEMA_VERSION,
+            ),
+        )
+        decision_type = enum_of(PlanningDecisionType, self.decision_type, "decision.decision_type")
+        object.__setattr__(self, "decision_type", decision_type)
+        object.__setattr__(
+            self,
+            "subject_key",
+            identifier(self.subject_key, "decision.subject_key", limit=MAX_SUBJECT_KEY_CHARS),
+        )
+        object.__setattr__(
+            self,
+            "rationale",
+            text(self.rationale, "decision.rationale", limit=MAX_PD_RATIONALE_CHARS),
+        )
+        object.__setattr__(
+            self,
+            "reason_refs",
+            _unique_refs(self.reason_refs, "decision.reason_refs", limit=MAX_PD_REASON_REFS),
+        )
+        object.__setattr__(
+            self,
+            "assumptions",
+            sequence_of(
+                self.assumptions,
+                "decision.assumptions",
+                _assumption,
+                limit=MAX_PD_ASSUMPTIONS,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "payload",
+            _decode_payload(decision_type, self.payload, "decision.payload"),
+        )
+        object.__setattr__(
+            self,
+            "uncertainties",
+            sequence_of(
+                self.uncertainties,
+                "decision.uncertainties",
+                _uncertainty,
+                limit=MAX_PD_UNCERTAINTIES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "alternatives",
+            sequence_of(
+                self.alternatives,
+                "decision.alternatives",
+                _alternative,
+                limit=MAX_PD_ALTERNATIVES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "replan_triggers",
+            sequence_of(
+                self.replan_triggers,
+                "decision.replan_triggers",
+                _replan_trigger,
+                limit=MAX_PD_REPLAN_TRIGGERS,
+            ),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "decision_type": str(self.decision_type),
+            "subject_key": self.subject_key,
+            "rationale": self.rationale,
+            "reason_refs": [ref.to_json() for ref in self.reason_refs],
+            "assumptions": [assumption.to_json() for assumption in self.assumptions],
+            "payload": self.payload.to_json(),  # type: ignore[attr-defined]
+            "uncertainties": [item.to_json() for item in self.uncertainties],
+            "alternatives": [item.to_json() for item in self.alternatives],
+            "replan_triggers": [item.to_json() for item in self.replan_triggers],
+        }
+
+    @classmethod
+    def from_json(
+        cls, value: object, name: str = "planning_decision"
+    ) -> PlanningDecisionEnvelopeV1:
+        data = fields_of(value, name, required=ENVELOPE_FIELDS)
+        return cls(
+            schema_version=data["schema_version"],
+            decision_type=data["decision_type"],
+            subject_key=data["subject_key"],
+            rationale=data["rationale"],
+            reason_refs=data["reason_refs"],
+            assumptions=data["assumptions"],
+            payload=data["payload"],
+            uncertainties=data["uncertainties"],
+            alternatives=data["alternatives"],
+            replan_triggers=data["replan_triggers"],
+        )
+
+
+
+def _unique_refs(value: object, name: str, *, limit: int) -> tuple[PlanningRefV1, ...]:
+    refs = sequence_of(value, name, _planning_ref, limit=limit)
+    seen: set[tuple[str, str, int, str]] = set()
+    for ref in refs:
+        identity = (str(ref.kind), ref.id, ref.semantic_revision, ref.content_hash)
+        if identity in seen:
+            raise ContractError(f"{name} must not contain duplicate references")
+        seen.add(identity)
+    return refs
+
+
+def canonical_decision_json(envelope: PlanningDecisionEnvelopeV1) -> str:
+    """V2 section 15: canonical JSON of the decoded decision's ``to_json``.
+
+    Object key order never changes the result; array order always does.
+    """
+
+    if not isinstance(envelope, PlanningDecisionEnvelopeV1):
+        raise ContractError("canonical_decision_json requires a PlanningDecisionEnvelopeV1")
+    return canonical_json(envelope.to_json())
+
+
+def canonical_decision_hash(envelope: PlanningDecisionEnvelopeV1) -> str:
+    """V2 section 15: ``sha256`` of the canonical decision JSON, lowercase hex."""
+
+    return hashlib.sha256(canonical_decision_json(envelope).encode("utf-8")).hexdigest()
+
+
+# --------------------------------------------------------------------------------------
 # decision_id (§35)
 # --------------------------------------------------------------------------------------
 
@@ -668,13 +1771,25 @@ def compute_decision_id(request_id: str, attempt_ordinal: int, raw_output_hash: 
 
 
 __all__ = (
+    "AlternativeDisposition",
+    "AlternativeSummaryV1",
     "AssumptionRisk",
+    "AssumptionV1",
+    "BindExistingGoalDecision",
+    "BindExistingGoalMode",
+    "BlockerCode",
+    "BlockedItemV1",
     "DecisionEnablement",
+    "DeclareBlockedDecision",
+    "ENVELOPE_FIELDS",
+    "EvidenceQuestionV1",
     "H1_DECISION_ENABLEMENT",
+    "HumanOptionV1",
     "LEGACY_PLANNING_PROTOCOL",
     "MAX_PD_ALTERNATIVES",
     "MAX_PD_ARGUMENTS",
     "MAX_PD_ASSUMPTIONS",
+    "MAX_PD_EVIDENCE_QUESTIONS",
     "MAX_PD_BINDINGS",
     "MAX_PD_BLOCKERS",
     "MAX_PD_HUMAN_OPTIONS",
@@ -683,9 +1798,15 @@ __all__ = (
     "MAX_PD_REPLAN_TRIGGERS",
     "MAX_PD_UNCERTAINTIES",
     "MAX_PD_WAIT_REFS",
+    "MAX_PLANNING_REF_ID",
+    "MIN_PD_EVIDENCE_QUESTIONS",
+    "MAX_SUBJECT_KEY_CHARS",
+    "NoChangeDecision",
+    "PAYLOAD_BY_DECISION_TYPE",
     "PLANNING_DECISION_CODEC_VERSION",
     "PLANNING_DECISION_SCHEMA_VERSION",
     "PLANNING_DECISION_V1",
+    "PlanningDecisionEnvelopeV1",
     "PlanningDecisionRejectionCode",
     "PlanningDecisionStatus",
     "PlanningDecisionType",
@@ -695,5 +1816,21 @@ __all__ = (
     "PlanningRefV1",
     "PlanningRequestBinding",
     "PlanningRetryBudgetView",
+    "PlanningUncertaintyV1",
+    "ProposeMethodDecision",
+    "REPAIR_PAYLOAD_BY_KIND",
+    "RefineDecision",
+    "ReplanTriggerHintV1",
+    "RepairKind",
+    "RepairProposeSuccessorDecision",
+    "RepairReplaceMethodDecision",
+    "RequestEvidenceDecision",
+    "RequestHumanDecision",
+    "ResumableIf",
+    "UncertaintySeverity",
+    "VersionedTypeRefV1",
+    "WaitDecision",
+    "canonical_decision_hash",
+    "canonical_decision_json",
     "compute_decision_id",
 )

@@ -77,8 +77,8 @@ def test_planning_decision_type_members_are_pinned() -> None:
 
 
 def test_planning_ref_kind_members_are_pinned() -> None:
-    # §17: exactly fifteen kinds. ``method_instance`` is NOT added here — it is a
-    # blocker awaiting the plan author (BL-1), so this slice must not invent it.
+    # V2 addendum (BL-1): exactly sixteen kinds.  "method_instance" is the
+    # sixteenth, so a REPLACE_METHOD payload can name the instance it retires.
     assert [(member.name, member.value) for member in PlanningRefKind] == [
         ("TASK", "task"),
         ("OBLIGATION", "obligation"),
@@ -95,10 +95,11 @@ def test_planning_ref_kind_members_are_pinned() -> None:
         ("KNOWLEDGE", "knowledge"),
         ("AUTHORITY", "authority"),
         ("CAPABILITY", "capability"),
+        ("METHOD_INSTANCE", "method_instance"),
     ]
-    assert len(PlanningRefKind) == 15
+    assert len(PlanningRefKind) == 16
     assert "fact" not in {member.value for member in PlanningRefKind}
-    assert "method_instance" not in {member.value for member in PlanningRefKind}
+    assert "method_instance" in {member.value for member in PlanningRefKind}
 
 
 def test_planning_decision_rejection_code_members_are_pinned() -> None:
