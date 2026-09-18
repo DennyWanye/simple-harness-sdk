@@ -50,6 +50,7 @@ from agent_orchestrator.contracts.planning_decisions import (
     canonical_decision_hash,
     canonical_decision_json,
 )
+from simple_harness.contracts import canonical_json
 
 HASH_A = "a" * 64
 HASH_B = "b" * 64
@@ -264,6 +265,60 @@ def test_bind_existing_goal_mode_members_are_pinned() -> None:
         ("REUSE_ACCEPTED", "REUSE_ACCEPTED"),
         ("SHARE_ACTIVE", "SHARE_ACTIVE"),
     ]
+
+
+def test_uncertainty_severity_decode_path_is_closed() -> None:
+    # The member list above only pins the enum class.  The *decode* path must also
+    # reject an unknown severity, so the value can never ride in as a bare string.
+    raw = _envelope(
+        "REFINE",
+        REFINE_PAYLOAD,
+        uncertainties=[{"statement": "u", "severity": "BOGUS", "affects": []}],
+    )
+    with pytest.raises(ContractError):
+        PlanningDecisionEnvelopeV1.from_json(raw)
+
+
+def test_alternative_disposition_decode_path_is_closed() -> None:
+    raw = _envelope(
+        "REFINE",
+        REFINE_PAYLOAD,
+        alternatives=[
+            {"method_ref": None, "label": "l", "disposition": "BOGUS", "reason": "r"}
+        ],
+    )
+    with pytest.raises(ContractError):
+        PlanningDecisionEnvelopeV1.from_json(raw)
+
+
+def test_assumption_risk_decode_path_is_closed() -> None:
+    raw = _envelope(
+        "REFINE",
+        REFINE_PAYLOAD,
+        assumptions=[
+            {
+                "key": "a",
+                "statement": "s",
+                "required_for": ["REFINE"],
+                "risk": "BOGUS",
+                "suggested_predicate_key": None,
+            }
+        ],
+    )
+    with pytest.raises(ContractError):
+        PlanningDecisionEnvelopeV1.from_json(raw)
+
+
+def test_replan_suggested_decision_decode_path_is_closed() -> None:
+    raw = _envelope(
+        "REFINE",
+        REFINE_PAYLOAD,
+        replan_triggers=[
+            {"description": "d", "referenced_predicates": [], "suggested_decision": "BOGUS"}
+        ],
+    )
+    with pytest.raises(ContractError):
+        PlanningDecisionEnvelopeV1.from_json(raw)
 
 
 # --------------------------------------------------------------------------------------
@@ -714,7 +769,7 @@ CANONICAL_SAMPLE = {
     "schema_version": 1,
     "decision_type": "REFINE",
     "subject_key": "subject-root",
-    "rationale": "pick the registered method",
+    "rationale": "选择已注册且当前可适用的方法。",
     "reason_refs": [{"kind": "task", "id": "t-1", "semantic_revision": 1, "content_hash": HASH_A}],
     "assumptions": [],
     "payload": {
@@ -734,12 +789,12 @@ CANONICAL_SAMPLE_JSON = (
     '{"alternatives":[],"assumptions":[],"decision_type":"REFINE",'
     '"payload":{"bindings":{"target":"x"},"method_ref":{"content_hash":"' + HASH_A + '",'
     '"id":"code.fix","kind":"method","semantic_revision":2}},'
-    '"rationale":"pick the registered method",'
+    '"rationale":"选择已注册且当前可适用的方法。",'
     '"reason_refs":[{"content_hash":"' + HASH_A + '","id":"t-1","kind":"task",'
     '"semantic_revision":1}],"replan_triggers":[],"schema_version":1,'
     '"subject_key":"subject-root","uncertainties":[]}'
 )
-CANONICAL_SAMPLE_HASH = "22111ad0105becc45cb57da4fded387b87557bd880ea1d1a3bda29249a49af72"
+CANONICAL_SAMPLE_HASH = "18bb6817f7117b20de4c9da5d9f9411f542cef5d37188f89adcd3e2ac8d5751f"
 
 
 def _independent_canonical_json(value: object) -> str:
@@ -753,6 +808,9 @@ def _independent_canonical_json(value: object) -> str:
 def test_canonical_decision_json_matches_an_independent_canonicalisation() -> None:
     envelope = PlanningDecisionEnvelopeV1.from_json(CANONICAL_SAMPLE)
     assert canonical_decision_json(envelope) == _independent_canonical_json(envelope.to_json())
+    # §15: the module helper must agree with the shared contract canonical_json,
+    # which does not escape non-ASCII characters (the sample's rationale is CJK).
+    assert canonical_decision_json(envelope) == canonical_json(envelope.to_json())
 
 
 def test_canonical_decision_json_and_hash_are_pinned_literals() -> None:

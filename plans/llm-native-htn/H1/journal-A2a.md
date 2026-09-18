@@ -121,3 +121,45 @@ $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_pla
 ```
 
 **未做项：** 与本片一致（H1-A2b 的 Schema/黄金样例/打包；H1-F/H1-H 的准入与事件接线）。
+
+---
+
+## 八、第 2 轮处置（核验：修后可合）
+
+**依据：** `plans/llm-native-htn/H1/reviews/核验-H1-A2a-2026-09-18.md`（复核 2；无 P0，新增 3 条 P1，均为测试缺口）。
+
+**P1-2（新，`UncertaintySeverity` 解码路径未钉）：** 原测试只断言枚举类「有哪些成员」，没有经过 `from_json` 的解码路径。变异 N8（把 `uncertainties` 的 `severity` 校验改成直接赋值）下，本片 147 条与全量 3107 条全部放行，`{"statement":"u","severity":"BOGUS","affects":[]}` 被接受。
+
+**P1-3（新，`AlternativeDisposition` 解码路径未钉）：** 同 P1-2 形态。变异 N9（把 `enum_of(...)` 换成直接赋值）下，`{"method_ref":null,"label":"l","disposition":"BOGUS","reason":"r"}` 被接受。
+
+**P1-4（新，canonical「非 ASCII 不转义」未被钉住）：** 第 1 轮修复用的固定样例 `rationale` 是纯 ASCII，因此 `ensure_ascii=True` 的变异（N2）不被任何断言触及。规格 §15 要求 `canonical_decision_json == canonical_json(decision.to_json())`，而共享的 `simple_harness.contracts.canonical_json` 明确 `ensure_ascii=False`；V2 §13 的示例 `rationale` 本身就是中文。
+
+**修复（只改测试，不动实现）：** 在 `tests/orchestrator/full_target/test_planning_decision_envelope.py` 内：
+
+- 新增 4 个解码路径反例（`UncertaintySeverity`、`AlternativeDisposition`、`AssumptionRisk`、`ReplanTriggerHintV1.suggested_decision`）：构造合法信封 + 未知枚举字面量，断言 `from_json` 抛 `ContractError`。
+- 把固定样例 `CANONICAL_SAMPLE` 的 `rationale` 改成 V2 §13 示例的中文 `选择已注册且当前可适用的方法。`，同步更新字面量 `CANONICAL_SAMPLE_JSON` 与 `CANONICAL_SAMPLE_HASH`（`18bb6817…5751f`）。
+- `test_canonical_decision_json_matches_an_independent_canonicalisation` 增加 `canonical_decision_json(envelope) == canonical_json(envelope.to_json())`（共享合同层实现）断言，把「非 ASCII 不转义」钉死。
+
+**变异复验（先红后绿）：**
+
+| 变异 | 结果 |
+|---|---|
+| N2 `canonical_decision_json` 改用 `ensure_ascii=True` | **KILLED**（2 failed, 101 passed；`test_canonical_decision_json_matches_an_independent_canonicalisation`、`test_canonical_decision_json_and_hash_are_pinned_literals`） |
+| N8 `UncertaintySeverity` 去掉 `enum_of` | **KILLED**（1 failed, 102 passed；`test_uncertainty_severity_decode_path_is_closed`） |
+| N9 `AlternativeDisposition` 去掉 `enum_of` | **KILLED**（1 failed, 102 passed；`test_alternative_disposition_decode_path_is_closed`） |
+
+`AssumptionRisk` 去掉 `enum_of` 的等价变异同样被 `test_assumption_risk_decode_path_is_closed` KILLED。恢复实现后实现文件 sha256 仍为 `6d2bcc25…ed8b40`（未改实现）。
+
+**测试（原样粘贴）：**
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_contract.py tests/orchestrator/full_target/test_planning_decision_envelope.py -q -p no:cacheprovider
+........................................................................ [ 47%]
+........................................................................ [ 95%]
+.......                                                                  [100%]
+151 passed in 0.09s
+```
+
+**P2：** P2-4（WAIT / DECLARE_BLOCKED 两个限额反例落在同一参数化用例，失败信息不够可区分）本轮未改；P2-1（`decision_payload_hash` 命名 vs `canonical_decision_hash`）属接线片命名统一，留待 H1-C/H1-H。
+
+**未做项：** 与本片一致（H1-A2b 的 Schema/黄金样例/打包；H1-F/H1-H 的准入与事件接线）。
