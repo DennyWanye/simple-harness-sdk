@@ -22,6 +22,7 @@ import pytest
 from agent_orchestrator.contracts.models import ContractError
 from agent_orchestrator.contracts.planning_decisions import (
     H1_DECISION_ENABLEMENT,
+    LEGACY_PLANNING_PROTOCOL,
     MAX_PD_ALTERNATIVES,
     MAX_PD_ARGUMENTS,
     MAX_PD_ASSUMPTIONS,
@@ -33,6 +34,10 @@ from agent_orchestrator.contracts.planning_decisions import (
     MAX_PD_REPLAN_TRIGGERS,
     MAX_PD_UNCERTAINTIES,
     MAX_PD_WAIT_REFS,
+    MAX_PLANNING_REF_ID,
+    PLANNING_DECISION_CODEC_VERSION,
+    PLANNING_DECISION_SCHEMA_VERSION,
+    PLANNING_DECISION_V1,
     AssumptionRisk,
     DecisionEnablement,
     PlanningDecisionRejectionCode,
@@ -178,6 +183,36 @@ def test_limit_constants_are_pinned() -> None:
     assert MAX_PD_BLOCKERS == 16
     assert MAX_PD_HUMAN_OPTIONS == 12
     assert MAX_PD_ARGUMENTS == 32
+
+
+def test_wire_identity_constants_are_pinned() -> None:
+    # §13/§14/§35: these are the on-the-wire strings and the envelope schema
+    # version.  They are exported constants, so a silent edit would change the
+    # protocol identity without touching any codec; pin every one literally.
+    assert PLANNING_DECISION_SCHEMA_VERSION == 1
+    assert PLANNING_DECISION_V1 == "planning-decision-v1"
+    assert LEGACY_PLANNING_PROTOCOL == "legacy-plan-proposal-v1"
+    assert PLANNING_DECISION_CODEC_VERSION == "planning-decision-codec-v1"
+
+
+def test_max_planning_ref_id_is_pinned_with_boundaries() -> None:
+    # §17: the id is "non-empty and <= 256".  Pin the concrete limit and both
+    # sides of it so a silent widening or narrowing is caught.
+    assert MAX_PLANNING_REF_ID == 256
+    accepted = PlanningRefV1(
+        kind=PlanningRefKind.TASK,
+        id="t" * 256,
+        semantic_revision=1,
+        content_hash=HASH_A,
+    )
+    assert accepted.id == "t" * 256
+    with pytest.raises(ContractError):
+        PlanningRefV1(
+            kind=PlanningRefKind.TASK,
+            id="t" * 257,
+            semantic_revision=1,
+            content_hash=HASH_A,
+        )
 
 
 # --------------------------------------------------------------------------------------
@@ -329,6 +364,17 @@ def test_non_object_is_rejected_for_every_dataclass() -> None:
             cls.from_json(["not", "an", "object"])
 
 
+def test_request_binding_package_version_lower_bound_is_pinned() -> None:
+    # §9 ships H1 with package_version 4 and the counterpart source is "ints
+    # >= 1"; pin both sides so a silent 0 is refused and 1 still decodes.
+    payload = _request_binding().to_json()
+    payload["package_version"] = 0
+    with pytest.raises(ContractError):
+        PlanningRequestBinding.from_json(payload)
+    payload["package_version"] = 1
+    assert PlanningRequestBinding.from_json(payload).package_version == 1
+
+
 # --------------------------------------------------------------------------------------
 # PlanningRefV1 negative inputs (§17)
 # --------------------------------------------------------------------------------------
@@ -341,10 +387,14 @@ def test_non_object_is_rejected_for_every_dataclass() -> None:
         {"kind": "fact", "id": "x", "semantic_revision": 1, "content_hash": HASH_A},
         # blank id
         {"kind": "task", "id": "   ", "semantic_revision": 1, "content_hash": HASH_A},
+        # revision of exactly 0 violates the ">= 1" lower bound
+        {"kind": "task", "id": "task-1", "semantic_revision": 0, "content_hash": HASH_A},
         # revision must be an integer >= 1 and never a bool
         {"kind": "task", "id": "task-1", "semantic_revision": True, "content_hash": HASH_A},
         # content hash must be a full lowercase SHA-256 hex digest
         {"kind": "task", "id": "task-1", "semantic_revision": 1, "content_hash": HASH_A.upper()},
+        # content hash is required
+        {"kind": "task", "id": "task-1", "semantic_revision": 1},
         # id longer than 256 characters
         {"kind": "task", "id": "t" * 257, "semantic_revision": 1, "content_hash": HASH_A},
     ],
@@ -352,6 +402,17 @@ def test_non_object_is_rejected_for_every_dataclass() -> None:
 def test_planning_ref_illegal_inputs_are_rejected(value: dict[str, object]) -> None:
     with pytest.raises(ContractError):
         PlanningRefV1.from_json(value)
+
+
+def test_planning_ref_all_fields_are_required_by_construction() -> None:
+    # §17 "all fields required": even the direct-construction path (used by
+    # system code, not only the model wire) must refuse a missing content_hash.
+    with pytest.raises(TypeError):
+        PlanningRefV1(  # type: ignore[call-arg]
+            kind=PlanningRefKind.TASK,
+            id="task-1",
+            semantic_revision=1,
+        )
 
 
 # --------------------------------------------------------------------------------------

@@ -63,3 +63,19 @@
 
 - 未改 `contracts/__init__.py`、`semantic_base.py`、`htn.py`、`SYSTEM_BOUND_FIELDS` 或任何既有 `src/` 文件。
 - 未跑 grok CLI、未读密钥、未 push。
+
+---
+
+## H1-A1 处置（核验：修后可合）
+
+- **依据：** `plans/llm-native-htn/H1/reviews/核验-H1-A1-2026-09-18.md`（核验副本目录）。核验未发现 P0，判定「修后可合」；P1 为一组测试缺口（规格常量可被静默改动而测试全绿）。
+- **修复方式：** 只补测试，不改实现（`src/agent_orchestrator/contracts/planning_decisions.py` 零改动）。先确认缺口存在（把 `PLANNING_DECISION_SCHEMA_VERSION` 改成 `2`，旧测试仍 39 passed），再补钉死断言。
+- **P1 修复：**
+  - 新增 `test_wire_identity_constants_are_pinned`：逐字钉死 `PLANNING_DECISION_SCHEMA_VERSION == 1`、`PLANNING_DECISION_V1 == "planning-decision-v1"`、`LEGACY_PLANNING_PROTOCOL == "legacy-plan-proposal-v1"`、`PLANNING_DECISION_CODEC_VERSION == "planning-decision-codec-v1"`（KILL Y1/Y2/Y3）。
+  - `PlanningRefV1` 负例补 `semantic_revision=0`（KILL Y6）。
+- **P2 修复：**
+  - `test_max_planning_ref_id_is_pinned_with_boundaries`：钉死 `MAX_PLANNING_REF_ID == 256`，并 256 接受 / 257 拒绝（KILL X5）。
+  - `test_request_binding_package_version_lower_bound_is_pinned`：`package_version=0` 拒绝、`=1` 接受（KILL Y7）。
+  - `test_planning_ref_all_fields_are_required_by_construction`：直接构造缺 `content_hash` 报 `TypeError`（KILL Y12）。
+- **复验：** 上述 7 个原存活变异现全部 KILLED；恢复实现后 targeted **45 passed**。
+- 未改 `contracts/` 既有文件；未 merge / push / stash / reset / checkout。
