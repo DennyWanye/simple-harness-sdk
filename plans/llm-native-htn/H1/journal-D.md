@@ -225,6 +225,8 @@ feat(h1-d): planner package additions for planning-decision-v1 (subjects, visibl
 
 ## 8. 第 1 轮处置（核验结论：修后可合）
 
+**处置提交：** `b532b51`（fix(h1-d): use authoritative §5.1 digests in visible_refs (task/obligation) and strict ref bounds）
+
 **核验报告：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`（位于核验副本
 `simple-runtime-sdk-h1d-verify-h1-d`，未跟踪）。P0 无；P1 一条；P2 三条。
 
