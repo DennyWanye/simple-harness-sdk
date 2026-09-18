@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "decision_type": "BIND_EXISTING_GOAL",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "mode": "REUSE_ACCEPTED",
+    "consumer_method_instance_ref": {
+      "kind": "method_instance",
+      "id": "mi-2",
+      "semantic_revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "step": "inspect",
+    "goal_ref": {
+      "kind": "task",
+      "id": "g-1",
+      "semantic_revision": 1,
+      "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "resolution_ref": {
+      "kind": "resolution",
+      "id": "r-1",
+      "semantic_revision": 1,
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

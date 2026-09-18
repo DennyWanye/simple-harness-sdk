@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "METHOD_STALE",
+  "checked_in": "H1-F",
+  "scenario": "the method id exists but its semantic_revision is behind"
+}

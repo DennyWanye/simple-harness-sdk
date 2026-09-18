@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "EVIDENCE_CONFLICT",
+  "checked_in": "H1-F",
+  "scenario": "two observations disagree and the method cannot choose"
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "decision_type": "REFINE",
+  "subject_key": "subject-root",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "method_ref": {
+      "kind": "method",
+      "id": "code.fix-by-patch",
+      "semantic_revision": 2,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "bindings": {
+      "target": "src/app.py"
+    }
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

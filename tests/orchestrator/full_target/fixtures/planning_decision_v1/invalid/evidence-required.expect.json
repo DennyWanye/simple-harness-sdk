@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "EVIDENCE_REQUIRED",
+  "checked_in": "H1-F",
+  "scenario": "a blocking UNKNOWN premise must be observed before selecting the method"
+}

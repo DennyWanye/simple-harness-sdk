@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "decision_type": "NO_CHANGE",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "reason": "当前采用方法仍有效，已有工作正在推进。"
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

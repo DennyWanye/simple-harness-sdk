@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "DECISION_NOT_ENABLED_IN_PHASE",
+  "checked_in": "H1-F",
+  "scenario": "REQUEST_HUMAN decodes in H1 but is not admissible until H4"
+}

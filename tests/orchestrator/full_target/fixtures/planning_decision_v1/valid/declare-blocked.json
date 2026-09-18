@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "decision_type": "DECLARE_BLOCKED",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "blockers": [
+      {
+        "code": "NO_USABLE_METHOD",
+        "detail": "no method applies"
+      }
+    ],
+    "resumable_if": [
+      "new_method_admitted"
+    ]
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

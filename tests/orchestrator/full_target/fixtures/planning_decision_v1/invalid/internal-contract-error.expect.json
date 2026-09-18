@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "INTERNAL_CONTRACT_ERROR",
+  "checked_in": "H1-F",
+  "scenario": "an internal contract invariant failed while admitting"
+}

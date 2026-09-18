@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "MALFORMED_DECISION",
+  "checked_in": "H1-A2b",
+  "scenario": "the required rationale field is absent"
+}

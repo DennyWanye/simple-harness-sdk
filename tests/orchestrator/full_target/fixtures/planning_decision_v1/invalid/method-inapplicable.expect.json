@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "METHOD_INAPPLICABLE",
+  "checked_in": "H1-F",
+  "scenario": "a required precondition is FALSE in the current evidence"
+}

@@ -1,0 +1,116 @@
+# H1-A2b 实施日志：PlanningDecision JSON Schema、黄金样例与打包
+
+**基线 HEAD：** `72d440c`（`test(h1-a2a): pin closed-enum decode paths and non-ascii canonical json`）
+**工作分支：** `h1-a2b-schema-fixtures`；本片提交信息 = `feat(h1-a2b): planning-decision JSON Schema, golden fixtures and packaging`
+**规格依据：** `simpleharness-llm-native-htn-execution-plan-v2.zh-CN.md` §14/§16/§46；`LLM-native-HTN计划V2-裁定补遗-2026-09-18.zh-CN.md` §二（BL-1/BL-5/BL-6）/§三/§四；`H1-V2对照源码冲突检查-2026-09-18.zh-CN.md` §1.2/§5.1。
+
+## 一、范围与白名单
+
+只改白名单内文件：
+
+- `src/agent_orchestrator/contracts/schemas/planning-decision-v1.schema.json`（新增）
+- `src/agent_orchestrator/contracts/schemas/__init__.py`（新增，包数据可被 `importlib.resources` 定位）
+- `tests/orchestrator/full_target/fixtures/planning_decision_v1/{valid,invalid}/*.json`（新增）
+- `tests/orchestrator/full_target/test_planning_decision_json_schema.py`（新增）
+- `plans/llm-native-htn/H1/journal-A2b.md`（本文件）
+
+**未改** `pyproject.toml`：Hatchling 的 `[tool.hatch.build.targets.wheel] packages` 已覆盖整个 `src/agent_orchestrator`，`.json` 随包进入 wheel（见下实测），因此无需增加包数据配置。这是本片对「允许最小修改 `pyproject.toml`」的兑现方式——核验后确认不必改。
+
+## 二、Schema 决策
+
+1. Draft 2020-12，`$id = urn:simpleharness:planning-decision:v1`，顶层十字段与 `ENVELOPE_FIELDS` 逐值一致，`additionalProperties:false`。
+2. 每个封闭枚举在 `$defs` 声明**一次**：`decisionType / planningRefKind / assumptionRisk / uncertaintySeverity / alternativeDisposition / blockerCode / resumableIf / repairKind / bindExistingGoalMode`，其余位置用 `$ref`。`repair_kind` 在两种载荷里用 `$ref + const` 双约束（枚举封闭 + 子形状判别）。
+3. 顶层 `allOf/if-then` 把 `decision_type` 绑定到唯一载荷：八个类型各自 `$ref` 一个载荷 `$defs`；`REPAIR` 用 `oneOf` 指向 `REPLACE_METHOD` / `PROPOSE_SUCCESSOR` 两形状。
+4. `$defs` 覆盖：`planningRef / versionedTypeRef / assumption / uncertainty / alternative / replanTrigger` 加十种载荷及内层对象（`blockedItem / evidenceQuestion / humanOption`）。
+5. 限额与 §16 及 Python 常量逐值一致：`rationale<=4000`、`subject_key<=256`、`reason_refs<=32`、`assumptions<=16`、`alternatives<=8`、`uncertainties<=16`、`replan_triggers<=16`、`bindings<=64`、`wait_for<=32`、`blockers<=16`、`options<=12`、`arguments<=32`、`questions 1-8`；`planningRef.id<=256`，其余 id/text 上限取 `semantic_base` 的 `MAX_ID/MAX_TEXT/MAX_LIST`。
+6. 合同层可判的语义用 JSON Schema 直接表达：`REUSE_ACCEPTED` 的 `resolution_ref` 必须为 `planningRef`、`SHARE_ACTIVE` 必须为 `null`；`method_instance` 引用用 `allOf + kind const` 钉 kind；`blockedItem` 在 `code=OTHER` 时 `required:["detail"]`。
+7. 按 §32，`bindings` / `arguments` / `method_proposal` 是**任意域参数映射**，Schema 不给它们 `properties`/`propertyNames`，只限 `maxProperties`（或仅 `type:object`），不扫描系统字段名。顶层 `payload` 同样开放，形状由 `if-then` 收口。
+
+**未在规格覆盖处自定的最小决定（写在此处，供后续核验）：**
+
+- `$defs` 命名采用 camelCase（`planningRef`、`repairReplaceMethodPayload` 等），与 §14 顶层 camelCase 一致；§46 未规定 `$defs` 名。
+- `$defs/repairKind` 是该枚举的唯一声明点，载荷内用 `$ref + const`；这是把「枚举逐值一致」与「子形状唯一」同时钉住的最小结构。
+- `assumption.required_for` 的 `maxItems` 取 `len(PlanningDecisionType)=9`（Python 侧 `sequence_of(limit=len(PlanningDecisionType))`），规格只给了 9 个决定类型名，未单列该上限。
+- `reason_refs` 的重复拒绝由 Python `_unique_refs` 判定（`uniqueItems` 只能比对整对象），Schema 声明 `uniqueItems:true`，反例在 `STRUCTURE_INVALID` 下。
+
+## 三、黄金样例
+
+- `valid/` **11 个**：REFINE、REPAIR/REPLACE_METHOD、REPAIR/PROPOSE_SUCCESSOR、BIND_EXISTING_GOAL（REUSE_ACCEPTED）、BIND_EXISTING_GOAL（SHARE_ACTIVE）、DECLARE_BLOCKED、WAIT、NO_CHANGE、REQUEST_EVIDENCE、REQUEST_HUMAN、PROPOSE_METHOD。
+- `invalid/` **39 个**（每个同名 `.expect.json`）：
+  - `checked_in = H1-A2b`（合同层，`expected_stage = codec`）：`UNKNOWN_FIELD`、`MALFORMED_DECISION`（缺字段 + 载荷与类型不匹配）、`MODEL_SET_SYSTEM_FIELD`、`DECISION_TYPE_UNKNOWN`、`STRUCTURE_INVALID`（SHARE_ACTIVE 带 resolution_ref、超限额、重复引用）。
+  - `checked_in = H1-F`（准入层，`expected_stage = admission`，样例结构合法、当前 `from_json` 可通过）：其余 30 个拒绝码（方法不存在/过期/退役/被拒/不适用/未授权、参数、证据、能力、数据、结构、ORDER/REFINEMENT 环、覆盖、预算、义务、授权、未决操作、运行中未对账、REPAIR/REUSE 不允许、规划上限、INTERNAL）。
+  - `checked_in = H1-F`（文本层，`expected_stage = codec`）：`DECISION_BLOCK_MISSING`、`MULTIPLE_DECISIONS`、`MIXED_PROTOCOL_BLOCKS` 三个块扫描器用例（内容为 `{model_reply, note}` 描述子，不是可解码信封）。
+- 36 个拒绝码一一对应，无缺无多。
+
+## 四、测试策略（不引入 `jsonschema`）
+
+`tests/orchestrator/full_target/test_planning_decision_json_schema.py`，**无第三方依赖**：
+
+1. `importlib.resources.files("agent_orchestrator.contracts.schemas")` 读到 Schema 且 `$id` 正确；`$schema`/`required`/`properties` 与 `ENVELOPE_FIELDS` 一致。
+2. 遍历 Schema，断 `enum`、`maxLength/maxItems/maxProperties/minItems/minLength`、`const`、`pattern`、`minimum` 与 Python 枚举/常量逐值一致；任一侧新增或放宽即红。
+3. 极简结构自检：每个 `$ref` 以 `#/$defs/` 开头且目标存在；所有固定形状对象 `additionalProperties:false`（域参数映射除外）；`if-then` 覆盖全部九个 `decision_type`。
+4. 每个 valid 样例经 `PlanningDecisionEnvelopeV1.from_json` 通过，`to_json` 往返逐字段一致；载荷键集合等于其绑定 `$defs` 的 `required`。
+5. `H1-A2b` 反例被 `from_json` 拒绝；`H1-F` 准入反例当前解码通过（标记待 H1-F 落地）；三个文本层用例只断言其描述子与期望码。
+
+## 五、红到绿
+
+**红：** 新测试先写，首次运行 15 failed / 4 passed / 3 skipped（Schema 与样例目录不存在）。随后补齐 Schema 与样例：
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py -q -p no:cacheprovider
+86 passed in 0.08s
+```
+
+A2a 回归（未改实现，仍绿）：
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_contract.py tests/orchestrator/full_target/test_planning_decision_envelope.py -q -p no:cacheprovider
+151 passed in 0.09s
+```
+
+full_target 全量：
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
+3197 passed, 2 skipped in 127.63s (0:02:07)
+```
+
+（2 skip = `--run-real-provider` 专项 + `SH_PANDA_PARSER`，与 H0 口径一致。）
+
+## 六、打包与静态检查
+
+`uv build` 不联网时：
+
+```
+$ uv build --offline
+Successfully built dist/simple_harness_sdk-0.12.2.tar.gz
+Successfully built dist/simple_harness_sdk-0.12.2-py3-none-any.whl
+```
+
+wheel 内含 `agent_orchestrator/contracts/schemas/planning-decision-v1.schema.json` 与 `__init__.py`。解包到临时目录后以 3.12 解释器验证：
+
+```
+$ PYTHONPATH=. uv run --offline --python 3.12 python -c "from importlib import resources; p=resources.files('agent_orchestrator.contracts.schemas').joinpath('planning-decision-v1.schema.json'); print(p.is_file(), p.read_text()[:44])"
+True {
+  "$schema": "https://json-schema.org/draft/2020-12/schema
+```
+
+ruff（本片文件）：
+
+```
+$ uv run --offline ruff check src/agent_orchestrator/contracts tests/orchestrator/full_target/test_planning_decision_json_schema.py
+All checks passed!
+```
+
+`reuse lint` 与全仓 `ruff check src tests` 在本片之前即失败（缺版权信息的既有文件；全仓 ruff 119 处既有告警）。`ruff` 未新增任何一处：本片改动的文件全部 `All checks passed!`。`scripts/check_source_provenance.py` 通过。
+
+**REUSE 覆盖的新问题（写在此处并停在该点）：** `REUSE.toml` 的 `annotations.path` 只覆盖 `tests/**/*.json`、`plans/**/*.json`、`provenance/*.json`，**没有** `src/**/*.json`；因此新增的 `contracts/schemas/planning-decision-v1.schema.json` 与既有的 `planning/htn/seed_methods/{code,appworld}/*.json` 一样落在 `reuse lint` 的缺版权清单里。本片白名单不含 `REUSE.toml`，故**未改**它（照既有 seed_methods JSON 的惯例处理），仅在此记录，交给 H1 收尾或单独的文件头覆盖片统一决定是否给 `src/**/*.json` 加聚合注解。本片新增的 `__init__.py` 与测试文件均带 SPDX 头。
+
+## 七、未做项（属于后继片）
+
+- H1-C：`<planning_decision>` 块扫描/解析器（三个文本层反例的判定方）、`MethodProposal` 内层校验。
+- H1-D/H1-E：package v4、prompt v8。
+- H1-F：准入层（30 个 `H1-F` 反例的实际拒绝实现 + 新事件）。
+- H1-H：编排接线；H1-I：真实模型/变异验收。
+
+**测试计数（供最终回复引用）：** A2b 新增 86 passed（本文件）+ 11 valid / 39 invalid fixtures；full_target 3197 passed / 2 skipped。

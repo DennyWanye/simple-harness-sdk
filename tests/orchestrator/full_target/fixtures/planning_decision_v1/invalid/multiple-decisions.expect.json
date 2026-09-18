@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "MULTIPLE_DECISIONS",
+  "checked_in": "H1-F",
+  "scenario": "the model reply contains two decision blocks"
+}

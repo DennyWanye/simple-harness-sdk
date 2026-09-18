@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "UNKNOWN_FIELD",
+  "checked_in": "H1-A2b",
+  "scenario": "an unexpected top-level key arrives with the decision"
+}

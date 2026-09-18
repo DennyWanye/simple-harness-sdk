@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "DECISION_TYPE_UNKNOWN",
+  "checked_in": "H1-A2b",
+  "scenario": "SELECT_METHOD was removed before H1"
+}

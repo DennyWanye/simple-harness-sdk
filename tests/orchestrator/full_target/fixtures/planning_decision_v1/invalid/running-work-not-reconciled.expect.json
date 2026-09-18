@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "RUNNING_WORK_NOT_RECONCILED",
+  "checked_in": "H1-F",
+  "scenario": "a running sibling on the retired method is not reconciled yet"
+}

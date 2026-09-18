@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "decision_type": "REFINE",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "method_ref": {
+      "kind": "method",
+      "id": "code.ghost",
+      "semantic_revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "bindings": {}
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "BUDGET_INSUFFICIENT",
+  "checked_in": "H1-F",
+  "scenario": "the mission planning budget is exhausted"
+}

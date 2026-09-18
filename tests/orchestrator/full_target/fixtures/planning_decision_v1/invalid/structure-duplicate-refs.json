@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "decision_type": "REFINE",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [
+    {
+      "kind": "observation",
+      "id": "obs-1",
+      "semantic_revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "kind": "observation",
+      "id": "obs-1",
+      "semantic_revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "assumptions": [],
+  "payload": {
+    "method_ref": {
+      "kind": "method",
+      "id": "code.fix-by-patch",
+      "semantic_revision": 2,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "bindings": {
+      "target": "src/app.py"
+    }
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

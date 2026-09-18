@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "MIXED_PROTOCOL_BLOCKS",
+  "checked_in": "H1-F",
+  "scenario": "a legacy <plan_revision_proposal> block appears next to the decision"
+}

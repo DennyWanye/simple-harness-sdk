@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "METHOD_NOT_AUTHORIZED",
+  "checked_in": "H1-F",
+  "scenario": "the method requires an authority grant the mission lacks"
+}

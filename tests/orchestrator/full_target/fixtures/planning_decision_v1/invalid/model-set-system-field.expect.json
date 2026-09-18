@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "MODEL_SET_SYSTEM_FIELD",
+  "checked_in": "H1-A2b",
+  "scenario": "the model tried to set mission_id itself"
+}

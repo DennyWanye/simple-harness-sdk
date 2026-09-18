@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "PLANNING_BOUND_REACHED",
+  "checked_in": "H1-F",
+  "scenario": "the mission hit its planning bound"
+}

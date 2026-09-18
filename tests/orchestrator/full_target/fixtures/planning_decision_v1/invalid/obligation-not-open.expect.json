@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "OBLIGATION_NOT_OPEN",
+  "checked_in": "H1-F",
+  "scenario": "the successor binds a closed obligation"
+}

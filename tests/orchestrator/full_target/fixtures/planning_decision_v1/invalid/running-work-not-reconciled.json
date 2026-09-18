@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "decision_type": "REPAIR",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "repair_kind": "REPLACE_METHOD",
+    "rejected_method_instance": {
+      "kind": "method_instance",
+      "id": "mi-1",
+      "semantic_revision": 3,
+      "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "replacement_method_ref": {
+      "kind": "method",
+      "id": "code.alt-fix",
+      "semantic_revision": 1,
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "bindings": {}
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

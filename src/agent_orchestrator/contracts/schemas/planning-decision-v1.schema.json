@@ -1,0 +1,872 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:simpleharness:planning-decision:v1",
+  "title": "planning-decision-v1",
+  "description": "H1 model-facing PlanningDecisionEnvelopeV1 (HTN-LLM-NATIVE V2 §13). The Python strict codec is the runtime authority; this schema documents the wire shape for fixtures, other-language hosts and static conformance tests. It never authorises an action and never replaces admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision_type",
+    "subject_key",
+    "rationale",
+    "reason_refs",
+    "assumptions",
+    "payload",
+    "uncertainties",
+    "alternatives",
+    "replan_triggers"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "decision_type": {
+      "$ref": "#/$defs/decisionType"
+    },
+    "subject_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "reason_refs": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/planningRef"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/assumption"
+      }
+    },
+    "payload": {
+      "type": "object"
+    },
+    "uncertainties": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/uncertainty"
+      }
+    },
+    "alternatives": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/alternative"
+      }
+    },
+    "replan_triggers": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/replanTrigger"
+      }
+    }
+  },
+  "$defs": {
+    "decisionType": {
+      "enum": [
+        "REFINE",
+        "PROPOSE_METHOD",
+        "REQUEST_EVIDENCE",
+        "REPAIR",
+        "BIND_EXISTING_GOAL",
+        "DECLARE_BLOCKED",
+        "REQUEST_HUMAN",
+        "WAIT",
+        "NO_CHANGE"
+      ]
+    },
+    "planningRefKind": {
+      "enum": [
+        "task",
+        "obligation",
+        "method",
+        "requirements",
+        "artifact",
+        "source",
+        "observation",
+        "review",
+        "acceptance",
+        "resolution",
+        "operation",
+        "tool_receipt",
+        "knowledge",
+        "authority",
+        "capability",
+        "method_instance"
+      ]
+    },
+    "assumptionRisk": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ]
+    },
+    "uncertaintySeverity": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ]
+    },
+    "alternativeDisposition": {
+      "enum": [
+        "CONSIDERED",
+        "REJECTED",
+        "DEFERRED"
+      ]
+    },
+    "blockerCode": {
+      "enum": [
+        "NO_USABLE_METHOD",
+        "EVIDENCE_INSUFFICIENT",
+        "AUTHORIZATION_MISSING",
+        "CAPABILITY_MISSING",
+        "STRUCTURE_UNSAT",
+        "OTHER"
+      ]
+    },
+    "resumableIf": {
+      "enum": [
+        "new_method_admitted",
+        "evidence_updated",
+        "authorization_granted",
+        "human_resolved",
+        "plan_revision_changed"
+      ]
+    },
+    "bindExistingGoalMode": {
+      "enum": [
+        "REUSE_ACCEPTED",
+        "SHARE_ACTIVE"
+      ]
+    },
+    "planningRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "semantic_revision",
+        "content_hash"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/planningRefKind"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "semantic_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "versionedTypeRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "content_hash"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "assumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "statement",
+        "required_for",
+        "risk",
+        "suggested_predicate_key"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "required_for": {
+          "type": "array",
+          "maxItems": 9,
+          "items": {
+            "$ref": "#/$defs/decisionType"
+          }
+        },
+        "risk": {
+          "$ref": "#/$defs/assumptionRisk"
+        },
+        "suggested_predicate_key": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "statement",
+        "severity",
+        "affects"
+      ],
+      "properties": {
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "severity": {
+          "$ref": "#/$defs/uncertaintySeverity"
+        },
+        "affects": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "alternative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method_ref",
+        "label",
+        "disposition",
+        "reason"
+      ],
+      "properties": {
+        "method_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/planningRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "disposition": {
+          "$ref": "#/$defs/alternativeDisposition"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      }
+    },
+    "replanTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "referenced_predicates",
+        "suggested_decision"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "referenced_predicates": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "suggested_decision": {
+          "$ref": "#/$defs/decisionType"
+        }
+      }
+    },
+    "refinePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method_ref",
+        "bindings"
+      ],
+      "properties": {
+        "method_ref": {
+          "$ref": "#/$defs/planningRef"
+        },
+        "bindings": {
+          "type": "object",
+          "maxProperties": 64
+        }
+      }
+    },
+    "repairReplaceMethodPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "rejected_method_instance",
+        "replacement_method_ref",
+        "bindings"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "REPLACE_METHOD"
+        },
+        "rejected_method_instance": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/planningRef"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "method_instance"
+                }
+              }
+            }
+          ]
+        },
+        "replacement_method_ref": {
+          "$ref": "#/$defs/planningRef"
+        },
+        "bindings": {
+          "type": "object",
+          "maxProperties": 64
+        }
+      }
+    },
+    "repairProposeSuccessorPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "old_task_ref",
+        "obligation_ref",
+        "goal_type_ref",
+        "bindings"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "PROPOSE_SUCCESSOR"
+        },
+        "old_task_ref": {
+          "$ref": "#/$defs/planningRef"
+        },
+        "obligation_ref": {
+          "$ref": "#/$defs/planningRef"
+        },
+        "goal_type_ref": {
+          "$ref": "#/$defs/versionedTypeRef"
+        },
+        "bindings": {
+          "type": "object",
+          "maxProperties": 64
+        }
+      }
+    },
+    "bindGoalPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "consumer_method_instance_ref",
+        "step",
+        "goal_ref",
+        "resolution_ref"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/bindExistingGoalMode"
+        },
+        "consumer_method_instance_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/planningRef"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "method_instance"
+                }
+              }
+            }
+          ]
+        },
+        "step": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "goal_ref": {
+          "$ref": "#/$defs/planningRef"
+        },
+        "resolution_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/planningRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "SHARE_ACTIVE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "resolution_ref": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "REUSE_ACCEPTED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "resolution_ref": {
+                "$ref": "#/$defs/planningRef"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "blockedItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/blockerCode"
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "OTHER"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "detail"
+            ]
+          }
+        }
+      ]
+    },
+    "declareBlockedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockers",
+        "resumable_if"
+      ],
+      "properties": {
+        "blockers": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/blockedItem"
+          }
+        },
+        "resumable_if": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/resumableIf"
+          }
+        }
+      }
+    },
+    "waitPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wait_for",
+        "reason"
+      ],
+      "properties": {
+        "wait_for": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/planningRef"
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      }
+    },
+    "noChangePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      }
+    },
+    "evidenceQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predicate_key",
+        "arguments",
+        "purpose",
+        "blocking"
+      ],
+      "properties": {
+        "predicate_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "arguments": {
+          "type": "object",
+          "maxProperties": 32
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "blocking": {
+          "type": "boolean"
+        }
+      }
+    },
+    "requestEvidencePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "questions"
+      ],
+      "properties": {
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/evidenceQuestion"
+          }
+        }
+      }
+    },
+    "humanOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "label"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      }
+    },
+    "requestHumanPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "options",
+        "blocking"
+      ],
+      "properties": {
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "options": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "$ref": "#/$defs/humanOption"
+          }
+        },
+        "blocking": {
+          "type": "boolean"
+        }
+      }
+    },
+    "proposeMethodPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method_proposal"
+      ],
+      "properties": {
+        "method_proposal": {
+          "type": "object"
+        }
+      }
+    },
+    "repairKind": {
+      "enum": [
+        "REPLACE_METHOD",
+        "PROPOSE_SUCCESSOR"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "REFINE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/refinePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "PROPOSE_METHOD"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/proposeMethodPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "REQUEST_EVIDENCE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/requestEvidencePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "REPAIR"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/repairReplaceMethodPayload"
+              },
+              {
+                "$ref": "#/$defs/repairProposeSuccessorPayload"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "BIND_EXISTING_GOAL"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/bindGoalPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "DECLARE_BLOCKED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/declareBlockedPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "REQUEST_HUMAN"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/requestHumanPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "WAIT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/waitPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision_type": {
+            "const": "NO_CHANGE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/noChangePayload"
+          }
+        }
+      }
+    }
+  ]
+}
