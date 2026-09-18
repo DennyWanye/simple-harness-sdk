@@ -2803,20 +2803,25 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             mission = self._require_mission(mission_id)
             if mission.status is MissionStatus.FAILED:
                 return mission
+            report = {
+                **dict(mission.final_report or {}),
+                "planning_failure": {"reason": reason, **dict(detail)},
+                # step 6: a non-planning stop reason (the pool ran out) reads like fail_mission
+                **(
+                    {}
+                    if stop_reason is MissionStopReason.PLANNING_FAILED
+                    else {"stop_reason": str(stop_reason), "detail": dict(detail)}
+                ),
+            }
+            from .hierarchical_dispatch import is_hierarchical
+
+            if is_hierarchical(mission):
+                report.update(self._ledger.usage_flags(mission_id))
             updated = next_mission(
                 mission,
                 MissionStatus.FAILED,
                 stop_reason=str(stop_reason),
-                final_report={
-                    **dict(mission.final_report or {}),
-                    "planning_failure": {"reason": reason, **dict(detail)},
-                    # step 6: a non-planning stop reason (the pool ran out) reads like fail_mission
-                    **(
-                        {}
-                        if stop_reason is MissionStopReason.PLANNING_FAILED
-                        else {"stop_reason": str(stop_reason), "detail": dict(detail)}
-                    ),
-                },
+                final_report=report,
             )
             self._store.update_mission(updated, expected_version=mission.version)
             self._emit(
@@ -2860,6 +2865,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 "detail": dict(detail),
                 "tasks": self._task_reports(mission_id),
             }
+            from .hierarchical_dispatch import is_hierarchical
+
+            if is_hierarchical(mission):
+                report.update(self._ledger.usage_flags(mission_id))
             failed = next_mission(
                 mission, MissionStatus.FAILED, stop_reason=str(stop_reason), final_report=report
             )
@@ -5518,6 +5527,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 "completed_parts": self._completed_parts(task_id),
                 "tasks": self._task_reports(mission.id),
             }
+            from .hierarchical_dispatch import is_hierarchical
+
+            if is_hierarchical(mission):
+                report.update(self._ledger.usage_flags(mission.id))
             if stop_reason is MissionStopReason.INSUFFICIENT_EVIDENCE:
                 domain = self.domain_for(mission.id)
                 if supports_document_assessments(domain):

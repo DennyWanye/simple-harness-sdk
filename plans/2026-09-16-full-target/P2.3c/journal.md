@@ -3798,6 +3798,43 @@ C3-r0（`mission-01a511b9a5d78b1f`）：种子方法 `code.fix-by-patch@2`。fac
 - 有 token 的 UNKNOWN 目前 `settle_unknown` 仍不从异常里抄 usage（异常路径没有 response）；streak 重置靠 SUCCEEDED / usage.total_tokens>0。
 - synthesizer / critic 两次 UNKNOWN 仍走 P2.3f 既有 UNANSWERED / runner 门，不改成 `runtime_unavailable`（已有界）。
 
+## 2s. P2.3r：终态释放 UNKNOWN 预留 + 诊断沿异常链 + usage_fully_known（2026-09-18，分支 `p2.3r-terminal-unknown-release-and-diagnostics`，基 `d360750` = 0.12.2 候选第 4 版）
+
+输入：用户任务书 + 诊断 `Grok验收-第4批L3诊断-2026-09-18.zh-CN.md` §4 N9/N11、§8 Q2、§10 Q4。证据只读。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 根因
+
+H-L3-C1-r0 墙钟 1800 s → `_runtime_exhausted` 只 `fail_mission(BUDGET_EXHAUSTED)` + `_release_mission`，注释「what was spent and reserved stays on the books」，**不**调 `_release_mission_unknown_grants`。verify attempt-2 的 grant 停在 `UNKNOWN`（actual_tokens=0），账本 reserved=100,000。runner 因 `unknown_usage_calls=1` 判 `budget_conserved=false`；等式 `remaining+reserved+settled==pool` 本身成立。C1-r1 / C2-r0 的 admission-denied 同形：FAILED 无 usage → guard observe 把 grant 标 UNKNOWN → `_settle_if_known` 占预留。
+
+N11：C1-r0 唯一 UNKNOWN invocation 的 `usage_json.error_class=UnknownProviderUsage`、无 `http_status`。`MeteredProvider` 在 `metered_provider.py:382` 抛 `UnknownProviderUsage(...) from error`，`_handoff_unknown_diagnostics` 只看包装类。
+
+### 修法
+
+1. **N9 统一终态收口**：`_prepare_terminal_ledger`（只对 hierarchical）导入用量（含 unknown）→ `release_held_grants` → `settle_subject_known`（未知留账、不按 0 结算）→ 把仍 SUBMITTED 的 intent 标 FAILED（否则墙钟后 `run()` 被 `_has_inflight` 挂住）。`fail_mission` / `fail_planning` / `stop_task` / `cancel_mission` 全部经 `_commit_*` 包装，哨兵钉「各恰好 1 处直调 commit」。legacy 包装是 no-op（ORCH §12.2 仍占预留）。
+2. **N11**：`_handoff_unknown_diagnostics` 沿 `__cause__` / `__context__` 取底层短类名与 `status_code`；包装类另记 `wrapper_class`。`_settle_unknown` 同样只收 `isidentifier` / int。不写响应体/请求体/头/密钥。
+3. **口径字段**：`costs_report` 与 hierarchical `final_report` 加 `usage_fully_known`（无 unknown 导入且无 HELD/UNKNOWN grant）与 `budget_conserved`（`remaining+reserved+settled==pool`）。Host 应用前者区分「用量全部已知」，不要把 unknown 留账当成不守恒。legacy `final_report` 不加这两键。
+
+### 测试
+
+新文件 `test_terminal_unknown_release.py` 6 条（哨兵；墙钟 + 包装异常真 `run()`；admission-denied；planning_failed；runtime_unavailable 两字段分立；legacy 不加字段）+ `test_provider_unknown.py` +1。先红后绿。`build_world` 可传 `max_runtime_seconds`。
+
+变异 4/4 KILLED（临时改源，从 `/tmp/p23r-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | `_prepare_terminal_ledger` 立即 return | 墙钟 + admission-denied e2e | **KILLED**（2 failed：grant 停 UNKNOWN） |
+| M2 | diagnostics 不沿 `__cause__` | 落库单测 + 墙钟 e2e | **KILLED**（2 failed：`error_class=UnknownProviderUsage`） |
+| M3 | `_usage_fully_known` 恒 True | 墙钟 + runtime_unavailable | **KILLED**（2 failed：`usage_fully_known` 应为 False） |
+| M4 | 释放 grant 但不 `settle_known` | 墙钟 + admission-denied | **KILLED**（2 failed：`reserved=20000`） |
+
+回归：full_target **2894 passed / 2 skipped**（基线 2888/2，+6）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**；`tests/integration/test_provider_unknown.py` 定向绿。ruff 改动文件清；`_new_mode` 仍 19；legacy 事件字节 golden 不变；冻结提示词 sha256 不变。
+
+### 未做
+
+- Host runner `_budget_conserved` 改读 `usage_fully_known`（N9 修法的 runner 半边）。
+- 真实模型第 4 批未重跑。
+- 有 token 的 UNKNOWN 仍不从异常抄 usage（P2.3p 未做项）。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

@@ -251,6 +251,7 @@ def _spec(
     tokens: int | None = MISSION_TOKENS,
     domain: str | None = None,
     tools: tuple[str, ...] = TOOLS,
+    max_runtime_seconds: int | None = None,
 ) -> MissionSpec:
     """``domain`` / ``tools`` are P2.3d additions: defect D1 is about the Worker prompt
     an AppWorld Mission gets, and that needs a Mission bound to the AppWorld domain."""
@@ -261,7 +262,9 @@ def _spec(
         tenant_id="tenant-p23c",
         idempotency_key=key,
         allowed_tools=tools,
-        budget=Budget(max_tokens=tokens, max_attempts=12),
+        budget=Budget(
+            max_tokens=tokens, max_attempts=12, max_runtime_seconds=max_runtime_seconds
+        ),
         orchestration_semantics_version=mode,
         **({} if domain is None else {"domain": domain}),
     )
@@ -396,11 +399,19 @@ def build_world(
     name: str = "orchestrator.db",
     domain: str | None = None,
     tools: tuple[str, ...] = TOOLS,
+    max_runtime_seconds: int | None = None,
 ) -> World:
     path = Path(tmp_path) / name
     service = CommitService(Store.open(path))
     mission, _ = service.create_mission(
-        _spec(key, mode=mode, tokens=tokens, domain=domain, tools=tools)
+        _spec(
+            key,
+            mode=mode,
+            tokens=tokens,
+            domain=domain,
+            tools=tools,
+            max_runtime_seconds=max_runtime_seconds,
+        )
     )
     env = _env(mission.id)
     contract = _outer()
