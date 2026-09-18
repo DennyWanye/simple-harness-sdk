@@ -250,6 +250,9 @@ class WorkspaceBinding:
     context_policy: ContextPolicy | None = None
     tokenizer: TokenizerPort | None = None
     mission_id: str | None = None
+    # P2.3u: files that already existed when a read-only leaf bound (seed + P2.3o
+    # overlay).  Empty on a writing leaf and on every legacy Attempt.
+    read_only_existing: tuple[str, ...] = ()
 
 
 def is_untrusted(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -636,6 +639,24 @@ class WorkspaceToolGateway:
                         stage="policy",
                         message=f"{path} is a read-only input from an upstream Task",
                     )
+                if call.name == "workspace_write_file" and binding.read_only_existing:
+                    existing = {
+                        _canonical(p).casefold() for p in binding.read_only_existing
+                    }
+                    if canonical.casefold() in existing:
+                        return self._reject(
+                            call,
+                            record,
+                            code="read_only_existing_file",
+                            outcome="read_only_existing_file",
+                            stage="policy",
+                            message=(
+                                f"{path} already exists in this workspace. This leaf's "
+                                "task type is read-only (observe and report): do not "
+                                "change existing files. Write findings to a declared "
+                                "output port or REPORT.md."
+                            ),
+                        )
         except WorkspaceError as error:
             return self._reject(
                 call,

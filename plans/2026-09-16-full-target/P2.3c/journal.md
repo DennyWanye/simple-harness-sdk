@@ -3882,6 +3882,44 @@ N11：C1-r0 唯一 UNKNOWN invocation 的 `usage_json.error_class=UnknownProvide
 - 真实模型第 4 批未重跑。
 - 有 token 的 UNKNOWN 仍不从异常抄 usage（P2.3p 未做项）。
 
+## 2w. P2.3u：只读叶写守卫（事前拒绝已存在文件）（2026-09-18，分支 `p2.3u-read-only-leaf-write-guard`，基 `f2dfa64` = 0.12.2 候选第 5 版）
+
+输入：用户任务书 + 第 4 批诊断「可省调用」#3 + 第 5 批只读证据（H-L3-{C1-r0,C1-r1,C2-r1} orchestrator.db，`file:...?immutable=1`）。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。P2.3t 在另一 worktree 改分层 verify/inspect 模板，本片改的是代码域 `worker-hierarchical-v3`（v2 字节不动）。
+
+### 根因
+
+只读叶（`side_effect_kind=external_read`，能力 `tests.run` / `repo.read`）Worker 仍暴露 `workspace_write_file`。提示词已写「this leaf's task type is read-only … do not change existing files」，模型照样改 `metrics/collector.py` 等。P2.3k/P2.3m 在 `_collect_attempt` **事后** `ResultRejected{read_only_leaf_rewrote_workspace}`：整次 Attempt（5–8 次模型调用）作废，满 2 次取消叶 → 修复轮 → 新方法的只读叶又改写。C2-r1 隐藏评分 PASS，第 3 轮方法以 `no_dispatchable_work` 收场。
+
+P2.3o 已把上游已验收源码预铺进下游工作区，所以「已存在文件」= 种子 ∪ 绑定 overlay，与 `read_only_rewrites` 的 `initial` 同一集合。
+
+### 修法
+
+1. **网关事前拒绝**：`WorkspaceBinding.read_only_existing`（绑定瞬间 `list_files()`，即种子 + P2.3o overlay）。分层只读叶在 `_next_attempt` 用已有的 `new_mode` 调 `read_only_leaf(binding)`，intent 只在 True 时写 `read_only_leaf`（legacy / 写型叶不加键）。`_bind_agent` 快照已有路径。`workspace_write_file` 对已存在文件返回 `read_only_existing_file`（给模型看：该叶只读、把发现写进声明端口 / REPORT.md），文件不变，不 `ResultRejected`、不消耗 Attempt。新文件（报告、端口产物）允许写；写型叶 `read_only_existing=()` 不受影响。路径判断复用网关已有的 `_canonical` / `list_files`，不另造一套。
+2. **暴露清单**：`effective_tools(..., read_only_leaf=)` 对只读叶去掉 `apply_patch` / `workspace_apply_patch`（今天未部署；selftest 用四向交集证明裁剪）。`workspace_write_file` 保留——报告要用。
+3. **事后兜底**：P2.3m `read_only_rewrites` 同哈希规则不动。绕过工具的直接改写仍 `ResultRejected`。
+4. **提示词**：只加 `worker-hierarchical-v3`（「若本叶任务类型是只读……不能改已有文件；需要改动时在报告里写明建议」）。`worker-hierarchical-v2` 字节不动，digest `120372b8…` 登记为 `WORKER_HIERARCHICAL_V2`。合并时若 P2.3t 对 verify/inspect 模板写了同类句子，以两边一致为准；本片模板名/版本：`worker` / `worker-hierarchical-v3`。
+
+### 测试
+
+新文件 `test_read_only_leaf_write_guard.py` 9 条（网关 3；effective_tools 1；收集无 ResultRejected 1；事后兜底 1；真 `Orchestrator.run()` COMPLETED 1；v3/v2 冻结 1；legacy 绑定 1）+ 冻结表 +1（V2）。先红后绿。P2.3m/P2.3n 里「verify 真改源码」的脚本改为 `workspace_root` 直写，专门走收集兜底。
+
+变异 4/4 KILLED（临时改源，从 `/tmp/p23u-mutant-backup/` 恢复，sha256 与备份一致，不用 git checkout）：
+
+| # | 变异 | 定向测试 | 结果 |
+|---|---|---|---|
+| M1 | 网关 `if False and binding.read_only_existing` | 网关单测 + 收集 + e2e | **KILLED**（3 failed：写成功 / ResultRejected / TimeoutError） |
+| M2 | `_bind_agent` 不快照已有文件 | 收集 + e2e | **KILLED**（2 failed：ResultRejected / TimeoutError） |
+| M3 | `effective_tools` 忽略 `read_only_leaf` | 裁剪单测 | **KILLED**（`apply_patch` 仍在只读清单） |
+| M4 | v3 去掉「不能改已有文件」句 | v3 冻结 + digest | **KILLED**（2 failed：句子缺失 / digest 回到 v2） |
+
+回归：full_target **2921 passed / 2 skipped**（基线 2911/2，+10 = 新文件 9 + 冻结参数化 +1）；旧模式 step02/05/06/07/p34/p35 **560 passed / 13 skipped / 0 failed**（一次 `test_queued_planner_cancel` TimeoutError 复跑即过，与本片无关）；`step06` 网关/隔离 23 过。ruff `src/agent_orchestrator` + `tests/orchestrator/full_target` 清；`_new_mode` 仍 19；legacy 事件字节 golden 不变。
+
+### 未做
+
+- 真实模型第 5 批未重跑（验收在跑，不碰 `.local-test-evidence` / grok CLI / llm_runtime）。
+- 没有部署中的 patch/apply 工具可从只读叶清单拿掉；常量预留名字，selftest 钉住。
+- P2.3t 的 verify/inspect 模板若另有措辞，合并时对齐，本片不改那些模板。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

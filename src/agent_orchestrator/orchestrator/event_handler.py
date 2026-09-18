@@ -230,6 +230,7 @@ from .hierarchical_dispatch import (
 from .occurrence_tasks import (
     MAX_READ_ONLY_REWRITE_REJECTIONS,
     MAX_READ_ONLY_REWRITE_REPAIRS,
+    read_only_leaf,
     read_only_rewrites,
 )
 from .plan_commits import PlanPrincipal
@@ -3694,6 +3695,18 @@ class Orchestrator:
             self.assembled.gateway.bind_agentdojo(attempt.mission_id)
         if self.commit.domain_for(attempt.mission_id).id == "are-v1":
             self.assembled.gateway.bind_are(attempt.mission_id)
+        read_only_existing: tuple[str, ...] = ()
+        if config.get("read_only_leaf"):
+            # P2.3u: the files already in the tree (seed + P2.3o overlay) are what
+            # the gateway refuses to rewrite.  Same set ``read_only_rewrites`` uses
+            # as ``initial`` — listed here so the tool, not the collector, is first.
+            try:
+                workspace = self.assembled.workspaces.get(
+                    str(config["attempt_id"]), writable=False
+                )
+                read_only_existing = tuple(workspace.list_files())
+            except WorkspaceError:
+                read_only_existing = ()
         self.assembled.gateway.bind(
             agent_id,
             WorkspaceBinding(
@@ -3709,6 +3722,7 @@ class Orchestrator:
                 denied_prefixes=self._config.deployment_policy.denied_path_prefixes,
                 context_policy=context_profile.context_policy,
                 tokenizer=context_profile.tokenizer,
+                read_only_existing=read_only_existing,
             ),
         )
 
@@ -9006,6 +9020,12 @@ class Orchestrator:
         if remaining_selection <= 0:
             return False
         # D6-7: Mission ∩ Task ∩ Role ∩ Deployment, frozen into the intent below
+        # P2.3u: a hierarchical read-only leaf also drops patch/apply-class tools.
+        # ``new_mode`` was already asked at the top of this function (no extra site).
+        read_only = False
+        if new_mode is not None:
+            semantic = new_mode.semantics().task_semantics_of(mission.id, task.id)
+            read_only = semantic is not None and read_only_leaf(semantic)
         allowed = effective_tools(
             mission_tools=mission.allowed_tools,
             task_tools=task.allowed_tools,
@@ -9017,6 +9037,7 @@ class Orchestrator:
                 else role.tool_names
             ),
             deployment=self._config.deployment_policy,
+            read_only_leaf=read_only,
         )
         # D6-8: the Attempt's tool-call cap = the deployment's per-turn cap, narrowed by the
         # Task budget's own dimension; it is reserved up front and enforced at the gateway
@@ -9173,6 +9194,7 @@ class Orchestrator:
                     "untrusted_sources": untrusted,
                     **({"validated_fragment_input": validated_input}
                        if validated_input is not None else {}),
+                    **({"read_only_leaf": True} if read_only else {}),
                     **source_binding,
                     "allocation": dict(
                         allocation or {}

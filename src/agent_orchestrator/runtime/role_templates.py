@@ -792,13 +792,30 @@ register_template(WORKER_HIERARCHICAL_V1)
 #:
 #: v1 is not edited — an Attempt replays on the bytes it pinned (§26.3) and its digest
 #: is frozen — so this is a new version beside it, worded like the AppWorld one.
-WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v2"
-WORKER_HIERARCHICAL = _revise(
+WORKER_HIERARCHICAL_V2_VERSION = "worker-hierarchical-v2"
+WORKER_HIERARCHICAL_V2 = _revise(
     WORKER_HIERARCHICAL_V1,
-    WORKER_HIERARCHICAL_VERSION,
+    WORKER_HIERARCHICAL_V2_VERSION,
     (
         "declared_output_ports 里 required=true 且下游确有消费者的端口必须被认领，漏掉会被验收拒绝。",
         "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。",
+    ),
+)
+register_template(WORKER_HIERARCHICAL_V2)
+
+#: P2.3u.  v2 told the Worker which ports to claim; it did not say a read-only
+#: leaf must not rewrite existing files.  Fifth-batch Grok episodes still called
+#: ``workspace_write_file`` on product source.  v2 keeps its bytes.
+WORKER_HIERARCHICAL_VERSION = "worker-hierarchical-v3"
+WORKER_HIERARCHICAL = _revise(
+    WORKER_HIERARCHICAL_V2,
+    WORKER_HIERARCHICAL_VERSION,
+    (
+        "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。\n"
+        "块外不要输出任何文字。",
+        "declared_output_ports 里 required=true 的端口必须被认领，漏掉会被验收拒绝。\n"
+        "若本叶任务类型是只读（observe / report），不能改已有文件；需要改动时在报告里写明建议。\n"
+        "块外不要输出任何文字。",
     ),
 )
 register_template(WORKER_HIERARCHICAL)
@@ -815,6 +832,7 @@ register_template(WORKER_HIERARCHICAL)
 #: domain template modules register at the bottom of this file, then frozen once.
 _HIERARCHICAL_WORKER_VERSIONS: set[str] = {
     WORKER_HIERARCHICAL_V1_VERSION,
+    WORKER_HIERARCHICAL_V2_VERSION,
     WORKER_HIERARCHICAL_VERSION,
 }
 
@@ -1441,6 +1459,8 @@ __all__ = (
     "WORKER_HIERARCHICAL",
     "WORKER_HIERARCHICAL_V1",
     "WORKER_HIERARCHICAL_V1_VERSION",
+    "WORKER_HIERARCHICAL_V2",
+    "WORKER_HIERARCHICAL_V2_VERSION",
     "WORKER_HIERARCHICAL_VERSION",
     "WORKER_VERSION",
     "WORKER_V2",

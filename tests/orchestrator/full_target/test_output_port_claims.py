@@ -204,9 +204,15 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "worker-hierarchical-v1",
         "e82e74aff9b37d4746da0e982b38855e3cb639efe848fb1a15116a18023e7de2",
     ),
-    "WORKER_HIERARCHICAL": (
+    "WORKER_HIERARCHICAL_V2": (
         "worker-hierarchical-v2",
         "120372b8a49162ab1d96c6cf2725d6fcf7adec1988c7c8646f378c21649870b7",
+    ),
+    # P2.3u: v3 = v2 plus "a read-only leaf must not rewrite existing files; put
+    # the suggestion in the report".  v2 keeps its bytes above.
+    "WORKER_HIERARCHICAL": (
+        "worker-hierarchical-v3",
+        "fd1962fe8627c80604586518b88a3df040ada8f987f00e9653dabe048bf1e527",
     ),
     # P2.3g: the synthesiser's v1 is what the Grok episode ran on and stays pinnable;
     # v2 spells the codec's field list.  The hierarchical Planner's v3 is frozen for
@@ -329,6 +335,9 @@ def test_the_frozen_digests_cover_the_prompts_this_slice_depends_on() -> None:
     assert "WORKER_HIERARCHICAL_V1" in FROZEN_PROMPT_DIGESTS, (
         "a superseded version is still replayed by every Attempt that pinned it"
     )
+    assert "WORKER_HIERARCHICAL_V2" in FROZEN_PROMPT_DIGESTS, (
+        "worker-hierarchical-v2 stays pinnable after P2.3u added v3"
+    )
     assert {"PLANNER", "CRITIC", "CRITIC_V2"} <= set(FROZEN_PROMPT_DIGESTS)
     assert FROZEN_PROMPT_DIGESTS["WORKER_HIERARCHICAL"][0] == WORKER_HIERARCHICAL_VERSION
     assert WORKER.prompt_version == "worker-v3"
@@ -350,6 +359,7 @@ def test_the_hierarchical_worker_version_is_registered_and_pinnable() -> None:
         {
             WORKER_HIERARCHICAL_VERSION,
             "worker-hierarchical-v1",
+            "worker-hierarchical-v2",
             "worker-appworld-hierarchical-v1",
         }
     ), "every version a deployment may pin, superseded ones included"

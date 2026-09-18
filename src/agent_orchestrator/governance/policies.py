@@ -162,17 +162,32 @@ def action_decision(deployment: DeploymentPolicy, connector: Any, operation: str
     )
 
 
+#: Tools a read-only leaf must not see.  They only rewrite existing files.
+#: ``workspace_write_file`` stays: the leaf writes its report / port output with
+#: it, and the gateway refuses writes onto files that already existed at bind.
+READ_ONLY_LEAF_HIDDEN_TOOLS = frozenset({"apply_patch", "workspace_apply_patch"})
+
+
 def effective_tools(
     *,
     mission_tools: Sequence[str],
     task_tools: Sequence[str],
     role_tools: Sequence[str],
     deployment: DeploymentPolicy,
+    read_only_leaf: bool = False,
 ) -> tuple[str, ...]:
-    """Mission ∩ Task ∩ Role ∩ Deployment, in the Role template's order (plan §6.1)."""
+    """Mission ∩ Task ∩ Role ∩ Deployment, in the Role template's order (plan §6.1).
+
+    P2.3u: a ``read_only_leaf`` drops patch/apply-class tools from the frozen
+    exposure list.  ``workspace_write_file`` is kept so the leaf can still write
+    a new report; the gateway refuses rewriting files that already existed.
+    """
 
     allowed = set(mission_tools) & set(task_tools) & set(deployment.allowed_tools)
-    return tuple(name for name in role_tools if name in allowed)
+    names = tuple(name for name in role_tools if name in allowed)
+    if read_only_leaf:
+        names = tuple(name for name in names if name not in READ_ONLY_LEAF_HIDDEN_TOOLS)
+    return names
 
 
 def deployed_layers(deployment: DeploymentPolicy) -> frozenset[str]:
@@ -187,6 +202,7 @@ def deployed_layers(deployment: DeploymentPolicy) -> frozenset[str]:
 
 __all__ = (
     "POLICY_VERSION",
+    "READ_ONLY_LEAF_HIDDEN_TOOLS",
     "deployed_layers",
     "SNAPSHOT_FIELDS",
     "SNAPSHOT_VERSION",
