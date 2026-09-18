@@ -308,7 +308,7 @@ E5 -> 1 failed, 57 passed in 0.56s
 **核验报告：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 2」小节。P0 无；P1
 一条（P1-2，本轮新引入的不一致）；P2 四条（P2-5…P2-8，其中 P2-4 沿用、非本片问题）。
 
-**处置提交：** 见 §9.5（fix(h1-d): count omitted refs against the same scoped input as visible_refs）。
+**处置提交：** `7561fba`（fix(h1-d): count omitted refs against the same scoped input as visible_refs）。
 
 ### 9.1 P1-2（必修）：`visible_refs_omitted` 与 `visible_refs` 取自不同输入包
 
