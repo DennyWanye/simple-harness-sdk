@@ -163,3 +163,29 @@ $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_pla
 **P2：** P2-4（WAIT / DECLARE_BLOCKED 两个限额反例落在同一参数化用例，失败信息不够可区分）本轮未改；P2-1（`decision_payload_hash` 命名 vs `canonical_decision_hash`）属接线片命名统一，留待 H1-C/H1-H。
 
 **未做项：** 与本片一致（H1-A2b 的 Schema/黄金样例/打包；H1-F/H1-H 的准入与事件接线）。
+
+---
+
+## 九、第 3 轮处置（核验：修后可合）
+
+**依据：** `plans/llm-native-htn/H1/reviews/核验-H1-A2a-2026-09-18.md`「复核 3」（无 P0，新增 1 条 P1 测试缺口）。第 2 轮处置交付的 `72d440c` 已修复 P1-2/P1-3/P1-4；本轮处理复核 3 新发现的 P1-5。
+
+**P1-5（新，`AssumptionV1.required_for` 解码路径未钉）：** 补遗二 §2 规定假设的 `required_for` 取九个决定类型名，即解码时必须逐项校验为 `PlanningDecisionType`。原测试只喂合法值 `["REFINE"]`，从不喂未知值；变异 Q3（把 `sequence_of(..., _decision_type, ...)` 换成 `tuple(self.required_for)`）下，本片 151 条与全量 3111 条全部放行，`required_for=["NOT_A_DECISION_TYPE"]` 被接受并原样往返。
+
+**修复（只改测试，不动实现）：** 在 `tests/orchestrator/full_target/test_planning_decision_envelope.py` 增加：
+
+- `test_assumption_required_for_decode_path_is_closed`：合法信封 + `required_for=["NOT_A_DECISION_TYPE"]`，断言 `from_json` 抛 `ContractError`。
+
+**变异复验（先红后绿）：** 在上述测试存在的前提下重跑 Q3，**KILLED**（1 failed, 99 passed；`test_assumption_required_for_decode_path_is_closed`）；恢复实现后全绿。实现文件 sha256 与处置前一致（`6d2bcc25…ed8b40`，未改实现）。
+
+**测试（原样粘贴）：**
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_contract.py tests/orchestrator/full_target/test_planning_decision_envelope.py -q -p no:cacheprovider
+........................................................................ [ 47%]
+........................................................................ [ 95%]
+.......                                                                  [100%]
+152 passed in 0.09s
+```
+
+**未做项：** 与本片一致（H1-A2b 的 Schema/黄金样例/打包；H1-F/H1-H 的准入与事件接线）。

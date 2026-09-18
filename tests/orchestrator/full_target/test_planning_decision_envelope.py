@@ -309,6 +309,26 @@ def test_assumption_risk_decode_path_is_closed() -> None:
         PlanningDecisionEnvelopeV1.from_json(raw)
 
 
+def test_assumption_required_for_decode_path_is_closed() -> None:
+    # Addendum-2 §2: required_for entries are PlanningDecisionType names.  The
+    # member list alone does not prove the decode path rejects an unknown name.
+    raw = _envelope(
+        "REFINE",
+        REFINE_PAYLOAD,
+        assumptions=[
+            {
+                "key": "a",
+                "statement": "s",
+                "required_for": ["NOT_A_DECISION_TYPE"],
+                "risk": "LOW",
+                "suggested_predicate_key": None,
+            }
+        ],
+    )
+    with pytest.raises(ContractError):
+        PlanningDecisionEnvelopeV1.from_json(raw)
+
+
 def test_replan_suggested_decision_decode_path_is_closed() -> None:
     raw = _envelope(
         "REFINE",
