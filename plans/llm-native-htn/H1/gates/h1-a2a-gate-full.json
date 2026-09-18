@@ -1,0 +1,58 @@
+{
+  "sdk": "/Users/taiwan/PROJECTS/SimplaHarness/simple-harness-sdk-h1a2a",
+  "base": "b13e757",
+  "head": "7920d1150862c71e10820ec3587507ce23ad1d26",
+  "ok": true,
+  "items": [
+    {
+      "name": "clean",
+      "ok": true,
+      "detail": "working tree clean"
+    },
+    {
+      "name": "allowlist",
+      "ok": true,
+      "detail": "all changed files match allowlist"
+    },
+    {
+      "name": "contracts_frozen",
+      "ok": true,
+      "detail": "no change to contracts files that existed at v0.12.2"
+    },
+    {
+      "name": "no_secrets",
+      "ok": true,
+      "detail": "no secret-like added lines"
+    },
+    {
+      "name": "ruff",
+      "ok": true,
+      "detail": "ruff check passed on changed .py files"
+    },
+    {
+      "name": "import_origin",
+      "ok": true,
+      "detail": "imports from /Users/taiwan/PROJECTS/SimplaHarness/simple-harness-sdk-h1a2a/src/agent_orchestrator/__init__.py"
+    },
+    {
+      "name": "targeted",
+      "ok": true,
+      "detail": "passed=152 failed=0 errors=0; tail: 152 passed in 0.08s"
+    },
+    {
+      "name": "full_target",
+      "ok": true,
+      "detail": "passed=3112 (baseline=2960) failed=0 errors=0; log: /Users/taiwan/.cache/simpleharness-agent-tasks/pipeline/h1-a2a/full_target.log"
+    },
+    {
+      "name": "legacy",
+      "ok": true,
+      "detail": "passed=560 (baseline=560) failed=0 errors=0; log: /Users/taiwan/.cache/simpleharness-agent-tasks/pipeline/h1-a2a/legacy.log"
+    },
+    {
+      "name": "sentinel",
+      "ok": true,
+      "detail": "sentinel count=26 (max=26)"
+    }
+  ]
+}
