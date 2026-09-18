@@ -1109,6 +1109,28 @@ def _merge(
     # left behind they would name occurrences the adopted plan no longer projects,
     # which the validator correctly reads as missing edges.
     orphaned = _orphaned_occurrences(current, retired, keep=adopted)
+    # P2.3q / N10a: an accepted read-only leaf the replacement binds with
+    # ``share_active`` is not an orphan — the new instance still needs it.  Without
+    # this, ``shared_goal_index`` could name the occurrence and ``_merge`` would
+    # drop it, which is the ``binds slot … to unknown occurrence`` P2.3n closed by
+    # excluding *every* retiring child (and so never reused an accepted facts leaf).
+    kept_by_share = {
+        child.occurrence_id
+        for child in draft.child_bindings
+        if child.reuse_policy is not ReusePolicy.NEW_WORK
+    }
+    # Edges of the *retired* membership, including those that land on a shared
+    # leaf, go with the membership.  The replacement compiles its own ORDER/DATA.
+    # When nothing is retiring, this set is empty so a later method that merely
+    # shares a live goal does not drop the first consumer's edges.
+    retired_children: frozenset[OccurrenceId] = frozenset()
+    if retired:
+        dropped: set[OccurrenceId] = set()
+        for instance in current.method_instances:
+            if instance.instance_id in retired:
+                dropped.update(child.occurrence_id for child in instance.child_bindings)
+        retired_children = frozenset(dropped)
+    orphaned = frozenset(orphaned - kept_by_share)
     # P2.3j: the orphaned occurrences leave the network *with* the membership, not
     # only their edges.  Left in, they would still be counted as live work — the
     # commit side funds a revision against every occurrence the network names — and
@@ -1156,7 +1178,8 @@ def _merge(
                 *(
                     constraint
                     for constraint in current.order_constraints
-                    if constraint.before not in orphaned and constraint.after not in orphaned
+                    if constraint.before not in retired_children
+                    and constraint.after not in retired_children
                 ),
                 *order_constraints,
             ),
@@ -1164,15 +1187,15 @@ def _merge(
                 *(
                     requirement
                     for requirement in current.data_requirements
-                    if requirement.producer_occurrence not in orphaned
-                    and requirement.consumer_occurrence not in orphaned
+                    if requirement.producer_occurrence not in retired_children
+                    and requirement.consumer_occurrence not in retired_children
                 ),
                 *data_requirements,
             ),
             typed_edges=tuple(
                 edge
                 for edge in current.typed_edges
-                if not _edge_names_any(edge, orphaned, orphaned_tasks, retired)
+                if not _edge_names_any(edge, retired_children, orphaned_tasks, retired)
             ),
             obligation_coverage=(
                 *(

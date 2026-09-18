@@ -663,7 +663,7 @@ def test_v4_never_tells_the_planner_to_propose_a_method_and_v3_keeps_its_bytes()
     assert PLANNER_HIERARCHICAL_V4_VERSION in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[2]
     assert PLANNER_HIERARCHICAL_V3.prompt_version in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[2]
     assert PLANNER_HIERARCHICAL_V4_VERSION not in hierarchical_planner_versions()
-    assert "return PLANNER_HIERARCHICAL_V6" in inspect.getsource(
+    assert "return PLANNER_HIERARCHICAL_V7" in inspect.getsource(
         Orchestrator._hierarchical_planner_template
     )
 

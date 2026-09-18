@@ -82,6 +82,7 @@ from ..contracts.htn import (
     ReadItemKind,
     RefineOperation,
     RetireMethodOperation,
+    ReusePolicy,
     RunningWorkPolicy,
     ScopeEpochRead,
     SemanticReadSet,
@@ -131,8 +132,10 @@ from ..planning.htn.compiler import (
     compile_refinement_bundle,
 )
 from ..planning.htn.grounding import (
+    ShareDecision,
     SharedGoalEntry,
     SharedGoalIndex,
+    ShareVerdict,
     SharingSignature,
     ground_method,
 )
@@ -244,6 +247,10 @@ SYNTHESIS_REPLY_REJECTED = "MethodSynthesisReplyRejected"
 #: grows ``:synth:{n}`` once ``n > 1``; otherwise the post-admission Planner round
 #: would reuse the pre-admission assessment (H-L3-C1-r0/r1 ordinal 5).
 METHOD_APPLICABILITY_ASSESSED = "MethodApplicabilityAssessed"
+#: P2.3q: the Planner round that would have answered ``no_applicable_method``
+#: because evidence is saturated and nothing applies.  The loop skips it and opens
+#: a MethodSynthesizer round instead; this event is the audit trail.
+PLANNER_SKIPPED_FOR_SYNTHESIS = "PlannerRoundSkippedForSynthesis"
 
 #: P2.3d / defect D5-A: the ``PlanningRejected.reason`` under which a root review's
 #: blocking findings are handed back to the Planner.  Defined *here* (P2.3j) because
@@ -506,6 +513,8 @@ class RejectedRefinement:
     review_package_id: str
     findings: tuple[Mapping[str, Any], ...]
     repair_round: int
+    #: P2.3q / N12: ``root_review_rejected`` or ``read_only_leaf_needs_write``.
+    reason: str = ROOT_REVIEW_REPAIR_REASON
 
     def to_json(self) -> dict[str, Any]:
         reference = self.method_ref
@@ -521,6 +530,7 @@ class RejectedRefinement:
             "review_package_id": self.review_package_id,
             "findings": [dict(item) for item in self.findings],
             "repair_round": int(self.repair_round),
+            "reason": str(self.reason),
         }
 
 
@@ -2804,11 +2814,19 @@ class HierarchicalDispatch:
                 review_package_id=str(detail.get("package_id", "")),
                 findings=tuple(dict(item) for item in detail.get("findings", ()) or ()),
                 repair_round=int(detail.get("repair_round", 1) or 1),
+                reason=str(event.payload.get("reason", "") or ROOT_REVIEW_REPAIR_REASON),
             )
         return tuple(newest[key] for key in sorted(newest))
 
-    def rejected_method_refs(self, mission_id: str) -> dict[str, tuple[MethodRef, ...]]:
+    def rejected_method_refs(
+        self, mission_id: str, *, reason: str | None = None
+    ) -> dict[str, tuple[MethodRef, ...]]:
         """Every method the root review has rejected at each occurrence, across revisions.
+
+        ``reason`` (P2.3q / N12) narrows to one repair reason so the package can flag
+        ``rejected_by_root_review`` and ``rejected_by_read_only_leaf`` separately.
+        The compiler and synthesis judgment still call this without a reason and
+        exclude both.
 
         P2.3j verification P1-1: :meth:`rejected_refinements` describes the *current*
         plan (the instance a repair round retires), and reading only it let a rejected
@@ -2827,7 +2845,10 @@ class HierarchicalDispatch:
         for event in self.store.list_events(mission_id):
             if event.type != "PlanningRejected":
                 continue
-            if str(event.payload.get("reason", "")) not in REPAIR_REASONS:
+            event_reason = str(event.payload.get("reason", ""))
+            if event_reason not in REPAIR_REASONS:
+                continue
+            if reason is not None and event_reason != reason:
                 continue
             detail = dict(event.payload.get("detail") or {})
             occurrence = str(detail.get("occurrence_id", "") or "")
@@ -2884,7 +2905,15 @@ class HierarchicalDispatch:
                 continue
             if repair_ordinal is not None and ordinal >= repair_ordinal:
                 answered = True
-        return answered
+        if answered:
+            return True
+        # P2.3q: skipping the empty Planner is answering "there is nothing to
+        # propose" without spending a model call.  The skip event is the answer.
+        return any(
+            event.type == PLANNER_SKIPPED_FOR_SYNTHESIS
+            and int(event.payload.get("plan_revision", -1)) == int(rejected.plan_revision)
+            for event in self.store.list_events(mission_id)
+        )
 
     def method_applicability(self, mission_id: str) -> tuple[Any, ...]:
         """Why each registered method does or does not apply to each still-open goal.
@@ -3292,6 +3321,37 @@ class HierarchicalDispatch:
             needing.append(str(spec.task_id))
         return tuple(needing)
 
+    def empty_planner_should_skip(self, mission_id: str) -> bool:
+        """Whether asking the Planner would be a doomed empty round (P2.3q).
+
+        True only when every remaining method (rejected ones already excluded) is
+        either synthesis-worthy or evidence-saturated NEEDS_EVIDENCE, *and* there is
+        a goal that still needs a method — an open compound or a rejected
+        refinement.  An APPLICABLE method, even a just-admitted synthesised one,
+        is never skipped: that is the Planner's job.
+        """
+
+        reports = self.method_applicability(mission_id)
+        if any(entry.report.applicable for entry in reports):
+            return False
+        network = self.network(mission_id)
+        open_compounds = [
+            spec
+            for spec in network.occurrences
+            if spec.form is TaskForm.COMPOUND
+            and network.adopted_instance_for(spec.occurrence_id) is None
+        ]
+        rejected = self.rejected_refinements(mission_id)
+        if not open_compounds and not rejected:
+            return False
+        if not reports:
+            return True
+        return all(
+            entry.report.status in SYNTHESIS_WORTHY_REFUSALS
+            or self._evidence_is_saturated(mission_id, entry.report)
+            for entry in reports
+        )
+
     def _evidence_is_saturated(self, mission_id: str, report: Any) -> bool:
         """Whether "look again" has stopped being an answer for this refusal (D2b).
 
@@ -3527,19 +3587,29 @@ class HierarchicalDispatch:
         world = self._world()
         builder = getattr(world, "policy", None)
         if callable(builder):
-            return builder(mission_id=mission_id)
-        from ..contracts.htn import MissionRef
-        from ..planning.htn.registry import AdmissionPolicy
+            policy = builder(mission_id=mission_id)
+        else:
+            from ..contracts.htn import MissionRef
+            from ..planning.htn.registry import AdmissionPolicy
 
-        return AdmissionPolicy(
-            policy_ref="deployment-policy",
-            policy_version=1,
-            mission_id=MissionRef(mission_id),
-            predicates=world.predicates,
-            task_types=world.catalog,
-            schemas=world.schemas,
-            capabilities=world.capabilities(),
-        )
+            policy = AdmissionPolicy(
+                policy_ref="deployment-policy",
+                policy_version=1,
+                mission_id=MissionRef(mission_id),
+                predicates=world.predicates,
+                task_types=world.catalog,
+                schemas=world.schemas,
+                capabilities=world.capabilities(),
+            )
+        # P2.3q / N10c: synthesised methods are capped at the method-width bound.
+        from dataclasses import replace
+
+        from ..planning.htn.synthesis import MAX_SYNTHESIS_METHOD_STEPS
+
+        current = int(getattr(policy, "max_steps", MAX_SYNTHESIS_METHOD_STEPS))
+        if current > MAX_SYNTHESIS_METHOD_STEPS:
+            policy = replace(policy, max_steps=MAX_SYNTHESIS_METHOD_STEPS)
+        return policy
 
     def apply_planner_reply(
         self,
@@ -3699,10 +3769,20 @@ class HierarchicalDispatch:
         # P2.3n: a replacement must not share slots with the instance it retires —
         # those occurrences leave with the membership, and grounding against them
         # produced ``binds slot … to unknown occurrence`` (C1-shape same task types).
-        sharing = shared_goal_index(
-            network,
-            catalog=world.catalog,
-            exclude_occurrence_ids=_occurrences_leaving_with(network, retiring),
+        # P2.3q / N10a: accepted read-only leaves of the retiring instance (facts /
+        # reproduce: not criterion-linked) are the exception — they re-enter as
+        # ``share_active`` and ``_merge`` keeps them.
+        leaving = _occurrences_leaving_with(network, retiring)
+        repair_share = self._repair_read_only_share_index(
+            mission_id, network, catalog=world.catalog, retiring=retiring
+        )
+        sharing = _CompositeShareIndex(
+            repair_share,
+            shared_goal_index(
+                network,
+                catalog=world.catalog,
+                exclude_occurrence_ids=leaving,
+            ),
         )
         draft = ground_method(
             parent,
@@ -3812,6 +3892,75 @@ class HierarchicalDispatch:
                     f"{open_attempts} (running_work_not_reconciled); nothing in this slice "
                     "stops or reconciles running work, so a replacement waits for it to end"
                 )
+
+    def _repair_read_only_share_index(
+        self,
+        mission_id: str,
+        network: TaskNetworkSnapshot,
+        *,
+        catalog: Any,
+        retiring: Sequence[MethodInstanceId],
+    ) -> _RepairReadOnlyShareIndex:
+        """Accepted read-only, not-criterion-linked leaves of the retiring instance.
+
+        P2.3q / N10a.  Facts / reproduce (``side_effect_kind`` in {none,
+        external_read}, no write capability) that already have a CURRENT
+        Acceptance are offered as ``share_active`` targets.  Criterion-linked
+        leaves (verify) stay new work: the root review judged them.  Unaccepted
+        and write-typed leaves stay new work.
+        """
+
+        if not retiring:
+            return _RepairReadOnlyShareIndex()
+        from .accepted_outputs import criterion_linked_occurrences
+        from .occurrence_tasks import read_only_leaf
+
+        accepted = self.root_contributions(mission_id)
+        linked = criterion_linked_occurrences(network.obligation_coverage)
+        retired = {str(item) for item in retiring}
+        entries: list[SharedGoalEntry] = []
+        for instance in network.method_instances:
+            if str(instance.instance_id) not in retired:
+                continue
+            for child in instance.child_bindings:
+                occ_id = child.occurrence_id
+                if str(occ_id) not in accepted:
+                    continue
+                if occ_id in linked:
+                    continue
+                try:
+                    binding = network.binding_for_occurrence(occ_id)
+                except (KeyError, ContractError):
+                    continue
+                if not read_only_leaf(binding):
+                    continue
+                by_signature = {
+                    (str(item.goal_signature.signature_id), int(item.goal_signature.version)): item
+                    for item in catalog.task_types()
+                }
+                spec = by_signature.get(
+                    (
+                        str(binding.goal_signature.signature_id),
+                        int(binding.goal_signature.version),
+                    )
+                )
+                if spec is None:
+                    continue
+                entries.append(
+                    SharedGoalEntry(
+                        occurrence_id=occ_id,
+                        task_id=binding.task_id,
+                        obligation_id=binding.obligation_id,
+                        signature=SharingSignature.of(
+                            spec,
+                            dict(binding.typed_parameters),
+                            authority_scope=binding.semantic_scope,
+                            semantic_scope=binding.semantic_scope,
+                        ),
+                        reuse_policy=ReusePolicy.SHARE_ACTIVE,
+                    )
+                )
+        return _RepairReadOnlyShareIndex(entries)
 
     def _current_requirements_revision(self, mission_id: str) -> int:
         """The requirements revision in force, as the read-set checker will re-read it."""
@@ -4209,6 +4358,54 @@ def shared_goal_index(
     return SharedGoalIndex(entries)
 
 
+class _RepairReadOnlyShareIndex:
+    """Accepted read-only leaves of a retiring instance, matched by task type.
+
+    ``may_share`` refuses ``NEW_WORK`` and requires a full sharing signature.
+    Repair reuse is a default *policy* of the retire+refine compiler, not a
+    declaration on the task type: facts / reproduce are ``NEW_WORK`` in the
+    catalogue and still share.  Lookup is by ``goal_type_ref.id`` so a new
+    method's facts step binds the old facts occurrence even when local ids
+    differ.
+    """
+
+    def __init__(self, entries: Sequence[SharedGoalEntry] = ()) -> None:
+        self._entries = tuple(entries)
+
+    def lookup(
+        self, signature: SharingSignature, *, reuse_policy: ReusePolicy
+    ) -> tuple[SharedGoalEntry | None, ShareDecision]:
+        del reuse_policy
+        key = str(signature.goal_type_ref.id)
+        for entry in self._entries:
+            if str(entry.signature.goal_type_ref.id) != key:
+                continue
+            return entry, ShareDecision(
+                verdict=ShareVerdict.SHAREABLE,
+                reason="repair reuses an accepted read-only leaf of the same task type",
+            )
+        return None, ShareDecision(
+            verdict=ShareVerdict.SIGNATURE_DIFFERS,
+            reason="no accepted read-only leaf of this task type is on the retiring instance",
+        )
+
+
+class _CompositeShareIndex:
+    """Try the repair-share index first, then the ordinary network index."""
+
+    def __init__(self, primary: Any, fallback: SharedGoalIndex) -> None:
+        self._primary = primary
+        self._fallback = fallback
+
+    def lookup(
+        self, signature: SharingSignature, *, reuse_policy: ReusePolicy
+    ) -> tuple[SharedGoalEntry | None, ShareDecision]:
+        entry, decision = self._primary.lookup(signature, reuse_policy=reuse_policy)
+        if entry is not None:
+            return entry, decision
+        return self._fallback.lookup(signature, reuse_policy=reuse_policy)
+
+
 def _is_refine(operation: object) -> bool:
     """Whether one parsed plan operation is a refinement.
 
@@ -4268,6 +4465,7 @@ __all__ = (
     "ROOT_REVIEW_REPAIR_REASON",
     "SYNTHESIS_WORTHY_REFUSALS",
     "METHOD_APPLICABILITY_ASSESSED",
+    "PLANNER_SKIPPED_FOR_SYNTHESIS",
     "append_hierarchical_event",
     "shared_goal_index",
     "is_hierarchical",

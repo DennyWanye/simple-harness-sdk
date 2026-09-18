@@ -160,6 +160,7 @@ def _planner_picks_named(needle: str):
             for item in package["method_library"]
             if item["goal_signature_id"] == entry["goal_signature_id"]
             and not item["rejected_by_root_review"]
+            and not item.get("rejected_by_read_only_leaf")
             and needle in str(item.get("refine_method_ref", {}).get("id", ""))
         ]
         assert library, [item.get("refine_method_ref") for item in package["method_library"]]

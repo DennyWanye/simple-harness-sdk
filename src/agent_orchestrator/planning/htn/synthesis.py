@@ -65,6 +65,7 @@ from ..planner import SYSTEM_BOUND_FIELDS, parse_method_proposal
 from .applicability import ApplicabilityReport, CapabilitySnapshot
 from .registry import (
     AdmissionPolicy,
+    AdmissionProblem,
     AdmissionReceipt,
     AdmissionVerdict,
     MethodCandidate,
@@ -95,6 +96,13 @@ SYNTHESIS_AUTHOR = RegistryAuthor.MODEL
 #: as well as a description; a deployment with a thousand task types does not get a
 #: thousand-entry prompt.
 DEFAULT_MAX_OPERATORS = 64
+
+#: P2.3q / N10c.  How many steps a *synthesised* method may declare.  The admission
+#: policy's own ``max_steps`` defaults to 64, which is the human-authored bound;
+#: Grok fourth-batch L3 produced a 10-leaf method that a 12-attempt Mission cannot
+#: hold across a repair.  Eight is the TaskGraph attachment's method-width cap.
+#: Overflow is a correctable ``SIZE_BOUND`` (one re-ask, then refuse).
+MAX_SYNTHESIS_METHOD_STEPS = 8
 
 #: P2.3g.  The field names the codec requires, by object, as the request states them
 #: to the model (``method_shape``).  They are spelled here rather than read off
@@ -199,7 +207,8 @@ CORRECTABLE_REJECTIONS: frozenset[RejectionCode] = frozenset(
 #: predicate list travels in the package, and I18 is not relaxed by asking again); a
 #: capability nobody declares is a deployment fact; a recursion with no guard and a
 #: size bound are policy limits the package does not state; ``ALREADY_REGISTERED`` is
-#: registry state, not the reply's shape.
+#: registry state, not the reply's shape.  P2.3q: a synthesised method *width*
+#: overflow is the exception — see :func:`rejection_is_correctable`.
 NON_CORRECTABLE_REJECTIONS: frozenset[RejectionCode] = frozenset(
     {
         RejectionCode.MODEL_CLAIMED_STATUS,
@@ -234,7 +243,22 @@ def rejection_is_correctable(receipt: AdmissionReceipt) -> bool:
         raise ContractError("rejection_is_correctable expects an AdmissionReceipt")
     if receipt.verdict is not AdmissionVerdict.REJECTED or not receipt.problems:
         return False
-    return all(problem.code in CORRECTABLE_REJECTIONS for problem in receipt.problems)
+    return all(
+        problem.code in CORRECTABLE_REJECTIONS or _is_synthesis_width_bound(problem)
+        for problem in receipt.problems
+    )
+
+
+def _is_synthesis_width_bound(problem: AdmissionProblem) -> bool:
+    """P2.3q / N10c: a method wider than ``MAX_SYNTHESIS_METHOD_STEPS`` is a shape
+    the second ask can shrink.  Other ``SIZE_BOUND`` refusals (ports per step) stay
+    non-correctable — the package never stated that bound."""
+
+    return (
+        problem.code is RejectionCode.SIZE_BOUND
+        and "steps" in str(problem.detail)
+        and "policy's" in str(problem.detail)
+    )
 
 
 def rejection_problems(receipt: AdmissionReceipt) -> tuple[str, ...]:
@@ -783,6 +807,7 @@ def accept_response(
 __all__ = (
     "CORRECTABLE_REJECTIONS",
     "DEFAULT_MAX_OPERATORS",
+    "MAX_SYNTHESIS_METHOD_STEPS",
     "METHOD_SHAPE",
     "NON_CORRECTABLE_REJECTIONS",
     "SYNTHESIS_AUTHOR",

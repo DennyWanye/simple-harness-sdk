@@ -1,4 +1,4 @@
-## 0.12.2 — P2.3e–P2.3p：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺与交接后连续 UNKNOWN 有界停机（2026-09-18）
+## 0.12.2 — P2.3e–P2.3q：Grok 验收重跑暴露的规划循环、provider 阻塞、合成器对齐、根评审证据、修复轮、只读叶、组合决议、只读拒绝有界、第二轮合成采用、下游工作区预铺、交接后连续 UNKNOWN 有界停机、修复轮复用只读叶与空 Planner 短路（2026-09-18）
 
 **架构捷径声明（0.12.2 对计划的诚实口径；禁止相反表述）：**
 
@@ -7,6 +7,14 @@
 3. **根评审 v3**：准则解释权以 `mission_goal` 为准，与「准则以 goal signature 为准」相反。
 
 **计划一致性审计必须修项**：`c-composition` 无 coverage 映射时不得因「有子验收」填 PASS → UNKNOWN + `composition_criterion_uncovered`，不形成 ACCEPT。审计全文 Host `plans/taskSys2/升级planV1/impl/计划一致性审计-P2.3d至P2.3l-2026-09-17.zh-CN.md`。
+
+**P2.3q：修复轮复用已验收只读叶、空 Planner 短路、合成方法宽度硬上限、拒绝理由分字段。** 分支 `p2.3q-repair-reuse-and-synthesis-shortcut`，基 d360750；版本号不动。第 4 批 4 局全部撞调用/attempt 上限：retire+refine 整网重铺（C2-r0 `funded_now=10`）、开局与修复轮空 Planner、10 叶合成方法、C1-r1 把只读取消说成 `rejected_by_root_review`。
+
+- **N10a**：retire+refine 时已验收、只读、非准则叶（facts/reproduce）默认 `share_active`；写型/未验收/verify 不复用。`funded_now` 只计新叶。守恒、预留、attempts 如实。
+- **空 Planner 短路**：证据饱和且无 APPLICABLE（含排除被拒方法后）时开局与修复轮都跳过 Planner，直接 `_request_method_synthesis`，写 `PlannerRoundSkippedForSynthesis`。有 APPLICABLE 不跳。仍受 `MAX_SYNTHESIS_ASKS` 与修复轮上限。
+- **N10c**：合成方法宽度 `MAX_SYNTHESIS_METHOD_STEPS=8`；超宽按 P2.3i 可修正重问一次，再超则拒绝、停机原因具名。
+- **N12**：包把 `rejected_by_root_review` 与 `rejected_by_read_only_leaf` 分成两字段。只加 `planner-hierarchical-v7`（v6 字节不动，digest 登记）。
+- 测试：`test_repair_reuse_and_synthesis_shortcut.py` 11 + 冻结 digest +1；4 变异 KILLED。full_target **2900 passed / 2 skipped**（基线 2888/2，+12）；旧模式 **560/13/0**。`contracts/` 零改动，无新配置项，`_new_mode` 仍 19。详见 journal 第四部分 §2s。
 
 **P2.3p：交接后连续 UNKNOWN 有界停机。** 分支 `p2.3p-after-handoff-unknown-bounded`，基 4a12e8d；版本号不动。真实局 H-L3-C2-r0/r1：planner:1 + synthesizer 成功后，后续 planner 全部 `provider_error_after_handoff`（0 token）；P2.3f 等 300 s → 重交接 → 再 UNKNOWN → 新 planner ordinal，直到墙钟。r0 停在 PLANNING、`stop_reason=null`、预留悬挂；r1 Worker 叶空转到 1800 s。P2.3l 的 `runtime_unavailable` 只覆盖梯子烧尽的 PLANNING。
 

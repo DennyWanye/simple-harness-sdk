@@ -288,7 +288,7 @@ def test_every_rejection_code_is_classified_once_and_the_reference_slips_are_cor
             RejectionCode.PREDICATE_TYPE_ERROR,  # likewise; I18 is not relaxed by asking again
             RejectionCode.UNKNOWN_CAPABILITY,  # a deployment fact
             RejectionCode.UNBOUNDED_RECURSION,  # a policy limit the package does not state
-            RejectionCode.SIZE_BOUND,  # likewise
+            RejectionCode.SIZE_BOUND,  # likewise; width overflow is special-cased in P2.3q
         }
     )
 

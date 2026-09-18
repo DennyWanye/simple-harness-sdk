@@ -89,6 +89,7 @@ from agent_orchestrator.orchestrator.hierarchical_dispatch import (  # noqa: E40
     DISPATCH_INTERCEPTED,
     PLAN_COMMIT_REFUSED,
     PLAN_INTEGRITY_FAILED,
+    PLANNER_SKIPPED_FOR_SYNTHESIS,
     RECOMPILABLE_REFUSALS,
     SYNTHESIS_REPLY_REJECTED,
     SYNTHESIS_REPLY_UNREADABLE,
@@ -1411,6 +1412,8 @@ NEW_EVENT_TYPES = frozenset(
         # P2.3k / N3: the legacy artifact merge the Mission Judge does not run on a
         # hierarchical Mission, written down once with what the tree kept instead.
         ARTIFACT_MERGE_NOT_APPLICABLE,
+        # P2.3q: the empty-Planner shortcut (evidence saturated, nothing applies).
+        PLANNER_SKIPPED_FOR_SYNTHESIS,
     }
 )
 

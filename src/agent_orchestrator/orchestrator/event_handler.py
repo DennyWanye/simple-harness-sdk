@@ -219,6 +219,7 @@ from .commit_service import (
 )
 from .hierarchical_dispatch import (
     MISSION_STALLED,
+    PLANNER_SKIPPED_FOR_SYNTHESIS,
     SYNTHESIS_ROUND_RECORDED,
     DispatchAdmissions,
     HierarchicalDispatch,
@@ -2306,6 +2307,8 @@ class Orchestrator:
                 # them.  Asking once is the bound; waiting is not progress.
                 continue
             try:
+                if new_mode.empty_planner_should_skip(mission.id):
+                    self._record_planner_skipped(mission, new_mode, phase="method_synthesis")
                 await self._create_synthesizer_intent(
                     mission.id,
                     goal_task_id,
@@ -2571,8 +2574,48 @@ class Orchestrator:
                 progressed = True
         return progressed
 
+    def _record_planner_skipped(
+        self, mission: Mission, new_mode: HierarchicalDispatch, *, phase: str
+    ) -> None:
+        """Audit trail for P2.3q's empty-Planner shortcut."""
+
+        try:
+            network = new_mode.network(mission.id)
+            revision = int(network.plan_revision)
+        except (GraphIntegrityError, ContractError, StoreError):
+            revision = 0
+        append_hierarchical_event(
+            self.store,
+            PLANNER_SKIPPED_FOR_SYNTHESIS,
+            mission.id,
+            key=f"{mission.id}:skip:{revision}",
+            payload={
+                "reason": "evidence_saturated_no_applicable_method",
+                "phase": phase,
+                "plan_revision": revision,
+            },
+        )
+        self._note(
+            f"mission {mission.id}: skipping empty Planner ({phase}); "
+            "evidence is saturated and no applicable method remains"
+        )
+
     async def _start_planning(self, mission: Mission) -> None:
         self.commit.begin_planning(mission.id)
+        # P2.3q: skip the doomed empty Planner when evidence is saturated and
+        # nothing applies.  Uses ``is_hierarchical`` + the installed assembly so
+        # this is not a 20th ``_new_mode`` site.
+        new_mode = self._hierarchical if is_hierarchical(mission) else None
+        try:
+            should_skip = (
+                new_mode is not None and new_mode.empty_planner_should_skip(mission.id)
+            )
+        except (GraphIntegrityError, ContractError, StoreError):
+            should_skip = False
+        if should_skip:
+            self._record_planner_skipped(mission, new_mode, phase="initial")
+            await self._request_method_synthesis(mission)
+            return
         try:
             await self._try_planner_intent(mission.id, ordinal=1)
         except BudgetExhausted as error:
@@ -2654,6 +2697,9 @@ class Orchestrator:
             # *ask*, below, is what needs to outlive the process.
             self._refinement_rounds[mission.id] = revision
             return False
+        if new_mode.empty_planner_should_skip(mission.id):
+            self._record_planner_skipped(mission, new_mode, phase="compound_refinement")
+            return await self._request_method_synthesis(mission)
         ordinal = self._next_planning_ordinal(mission.id)
         # Review P2-5: recorded **before** the intent, so a crash between the two ends
         # up asking nothing rather than asking twice, and recorded in the log rather
@@ -2775,7 +2821,12 @@ class Orchestrator:
             # the goal a repair round is *about*, which ``open_compound_goals`` cannot
             # list because it is refined.  Empty on every ordinary round.
             rejected_refinements_of=new_mode.rejected_refinements(mission.id),
-            rejected_method_refs_of=new_mode.rejected_method_refs(mission.id),
+            rejected_method_refs_of=new_mode.rejected_method_refs(
+                mission.id, reason=ROOT_REVIEW_REPAIR_REASON
+            ),
+            read_only_rejected_method_refs_of=new_mode.rejected_method_refs(
+                mission.id, reason=READ_ONLY_REWRITE_REPAIR_REASON
+            ),
         )
         return _seal(package)
 
@@ -2801,7 +2852,7 @@ class Orchestrator:
         """
 
         from ..runtime.role_templates import (
-            PLANNER_HIERARCHICAL_V6,
+            PLANNER_HIERARCHICAL_V7,
             hierarchical_planner_versions,
         )
 
@@ -2815,9 +2866,10 @@ class Orchestrator:
         # ``<method_proposal>`` when no method applied; same package, so a pin on v3
         # still selects v3 above and the unpinned default is v4.
         # P2.3j: package v4 carries ``rejected_refinements``; v5 is the prompt that
-        # introduced the section.  P2.3n: v6 is the unpinned default (an APPLICABLE
-        # applicability row is a usable method); a pin on v5 is still honoured above.
-        return PLANNER_HIERARCHICAL_V6
+        # introduced the section.  P2.3n: v6 is an APPLICABLE row is usable.  P2.3q:
+        # v7 splits rejected_by_read_only_leaf from rejected_by_root_review; a pin
+        # on v5/v6 is still honoured above.
+        return PLANNER_HIERARCHICAL_V7
 
     def _hierarchical_worker_template(self, role: Any, mission_id: str) -> Any:
         """The Worker prompt that knows about output ports (part 2d, decision 4).
@@ -4559,7 +4611,17 @@ class Orchestrator:
                 mission_id, ordinal=ordinal, phase="method_synthesis"
             )
             return
-        if mission.status is MissionStatus.PLANNING and self._planning_ladder_spent(mission_id):
+        skipped = any(
+            event.type == PLANNER_SKIPPED_FOR_SYNTHESIS
+            for event in self.store.list_events(mission_id)
+        )
+        new_mode = self._hierarchical
+        skip_now = bool(
+            new_mode is not None and new_mode.empty_planner_should_skip(mission_id)
+        )
+        if mission.status is MissionStatus.PLANNING and (
+            self._planning_ladder_spent(mission_id) or skipped or skip_now
+        ):
             self._stop_planning_round(
                 mission_id,
                 reason="method_synthesis_refused",
@@ -7915,6 +7977,9 @@ class Orchestrator:
             f"mission {mission.id}: root review rejected with {len(blocking)} blocking "
             f"finding(s); asking the Planner again (ordinal {ordinal}, revision {revision})"
         )
+        if new_mode.empty_planner_should_skip(mission.id):
+            self._record_planner_skipped(mission, new_mode, phase="root_review_repair")
+            return await self._request_method_synthesis(mission)
         return await self._planner_round_on_committed_plan(
             mission.id, ordinal=ordinal, phase="root_review_repair"
         )
@@ -8158,6 +8223,10 @@ class Orchestrator:
             f"{count} time(s); asking the Planner (ordinal {ordinal}, "
             f"{READ_ONLY_REWRITE_REPAIR_REASON})"
         )
+        if new_mode.empty_planner_should_skip(mission.id):
+            self._record_planner_skipped(mission, new_mode, phase="read_only_rewrite_repair")
+            await self._request_method_synthesis(mission)
+            return
         await self._planner_round_on_committed_plan(
             mission.id, ordinal=ordinal, phase="read_only_rewrite_repair"
         )

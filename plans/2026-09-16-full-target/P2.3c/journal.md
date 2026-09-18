@@ -3798,6 +3798,42 @@ C3-r0（`mission-01a511b9a5d78b1f`）：种子方法 `code.fix-by-patch@2`。fac
 - 有 token 的 UNKNOWN 目前 `settle_unknown` 仍不从异常里抄 usage（异常路径没有 response）；streak 重置靠 SUCCEEDED / usage.total_tokens>0。
 - synthesizer / critic 两次 UNKNOWN 仍走 P2.3f 既有 UNANSWERED / runner 门，不改成 `runtime_unavailable`（已有界）。
 
+## 2s. P2.3q：修复轮复用已验收只读叶、空 Planner 短路、合成方法宽度硬上限、拒绝理由分字段（2026-09-18，分支 `p2.3q-repair-reuse-and-synthesis-shortcut`，基 `d360750` = 0.12.2 候选第 4 版）
+
+输入：用户任务书 + 诊断 `Grok验收-第4批L3诊断-2026-09-18.zh-CN.md` §4 N10/N12、§4 末编排侧可省调用 #1 #2、§9 Q3。证据目录只读。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
+
+### 现象
+
+第 4 批 4 局全部撞调用/attempt 上限。C2-r0 修复轮 retire+refine 整网重铺 `funded_now=10`（已验收 facts/reproduce 不 share_active）。C2-r1 两轮 6 叶 + verify 重试 = 12 attempt。每局开局两轮 Planner 注定失败（证据饱和后种子全 NEEDS_EVIDENCE）；修复轮先 `no_applicable_method` 再合成。C1-r1 Planner 把 P2.3m 只读取消写成 `rejected_by_root_review`。
+
+### 修法
+
+1. **N10a 复用**：`compile_proposal` 在 retire+refine 时把前一方法 **CURRENT 已验收、read_only_leaf、非 criterion-linked** 的叶（facts/reproduce 一类）按 task type 配 `share_active`。写型叶、未验收叶、承担根准则的 verify 不复用。`_merge` 保留这些 occurrence，丢掉被退 membership 的旧 ORDER/DATA（避免双份边），新方法自己的边接上。`funded_now` 只计新 primitive。
+2. **空 Planner 短路**：`empty_planner_should_skip` = 无 APPLICABLE（被拒已排除）且证据饱和 / 合成值得。开局 `_start_planning`、修复轮、以及已 PLANNING 的 `_request_method_synthesis` 都跳过 Planner，写 `PlannerRoundSkippedForSynthesis{evidence_saturated_no_applicable_method}`，直接合成。仍受 `MAX_SYNTHESIS_ASKS` 与 P2.3j 修复上限。有 APPLICABLE 绝不跳过。
+3. **N10c 宽度**：`MAX_SYNTHESIS_METHOD_STEPS=8`，合成准入 `policy.max_steps` 封顶。超宽是 `SIZE_BOUND` 且 detail 含 steps → `rejection_is_correctable` 为真（P2.3i 重问一次）；枚举上 SIZE_BOUND 仍非 CORRECTABLE（v3 提示词不点名）。再超则 REJECTED，PLANNING 下 `method_synthesis_refused` 停机。
+4. **N12**：`method_library` 分 `rejected_by_root_review` / `rejected_by_read_only_leaf`。提示词只加 `planner-hierarchical-v7`（v6 字节不动，digest `5b87b962…` 登记）。包版本仍 3，pin v5/v6 仍生效。
+
+### 测试
+
+`test_repair_reuse_and_synthesis_shortcut.py` 11 条 + 冻结 digest 参数化 +1。真 `Orchestrator.run()`：(a) REJECT → 复用只读叶 funded_now=1 → COMPLETED；(b) 饱和无可用方法 → 无空 Planner 直接合成 → COMPLETED；(c) 9 子任务 → 重问 → 再超 → 拒绝停机；(d) legacy 不产 skip 事件。
+
+变异 4/4 KILLED（`/tmp/p23q-m*.py` 副本恢复，不用 git checkout）：
+
+| # | 变异 | 结果 |
+|---|---|---|
+| M1 | `empty_planner_should_skip` 恒 False | 1 failed（无 skip 事件）→ KILLED |
+| M2 | 修复 share 索引空 | 1 failed（leaf occurrence 变了）→ KILLED |
+| M3 | `MAX_SYNTHESIS_METHOD_STEPS=64` | 2 failed（常量钉 + 9 步被准入）→ KILLED |
+| M4 | 两拒绝旗用同一集合 | 1 failed（root-review 叶被标 read_only）→ KILLED |
+
+回归：full_target **2900 passed / 2 skipped**（基线 2888/2，+12）；旧模式 **560/13/0**；ruff `src/agent_orchestrator` + `tests/orchestrator/full_target` 清；`_new_mode` 仍 19；legacy 事件字节 golden 不变；冻结提示词 sha256 除新登记 v7 外不变。
+
+### 未做
+
+- 真实模型第 4 批未重跑。
+- Host `max_attempts` 12→24、局级 calls 与 `max_model_calls_per_turn` 解绑（N8/N10b）属 runner。
+- 合成器提示词未加 v7（宽度靠 schema_feedback / 协议 detail）。
+
 ## 3. 旧模式 golden 是否变
 
 **没变。** `test_a_legacy_mission_produces_identical_event_bytes_with_the_assembly_installed`、

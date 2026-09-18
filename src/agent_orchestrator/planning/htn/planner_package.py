@@ -141,6 +141,7 @@ def method_library(
     *,
     limit: int = MAX_METHODS_PER_SIGNATURE,
     rejected_refs: Sequence[Any] = (),
+    read_only_rejected_refs: Sequence[Any] = (),
 ) -> tuple[dict[str, Any], ...]:
     """The methods this deployment holds for the open goals' signatures.
 
@@ -155,9 +156,15 @@ def method_library(
     — hiding them would leave the Planner unable to say why the obvious method is not
     an option — and flagged ``rejected_by_root_review`` so the reason is in the same
     row as the triple.
+
+    P2.3q / N12: ``read_only_rejected_refs`` are the methods a read-only leaf cancel
+    retired (``read_only_leaf_needs_write``).  They used to share the root-review
+    flag, so C1-r1's Planner wrote "rejected_by_root_review blocks reuse" on a
+    Mission that never had a root review.  Two fields, two reasons.
     """
 
     rejected = {_ref_key(item) for item in rejected_refs}
+    read_only_rejected = {_ref_key(item) for item in read_only_rejected_refs}
     entries: list[dict[str, Any]] = []
     for signature in sorted({str(item) for item in signatures}):
         found = _methods_for(registry, signature)
@@ -168,6 +175,7 @@ def method_library(
                     "goal_signature_id": signature,
                     "method_ref": reference.to_json(),
                     "rejected_by_root_review": _ref_key(reference) in rejected,
+                    "rejected_by_read_only_leaf": _ref_key(reference) in read_only_rejected,
                     # P2.3c part 2b: the *same* triple again, spelled the way a
                     # ``refine`` operation has to spell it.  ``MethodRef.to_json``
                     # writes ``method_id`` and the proposal codec reads ``id``, so a
@@ -459,6 +467,7 @@ def hierarchical_planner_package(
     read_item: Any = None,
     rejected_refinements_of: Sequence[Any] = (),
     rejected_method_refs_of: Mapping[str, Sequence[Any]] | None = None,
+    read_only_rejected_method_refs_of: Mapping[str, Sequence[Any]] | None = None,
 ) -> dict[str, Any]:
     """The whole package, as a plain mapping the context builder can seal.
 
@@ -477,9 +486,20 @@ def hierarchical_planner_package(
     """
 
     goals = open_goals(network)
-    struck: list[Any] = [item.method_ref for item in rejected_refinements_of]
+    struck: list[Any] = [
+        item.method_ref
+        for item in rejected_refinements_of
+        if str(getattr(item, "reason", "")) != "read_only_leaf_needs_write"
+    ]
     for references in (rejected_method_refs_of or {}).values():
         struck.extend(references)
+    read_only_struck: list[Any] = [
+        item.method_ref
+        for item in rejected_refinements_of
+        if str(getattr(item, "reason", "")) == "read_only_leaf_needs_write"
+    ]
+    for references in (read_only_rejected_method_refs_of or {}).values():
+        read_only_struck.extend(references)
     replaced = rejected_refinements(network, rejected_refinements_of)
     signatures = [item["goal_signature_id"] for item in goals] + [
         item["goal_signature_id"] for item in replaced
@@ -509,6 +529,7 @@ def hierarchical_planner_package(
                 registry,
                 signatures,
                 rejected_refs=struck,
+                read_only_rejected_refs=read_only_struck,
             )
         ],
         "applicability": [dict(item) for item in applicability_reports(reports)],
@@ -538,8 +559,11 @@ def hierarchical_planner_package(
             "A rejected_refinements entry is repaired by ONE proposal carrying a retire_method "
             "of its rejected_method_instance_id together with a refine of the same goal_id / "
             "obligation_id using a method_library entry whose rejected_by_root_review is false "
-            "and whose applicability verdict is APPLICABLE (or which applicability does not "
-            "list as a refusal); a newly admitted synthesised method is such an entry. "
+            "and whose rejected_by_read_only_leaf is false and whose applicability verdict is "
+            "APPLICABLE (or which applicability does not list as a refusal); a newly admitted "
+            "synthesised method is such an entry. rejected_by_root_review marks a MISSION_FINAL "
+            "rejection; rejected_by_read_only_leaf marks a read-only leaf cancel "
+            "(read_only_leaf_needs_write) — they are different reasons and both block reuse. "
             "If every unrejected library entry is listed as a refusal, answer no_applicable_method"
         ),
         "output_contract": "<plan_revision_proposal>{json}</plan_revision_proposal>",

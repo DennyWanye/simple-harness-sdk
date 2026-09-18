@@ -263,6 +263,11 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "planner-hierarchical-v6",
         "b13d16f7d1d5aaa8919d983e93b7639105446bd6d95bd73d05353571a9a185a6",
     ),
+    # P2.3q: v7 splits rejected_by_read_only_leaf from rejected_by_root_review.
+    "PLANNER_HIERARCHICAL_V7": (
+        "planner-hierarchical-v7",
+        "5b87b9624fbf4a4e1c31e6d9c4a765de2ac4ec689b5d708000b427676cb50f15",
+    ),
 }
 
 #: P2.3d / defect D1: the same freeze for the versions a *domain module* registers.

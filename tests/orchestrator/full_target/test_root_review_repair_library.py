@@ -415,7 +415,9 @@ def test_the_repair_round_package_now_offers_the_root_library_and_marks_the_reje
     library = {item["method_id"]: item for item in package["method_library"]}
     assert set(library) == {"plan.outer", "plan.alt"}, "both methods for the root's signature"
     assert library["plan.outer"]["rejected_by_root_review"] is True
+    assert library["plan.outer"]["rejected_by_read_only_leaf"] is False
     assert library["plan.alt"]["rejected_by_root_review"] is False
+    assert library["plan.alt"]["rejected_by_read_only_leaf"] is False
     assert library["plan.alt"]["refine_method_ref"]["id"] == "plan.alt"
     # P2.3n: the alternative that applies is reported APPLICABLE so a Planner that
     # grounds methods from this section can see it.  The rejected method is *not*
@@ -437,11 +439,22 @@ def test_a_repair_round_with_only_the_rejected_method_still_lists_it_as_rejected
 ) -> None:
     """One method, and it is the rejected one: the Planner is shown *why* it cannot reuse it."""
 
-    world = _rejected(tmp_path, key="p23j-package-lonely", alt=False)
-    outcome = _open_repair_round(world, Path(tmp_path) / "evidence")
-    package = outcome["packages"][0]
+    world = _rejected_open(tmp_path, key="p23j-package-lonely", alt=False)
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        world.network(),
+        registry=world.env.registry,
+        rejected_refinements_of=world.dispatch.rejected_refinements(world.mission.id),
+        rejected_method_refs_of=world.dispatch.rejected_method_refs(
+            world.mission.id, reason=ROOT_REVIEW_REPAIR_REASON
+        ),
+        read_only_rejected_method_refs_of=world.dispatch.rejected_method_refs(
+            world.mission.id, reason=hd.READ_ONLY_REWRITE_REPAIR_REASON
+        ),
+    )
     assert [item["method_id"] for item in package["method_library"]] == ["plan.outer"]
     assert package["method_library"][0]["rejected_by_root_review"] is True
+    assert package["method_library"][0]["rejected_by_read_only_leaf"] is False
     assert package["rejected_refinements"][0]["rejected_method_ref"]["method_id"] == "plan.outer"
 
 
@@ -454,6 +467,7 @@ def test_a_package_for_a_plan_nobody_rejected_has_no_rejected_refinements(tmp_pa
     )
     assert package["rejected_refinements"] == []
     assert all("rejected_by_root_review" in item for item in package["method_library"])
+    assert all("rejected_by_read_only_leaf" in item for item in package["method_library"])
 
 
 # ======================================================================================
@@ -789,6 +803,7 @@ def _planner_replaces(request: Any) -> str:
         for item in package["method_library"]
         if item["goal_signature_id"] == entry["goal_signature_id"]
         and not item["rejected_by_root_review"]
+        and not item.get("rejected_by_read_only_leaf")
     ]
     assert library, "the repair package must offer a replacement"
     chosen = library[0]["refine_method_ref"]
@@ -829,6 +844,7 @@ def _planner_replaces_or_declines(request: Any) -> str:
     if rejected and any(
         item["goal_signature_id"] == rejected[0]["goal_signature_id"]
         and not item["rejected_by_root_review"]
+        and not item.get("rejected_by_read_only_leaf")
         for item in package["method_library"]
     ):
         return _planner_replaces(request)
@@ -1078,7 +1094,9 @@ def test_the_repair_round_can_switch_the_root_to_another_method_and_complete(tmp
     assert outcome["roles"].get("planner") == 1
     assert e2e.GOAL_RESOLUTION_COMMITTED in outcome["types"]
     assert outcome["synthesis"] == [], "no synthesis was needed: the library had a replacement"
-    assert sum(outcome["accepted"]) == 2, "the replacement's two leaves"
+    assert sum(outcome["accepted"]) == 1, (
+        "P2.3q: the accepted read-only leaf is shared; only the new review is accepted"
+    )
 
 
 def test_a_declared_no_method_after_rejection_opens_a_synthesis_round_with_the_findings(
@@ -1096,7 +1114,7 @@ def test_a_declared_no_method_after_rejection_opens_a_synthesis_round_with_the_f
     provider = RoleScriptedProvider(
         {
             "root_reviewer": [_reviewer("FAIL", finding=C1_FINDING["detail"]), _reviewer("PASS")],
-            "planner": [_planner_declines, _planner_replaces],
+            "planner": [_planner_replaces],
             "method_synthesizer": [method_proposal_step(invented.to_json())],
             "critic": [_judge_critic],
         }
@@ -1119,8 +1137,12 @@ def test_a_declared_no_method_after_rejection_opens_a_synthesis_round_with_the_f
     assert request["schema_feedback"] == [], "a review finding is not a decode problem"
     assert outcome["revisions"] == [1, 2]
     assert list(outcome["instances"].values()) == ["plan.synthesised"]
-    assert outcome["roles"].get("planner") == 2
-    assert outcome["types"].count("PlanningRejected") == 2, "the repair record and the declaration"
+    assert outcome["roles"].get("planner") == 1, (
+        "P2.3q: the empty no_applicable_method round is skipped; one adopt remains"
+    )
+    assert outcome["types"].count("PlanningRejected") == 1, (
+        "the repair record only; the empty Planner declaration is skipped"
+    )
     assert e2e.GOAL_RESOLUTION_COMMITTED in outcome["types"]
 
 
@@ -1256,13 +1278,18 @@ def test_re_proposing_the_rejected_method_end_to_end_is_refused_and_bounded(tmp_
     assert outcome["status"] is MissionStatus.FAILED, (
         f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']}"
     )
+    skip = [
+        item
+        for item in outcome["events"]
+        if item.type == hd.PLANNER_SKIPPED_FOR_SYNTHESIS
+    ]
+    assert skip, "nothing APPLICABLE remains; the empty Planner is skipped"
     grounded = [
         item.payload
         for item in outcome["events"]
         if item.type == "PlanningRejected" and item.payload.get("reason") == "proposal_not_grounded"
     ]
-    assert len(grounded) == 1
-    assert "method_rejected_by_root_review" in grounded[0]["detail"]["error"]
+    assert grounded == []
     assert outcome["revisions"] == [1], "nothing was re-adopted"
     assert list(outcome["instances"].values()) == ["plan.outer"]
     assert len(outcome["synthesis"]) == 1 and outcome["synthesis"][0]["synthesis_round"] == 2
@@ -1336,18 +1363,19 @@ def test_a_second_repair_round_is_shown_every_method_the_review_rejected(tmp_pat
         f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']}"
     )
     assert outcome["revisions"] == [1, 2]
-    assert outcome["roles"].get("planner") == 2
+    assert outcome["roles"].get("planner") == 1, (
+        "second repair has no APPLICABLE method; the empty Planner is skipped"
+    )
     packages = outcome["planner_packages"]
-    assert len(packages) == 2
-    second = packages[1]
+    assert len(packages) == 1
+    first = packages[0]
     flags = {
         item["refine_method_ref"]["id"]: item["rejected_by_root_review"]
-        for item in second["method_library"]
+        for item in first["method_library"]
     }
-    assert flags == {"plan.outer": True, "plan.alt": True}
-    assert second["rejected_refinements"][0]["rejected_method_ref"]["method_id"] == "plan.alt"
-    root = second["plan"]["root_occurrences"][0]
-    assert [item for item in second["applicability"] if item["goal_occurrence_id"] == root] == []
+    assert flags["plan.outer"] is True
+    assert flags["plan.alt"] is False
+    assert first["rejected_refinements"][0]["rejected_method_ref"]["method_id"] == "plan.outer"
     assert len(outcome["synthesis"]) == 1 and outcome["synthesis"][0]["synthesis_round"] == 3
     feedback = "\n".join(outcome["synth_requests"][0]["review_feedback"])
     assert "plan.alt" in feedback
@@ -1383,7 +1411,7 @@ def test_a_second_synthesis_round_after_a_pre_plan_round_is_its_own_record(tmp_p
             "root_reviewer": [_reviewer("FAIL", finding=C1_FINDING["detail"]), _reviewer("PASS")],
             # The admitted round 1 bought the ladder one more rung (``_synthesis_credits``),
             # so the repair round is asked twice before the synthesis question is put.
-            "planner": [_planner_declines, _planner_declines, _planner_replaces],
+            "planner": [_planner_replaces],
             "method_synthesizer": [method_proposal_step(invented.to_json())],
             "critic": [_judge_critic],
         }
@@ -1393,7 +1421,7 @@ def test_a_second_synthesis_round_after_a_pre_plan_round_is_its_own_record(tmp_p
         f"{outcome['status']} / {outcome['stop_reason']}: {outcome['types']} "
         f"roles={outcome['roles']}"
     )
-    assert outcome["roles"].get("planner") == 3
+    assert outcome["roles"].get("planner") == 1
     assert [item["synthesis_round"] for item in outcome["synthesis"]] == [1, 2]
     keys = {
         item.idempotency_key
@@ -1462,24 +1490,21 @@ def test_the_synthesis_judgment_names_the_rejected_root_once_the_planner_decline
             mission = loop.store.get_mission(world.mission.id)
             assert await loop._advance_root_review(mission, loop._new_mode(mission))
             in_flight = loop.hierarchical.goals_needing_method(mission.id)
-            intent = next(
-                item
-                for item in loop.store.list_intents(
-                    "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
-                )
-                if item.mission_id == mission.id and item.kind == "plan"
-            )
-            await loop._planning_rejected(
-                intent, reason="no_applicable_method", detail={"rationale": "none"}
-            )
-            for item in loop.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"):
-                if item.mission_id == mission.id and item.kind == "plan":
-                    loop._settle_intent(item, "FAILED")
-            after = loop.hierarchical.goals_needing_method(mission.id)
+            after = in_flight
             rejected = loop.hierarchical.rejected_refinements(mission.id)
-            return {"in_flight": in_flight, "after": after, "rejected": rejected}
+            skip = [
+                item
+                for item in loop.store.list_events(mission.id)
+                if item.type == hd.PLANNER_SKIPPED_FOR_SYNTHESIS
+            ]
+            return {
+                "in_flight": in_flight,
+                "after": after,
+                "rejected": rejected,
+                "skip": skip,
+            }
 
     outcome = asyncio.run(case())
-    assert outcome["in_flight"] == (), "not while the Planner is being asked"
+    assert outcome["skip"], "the empty Planner is skipped; synthesis is the next question"
     assert outcome["after"] == (ROOT_TASK,)
     assert [str(item.goal_signature_id) for item in outcome["rejected"]] == ["plan.goal"]

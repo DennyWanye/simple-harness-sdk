@@ -1169,15 +1169,15 @@ def test_a_legacy_prompt_pin_does_not_reach_the_hierarchical_branch() -> None:
 
     from agent_orchestrator.runtime.role_templates import (
         PLANNER,
-        PLANNER_HIERARCHICAL_V6,
+        PLANNER_HIERARCHICAL_V7,
     )
 
     # P2.3g: the unpinned default of package 2 was v4 (v3 minus the sentence that told
     # the Planner to write a ``<method_proposal>``).  P2.3j: package 3 carries
-    # ``rejected_refinements`` and v5 introduced the section.  P2.3n: v6 is the
-    # unpinned default (an APPLICABLE applicability row is a usable method).
-    assert _Pinned(PLANNER.prompt_version).choose() is PLANNER_HIERARCHICAL_V6
-    assert _Pinned(None).choose() is PLANNER_HIERARCHICAL_V6
+    # ``rejected_refinements`` and v5 introduced the section.  P2.3n: v6 is an
+    # APPLICABLE row is usable.  P2.3q: v7 splits the two rejection flags.
+    assert _Pinned(PLANNER.prompt_version).choose() is PLANNER_HIERARCHICAL_V7
+    assert _Pinned(None).choose() is PLANNER_HIERARCHICAL_V7
 
 
 def test_a_pin_from_an_older_package_version_does_not_apply_to_this_package() -> None:
@@ -1200,22 +1200,27 @@ def test_a_pin_from_an_older_package_version_does_not_apply_to_this_package() ->
         PLANNER_HIERARCHICAL_V4,
         PLANNER_HIERARCHICAL_V5,
         PLANNER_HIERARCHICAL_V6,
+        PLANNER_HIERARCHICAL_V7,
         hierarchical_planner_versions,
     )
 
     # v1 and v2 belong to package 1; v3 and v4 to package 2 (P2.3g).  P2.3j: package 3
-    # adds ``rejected_refinements``; v5 introduced the section, v6 (P2.3n) is the
-    # default.  A pin on any older hierarchical version falls back to v6 — those
-    # prompts do not know the section a repair round hands the Planner.  A pin on
-    # v5 is still honoured.
-    assert _Pinned(PLANNER_HIERARCHICAL_V1.prompt_version).choose() is PLANNER_HIERARCHICAL_V6
-    assert _Pinned(PLANNER_HIERARCHICAL.prompt_version).choose() is PLANNER_HIERARCHICAL_V6
-    assert _Pinned(PLANNER_HIERARCHICAL_V3.prompt_version).choose() is PLANNER_HIERARCHICAL_V6
-    assert _Pinned(PLANNER_HIERARCHICAL_V4.prompt_version).choose() is PLANNER_HIERARCHICAL_V6
+    # adds ``rejected_refinements``; v5 introduced the section, v6 (P2.3n) names
+    # APPLICABLE, v7 (P2.3q) splits the two rejection flags.  A pin on any older
+    # hierarchical version falls back to v7.  A pin on v5/v6 is still honoured.
+    assert _Pinned(PLANNER_HIERARCHICAL_V1.prompt_version).choose() is PLANNER_HIERARCHICAL_V7
+    assert _Pinned(PLANNER_HIERARCHICAL.prompt_version).choose() is PLANNER_HIERARCHICAL_V7
+    assert _Pinned(PLANNER_HIERARCHICAL_V3.prompt_version).choose() is PLANNER_HIERARCHICAL_V7
+    assert _Pinned(PLANNER_HIERARCHICAL_V4.prompt_version).choose() is PLANNER_HIERARCHICAL_V7
     assert _Pinned(PLANNER_HIERARCHICAL_V5.prompt_version).choose() is PLANNER_HIERARCHICAL_V5
     assert _Pinned(PLANNER_HIERARCHICAL_V6.prompt_version).choose() is PLANNER_HIERARCHICAL_V6
+    assert _Pinned(PLANNER_HIERARCHICAL_V7.prompt_version).choose() is PLANNER_HIERARCHICAL_V7
     assert hierarchical_planner_versions() == frozenset(
-        {PLANNER_HIERARCHICAL_V5.prompt_version, PLANNER_HIERARCHICAL_V6.prompt_version}
+        {
+            PLANNER_HIERARCHICAL_V5.prompt_version,
+            PLANNER_HIERARCHICAL_V6.prompt_version,
+            PLANNER_HIERARCHICAL_V7.prompt_version,
+        }
     )
     assert HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[2] == frozenset(
         {PLANNER_HIERARCHICAL_V3.prompt_version, PLANNER_HIERARCHICAL_V4.prompt_version}

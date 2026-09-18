@@ -67,14 +67,24 @@ BLOCKER = (
 MINOR = ({"severity": "minor", "criterion_id": ROOT_CRITERION, "detail": "wording"},)
 
 
-def _rejected_world(tmp_path, *, findings, key: str, tokens: int | None = None) -> World:
-    """A Mission whose root review has concluded REJECT, on disk and closed."""
+def _rejected_world(
+    tmp_path, *, findings, key: str, tokens: int | None = None, alt: bool = False
+) -> World:
+    """A Mission whose root review has concluded REJECT, on disk and closed.
+
+    ``alt`` registers a second method so the repair round still has an APPLICABLE
+    replacement (P2.3q would otherwise skip the Planner and go to synthesis).
+    """
 
     evidence = Path(tmp_path) / "evidence"
     evidence.mkdir(parents=True, exist_ok=True)
     world = committed(
         evidence, key=key, demand=True, **({} if tokens is None else {"tokens": tokens})
     )
+    if alt:
+        from test_root_review_repair_library import _alt_method, _register
+
+        _register(world, _alt_method())
     world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
     _accept_every_child(world)
     coordinator(world).cut(world.mission.id, now_ms=NOW_MS)
@@ -178,8 +188,13 @@ def test_a_blocking_finding_reopens_one_planner_round(blocked) -> None:
     # through a Planner intent, so ordinal 1 is still free here; what matters is that a
     # *free* one is taken, because the ordinal is the intent's creation key and reusing
     # a spent one would hand back the old intent and dispatch nothing.
-    assert [item.config["ordinal"] for item in outcome["intents"]] == [1]
-    assert outcome["next_ordinal"] == 2
+    # P2.3q: nothing APPLICABLE remains, so the empty Planner is skipped and a
+    # MethodSynthesizer round is the progress.  Its subject is not ``planner:1``,
+    # so ``_next_planning_ordinal`` stays 1; the intent is still one free round.
+    assert outcome["intents"], "a repair round was dispatched"
+    assert any(
+        str(item.config.get("role", "")) == "method_synthesizer" for item in outcome["intents"]
+    )
 
 
 def test_the_findings_travel_to_the_planner_as_durable_feedback(blocked) -> None:
@@ -332,7 +347,9 @@ def test_a_repair_round_that_cannot_be_funded_stops_the_mission_visibly(tmp_path
     the honest one is a Mission-level stop with ``BUDGET_EXHAUSTED``.
     """
 
-    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-broke", tokens=100)
+    world = _rejected_world(
+        tmp_path, findings=BLOCKER, key="p23d-repair-broke", tokens=100, alt=True
+    )
     outcome = _advance(world, Path(tmp_path) / "evidence")
     assert outcome["moved"] == [False], "an unfundable round is not progress"
     assert outcome["status"] is MissionStatus.FAILED
@@ -361,7 +378,9 @@ def test_the_whole_loop_survives_a_repair_round_it_cannot_fund(tmp_path) -> None
     one Mission's stop.
     """
 
-    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-loop", tokens=100)
+    world = _rejected_world(
+        tmp_path, findings=BLOCKER, key="p23d-repair-loop", tokens=100, alt=True
+    )
     evidence = Path(tmp_path) / "evidence"
     config = OrchestratorConfig(
         evidence_root=evidence,
@@ -388,7 +407,7 @@ def test_the_whole_loop_survives_a_repair_round_it_cannot_fund(tmp_path) -> None
     assert "MissionFailed" in outcome["events"]
 
 
-def test_the_findings_are_in_the_package_the_repair_round_actually_carries(blocked) -> None:
+def test_the_findings_are_in_the_package_the_repair_round_actually_carries(tmp_path) -> None:
     """Review P2-8: the event is not the delivery — the package is.
 
     ``test_the_findings_travel_to_the_planner_as_durable_feedback`` proves the record
@@ -398,8 +417,10 @@ def test_the_findings_are_in_the_package_the_repair_round_actually_carries(block
     are >= 2, so the feature worked — but nothing here could have noticed if it stopped.
     """
 
-    world, evidence = blocked
-    outcome = _advance(world, evidence, spend_ordinal_one=True)
+    world = _rejected_world(
+        tmp_path, findings=BLOCKER, key="p23d-repair-pkg", alt=True
+    )
+    outcome = _advance(world, Path(tmp_path) / "evidence", spend_ordinal_one=True)
     assert outcome["moved"] == [True]
     assert outcome["next_ordinal"] == 3, "ordinal 1 is spent, the repair took 2"
     repair = [item for item in outcome["packages"] if "no readable proof" in item]
@@ -574,7 +595,7 @@ def test_a_repair_round_whose_pool_is_cooling_down_keeps_its_place_in_the_queue(
 
     from agent_orchestrator.runtime.model_router import RoutingUnavailable
 
-    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-cooldown")
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-cooldown", alt=True)
     outcome = _repair_with_broken_planner(
         world, Path(tmp_path) / "evidence", RoutingUnavailable("default", None)
     )
@@ -599,7 +620,7 @@ def test_a_deferred_repair_round_is_retried_and_its_exhaustion_is_still_caught(
     from agent_orchestrator.runtime.model_router import RoutingUnavailable
 
     world = _rejected_world(
-        tmp_path, findings=BLOCKER, key="p23d-repair-retry", tokens=4100
+        tmp_path, findings=BLOCKER, key="p23d-repair-retry", tokens=4100, alt=True
     )
     evidence = Path(tmp_path) / "evidence"
     config = OrchestratorConfig(
@@ -661,7 +682,7 @@ def test_a_repair_round_whose_package_is_refused_stops_the_mission_not_the_plann
 
     from agent_orchestrator.context.context_builder import ContextRejected
 
-    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-context")
+    world = _rejected_world(tmp_path, findings=BLOCKER, key="p23d-repair-context", alt=True)
     outcome = _repair_with_broken_planner(
         world, Path(tmp_path) / "evidence", ContextRejected("package too large")
     )

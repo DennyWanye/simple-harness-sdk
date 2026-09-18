@@ -348,8 +348,6 @@ def test_a_saturated_goal_is_synthesised_and_the_new_method_is_planned(tmp_path)
             # Two rounds that cannot work: every method the Mission holds is refused for
             # an unknown precondition, so the honest Planner has nothing to propose.
             "planner": [
-                "no plan is possible with the methods on offer",
-                "still nothing; the only method is gated on an unknown precondition",
                 _adopt(invented.method_ref()),
             ],
             "method_synthesizer": [method_proposal_step(invented.to_json())],
@@ -398,7 +396,9 @@ def test_a_saturated_goal_is_synthesised_and_the_new_method_is_planned(tmp_path)
         "the synthesised method never became a plan — the round bought nothing: "
         f"{outcome['types']}"
     )
-    assert outcome["planner_rounds"] == 3, "one more round than the ladder, not a loop"
+    assert outcome["planner_rounds"] == 1, (
+        "P2.3q: the two doomed empty Planner rounds are skipped; one adopt remains"
+    )
 
 
 def test_the_planning_ladder_waits_for_a_synthesis_round_instead_of_racing_it(tmp_path) -> None:

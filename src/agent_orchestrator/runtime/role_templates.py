@@ -649,12 +649,38 @@ PLANNER_HIERARCHICAL_V6 = _revise(
     ),
 )
 
+# P2.3q / N12.  C1-r1's Planner wrote "rejected_by_root_review blocks reuse" after a
+# read-only leaf cancel; the Mission never had a root review.  v7 splits the two
+# flags.  v6 keeps its bytes (digest frozen in ``test_output_port_claims``).
+PLANNER_HIERARCHICAL_V7_VERSION = "planner-hierarchical-v7"
+PLANNER_HIERARCHICAL_V7 = _revise(
+    PLANNER_HIERARCHICAL_V6,
+    PLANNER_HIERARCHICAL_V7_VERSION,
+    (
+        "method_library 里 rejected_by_root_review 为 false 的方法，只要 applicability "
+        "给出 APPLICABLE（刚准入的合成方法通常如此，因为它们没有种子方法那些尚未观察的前置条件），"
+        "就是可用的：照抄它的 refine_method_ref 做 refine。不要因为种子方法都是 "
+        "NEEDS_EVIDENCE 就忽略库里另一条。只有这些未拒绝条目全部被 applicability 列为拒绝"
+        "（verdict 不是 APPLICABLE）时，才输出 no_applicable_method 的空操作提案，"
+        "系统会带着 findings 去请求合成新方法。\n",
+        "method_library 里 rejected_by_root_review 为 false 且 rejected_by_read_only_leaf "
+        "为 false 的方法，只要 applicability 给出 APPLICABLE（刚准入的合成方法通常如此，"
+        "因为它们没有种子方法那些尚未观察的前置条件），就是可用的：照抄它的 "
+        "refine_method_ref 做 refine。不要因为种子方法都是 NEEDS_EVIDENCE 就忽略库里另一条。"
+        "rejected_by_root_review 只标记根评审拒绝的方法；rejected_by_read_only_leaf 标记"
+        "因只读叶改写工作区被取消的方法（read_only_leaf_needs_write），两者都不可再 adopt。"
+        "只有这些未拒绝条目全部被 applicability 列为拒绝（verdict 不是 APPLICABLE）时，"
+        "才输出 no_applicable_method 的空操作提案，系统会带着 findings 去请求合成新方法。\n",
+    ),
+)
+
 register_template(PLANNER_HIERARCHICAL_V1)
 register_template(PLANNER_HIERARCHICAL)
 register_template(PLANNER_HIERARCHICAL_V3)
 register_template(PLANNER_HIERARCHICAL_V4)
 register_template(PLANNER_HIERARCHICAL_V5)
 register_template(PLANNER_HIERARCHICAL_V6)
+register_template(PLANNER_HIERARCHICAL_V7)
 
 #: Every registered prompt version that belongs to the *hierarchical* Planner.
 #: P2.3c part 2b: a deployment's frozen ``prompt_versions`` pins ``planner`` to a
@@ -672,6 +698,7 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
         PLANNER_HIERARCHICAL_V4_VERSION,
         PLANNER_HIERARCHICAL_V5_VERSION,
         PLANNER_HIERARCHICAL_V6_VERSION,
+        PLANNER_HIERARCHICAL_V7_VERSION,
     }
 )
 
@@ -701,8 +728,15 @@ HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE: Mapping[int, frozenset[str]] = {
     # ``rejected_refinements`` and the ``rejected_by_root_review`` flag.  v5 is the
     # prompt that introduced the section; v6 (P2.3n) is the same package plus
     # "an APPLICABLE applicability row is a usable method, including a just-admitted
-    # synthesised one".  A pin on v5 is still honoured.
-    3: frozenset({PLANNER_HIERARCHICAL_V5_VERSION, PLANNER_HIERARCHICAL_V6_VERSION}),
+    # synthesised one".  v7 (P2.3q) splits ``rejected_by_read_only_leaf`` from
+    # ``rejected_by_root_review``.  A pin on v5/v6 is still honoured.
+    3: frozenset(
+        {
+            PLANNER_HIERARCHICAL_V5_VERSION,
+            PLANNER_HIERARCHICAL_V6_VERSION,
+            PLANNER_HIERARCHICAL_V7_VERSION,
+        }
+    ),
 }
 
 
@@ -1390,6 +1424,8 @@ __all__ = (
     "PLANNER_HIERARCHICAL_V5_VERSION",
     "PLANNER_HIERARCHICAL_V6",
     "PLANNER_HIERARCHICAL_V6_VERSION",
+    "PLANNER_HIERARCHICAL_V7",
+    "PLANNER_HIERARCHICAL_V7_VERSION",
     "PLANNER_HIERARCHICAL_VERSION",
     "TASK_ROLE_BY_KIND",
     "CRITIC",
