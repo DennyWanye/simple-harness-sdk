@@ -165,4 +165,58 @@ $ uv run --offline ruff check src/agent_orchestrator/contracts/schemas/__init__.
 All checks passed!
 ```
 
-独立复核：用 `jsonschema.Draft202012Validator`（仅核验期临时 `--with`，不入依赖）校验 11 个 valid 样例与 `detail:null` 变体，全部 0 error。
+独立复核：第 1 轮曾以临时 `--with jsonschema` 跑过 `Draft202012Validator`，但该 `--with` 需联网取包，离线环境**不可复现**（第 2 轮核验已指出，见其报告「附：对实施日志独立复核一句的厘清」）。此后所有独立复核一律改用仓内两套**离线**校验实现（核验方的 `mini_jsonschema` 与本片的 `_validate`），不再引用需要联网的 `--with`。
+
+## 九、第 2 轮处置（核验“修后可合”，2026-09-19）
+
+核验报告：`plans/llm-native-htn/H1/reviews/核验-H1-A2b-2026-09-19.md` 的「复核 2」。结论：上轮 P1-A/P1-B/P1-C 已全部修复并验证；本轮新发现 **P1-D（含并入的 P1-E）**——无 P0，仍判“修后可合”。本轮**未改 Schema、未改 `planning_decisions.py`、未改 `pyproject.toml`**，只补测试与文档。
+
+### P1-D / P1-E：`uncertainties` / `replan_triggers` 子形状的 `type` 未被任何用例钉死（已修）
+
+- 现象（核验方脚本）：把 Schema 全部 70 个 `type` 关键字逐一翻转为异类，跑 `test_planning_decision_json_schema.py`，**9 个存活的全部**落在
+  `$defs/uncertainty`、`$defs/uncertainty/properties/{statement,affects,affects/items}`、
+  `$defs/replanTrigger`、`$defs/replanTrigger/properties/{description,referenced_predicates,referenced_predicates/items}`、
+  `$defs/assumption/properties/suggested_predicate_key/anyOf/0`；三文件合跑仍 251 passed。
+- 根因：11 个 valid 样例的 `uncertainties` 与 `replan_triggers` **恒为空数组**，`suggested_predicate_key` 变体只测了 `null`，因此反应用例只覆盖到“空数组可接受”，看不到元素内部的 `type`；限额镜像只比 `maxLength/maxItems`，不比 `type`。
+- 修复（只补测试，不动 Schema——已复核 Schema 的这 9 处 `type` 本就正确）：在 `_codec_canonical_variants()` 增加三个 codec 合法变体：
+  - `variant-uncertainty-with-affects`：`uncertainties=[{"statement":"…","severity":"LOW","affects":["obligation:o-1"]}]`
+  - `variant-replan-trigger`：`replan_triggers=[{"description":"…","referenced_predicates":["pred.input_present"],"suggested_decision":"REFINE"}]`
+  - `variant-assumption-with-predicate`：`assumptions[0].suggested_predicate_key="pred.x"`（非 `null` 字符串）
+  这三个变体同时补齐 P1-E 的“形状声明了但零正例”覆盖缺口。反向测试参数由 14 增至 17。
+
+### 变异复验（9 个 P1-D 存活点全部转 KILLED）
+
+| 变异（Schema） | 结果 |
+|---|---|
+| `$defs/assumption/.../suggested_predicate_key/anyOf/0` string→integer | **KILLED** |
+| `$defs/uncertainty` object→string | **KILLED** |
+| `$defs/uncertainty/properties/statement` string→integer | **KILLED** |
+| `$defs/uncertainty/properties/affects` array→string | **KILLED** |
+| `$defs/uncertainty/properties/affects/items` string→integer | **KILLED** |
+| `$defs/replanTrigger` object→string | **KILLED** |
+| `$defs/replanTrigger/properties/description` string→integer | **KILLED** |
+| `$defs/replanTrigger/properties/referenced_predicates` array→string | **KILLED** |
+| `$defs/replanTrigger/properties/referenced_predicates/items` string→integer | **KILLED** |
+
+上表每条均由 `test_codec_canonical_output_is_accepted_by_the_schema[variant-uncertainty-with-affects|variant-replan-trigger|variant-assumption-with-predicate]` 击中。另做**全量盲区扫描**：Schema 全部 71 个 `type` 关键字逐一翻转为异类后跑本测试文件，**SURVIVED = 0 / 71**（修复前为 9/70 存活）。所有变异均“备份 `/tmp` → 变异 → 跑测试 → 副本恢复”，恢复后 `git status` 干净，且 Schema 与 HEAD 逐字节一致。
+
+### 证据可复现性提示的处置（核验报告“附”项）
+
+- 第 1 轮日志尾部曾称“用 `jsonschema.Draft202012Validator`（临时 `--with`）复核”。该 `--with` 需联网取包，离线环境不可复现。本轮**已改写该句**，明确“不再引用需要联网的 `--with`，一律改用仓内离线校验实现”，并以后续盲扫（离线）作为证据。
+
+### 本轮测试（尾行原文）
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py -q -p no:cacheprovider
+103 passed in 0.09s
+
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py tests/orchestrator/full_target/test_planning_decision_contract.py tests/orchestrator/full_target/test_planning_decision_envelope.py -q -p no:cacheprovider
+254 passed in 0.13s
+
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
+3214 passed, 2 skipped in 127.62s (0:02:07)
+
+$ uv run --offline ruff check src/agent_orchestrator/contracts/schemas/__init__.py tests/orchestrator/full_target/test_planning_decision_json_schema.py
+All checks passed!
+```
+

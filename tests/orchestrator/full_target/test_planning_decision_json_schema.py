@@ -389,6 +389,40 @@ def _codec_canonical_variants() -> dict[str, dict[str, Any]]:
         }
     ]
     variants["variant-assumption-without-predicate"] = assumption
+
+    # P1-D/P1-E: the 11 golden fixtures all carry empty ``uncertainties`` and
+    # ``replan_triggers``, so the sub-shape ``type`` keywords of those two arrays
+    # were never exercised.  A non-empty variant is what makes a flipped
+    # ``uncertainty``/``replanTrigger`` sub-shape fail the reverse-acceptance test.
+    uncertainty = _read(VALID_DIR / "refine.json")
+    uncertainty["uncertainties"] = [
+        {"statement": "the target file may move", "severity": "LOW", "affects": ["obligation:o-1"]}
+    ]
+    variants["variant-uncertainty-with-affects"] = uncertainty
+
+    trigger = _read(VALID_DIR / "refine.json")
+    trigger["replan_triggers"] = [
+        {
+            "description": "the input becomes stale",
+            "referenced_predicates": ["pred.input_present"],
+            "suggested_decision": "REFINE",
+        }
+    ]
+    variants["variant-replan-trigger"] = trigger
+
+    # ``suggested_predicate_key`` was only ever exercised as ``null``; a non-null
+    # string makes the ``string`` branch of its ``anyOf`` load-bearing too.
+    predicate = _read(VALID_DIR / "refine.json")
+    predicate["assumptions"] = [
+        {
+            "key": "a",
+            "statement": "s",
+            "required_for": ["REFINE"],
+            "risk": "LOW",
+            "suggested_predicate_key": "pred.x",
+        }
+    ]
+    variants["variant-assumption-with-predicate"] = predicate
     return variants
 
 
