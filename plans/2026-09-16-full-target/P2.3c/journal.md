@@ -3833,7 +3833,7 @@ C3-r0（`mission-01a511b9a5d78b1f`）：种子方法 `code.fix-by-patch@2`。fac
 - 真实模型第 4 批未重跑。
 - Host `max_attempts` 12→24、局级 calls 与 `max_model_calls_per_turn` 解绑（N8/N10b）属 runner。
 - 合成器提示词未加 v7（宽度靠 schema_feedback / 协议 detail）。
-## 2s. P2.3r：终态释放 UNKNOWN 预留 + 诊断沿异常链 + usage_fully_known（2026-09-18，分支 `p2.3r-terminal-unknown-release-and-diagnostics`，基 `d360750` = 0.12.2 候选第 4 版）
+## 2t. P2.3r：终态释放 UNKNOWN 预留 + 诊断沿异常链 + usage_fully_known（2026-09-18，分支 `p2.3r-terminal-unknown-release-and-diagnostics`，基 `d360750` = 0.12.2 候选第 4 版）
 
 输入：用户任务书 + 诊断 `Grok验收-第4批L3诊断-2026-09-18.zh-CN.md` §4 N9/N11、§8 Q2、§10 Q4。证据只读。`contracts/` 零改动；无新配置项；`_new_mode` 仍 19 处。
 
