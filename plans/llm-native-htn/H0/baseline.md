@@ -1,5 +1,15 @@
 # H0 基线冻结（LLM-native HTN）
 
+## 与 V2 计划的对应
+
+本节说明本基线包已按 `HTN-LLM-NATIVE-2.0`（`simpleharness-llm-native-htn-execution-plan-v2.zh-CN.md`）第 6 节（交付物布局）与第 56 节（H0 基线冻结）重排：
+
+- 目录已重排为 `plans/llm-native-htn/H0/`，共用日志移至 `plans/llm-native-htn/journal.md`。
+- 基线正文 `baseline.md`；环境快照 `git-status.txt`；测试结果 `test-results.json`；提示词摘要 `prompt-digests.json`；事件/函数金值 `event-golden-digests.json`。
+- 文中全部数字取自 **2026-09-18 实测**，本次重排**未重跑**任何测试或命令，仅移动/拆分文件并补充本说明。
+
+---
+
 **日期：2026-09-18**  
 **性质：只记录，不改功能代码。**  
 **工作树：`simple-harness-sdk-h0` 分支 `h0-llm-native-baseline`**  

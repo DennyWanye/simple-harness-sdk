@@ -1,0 +1,18 @@
+{
+  "date": "2026-09-18",
+  "phase": "H0",
+  "head": "7f839f0e3d83aa17a0d0e2e54157ca9b1c9465a5",
+  "head_short": "7f839f0",
+  "legacy_event_golden": {
+    "new_event_types": "tests/orchestrator/full_target/test_hierarchical_event_flow.py:1392-1421",
+    "tests": [
+      "tests/orchestrator/full_target/test_hierarchical_event_flow.py:1425 test_the_legacy_run_appends_none_of_the_new_event_types",
+      "tests/orchestrator/full_target/test_hierarchical_event_flow.py:1357 test_the_legacy_path_never_enters_the_assembly_at_all"
+    ]
+  },
+  "legacy_function_hashes": {
+    "frontier": "0ae7cd4c24ee902e1fac2f8e8193920a64e9ff10c408baf0f33d1d6cc366e1b8",
+    "allocate": "5940ab39e18168a83f9af8c422a9924758faf41ddf8793021b5a89c6cb5ab78c",
+    "location": "tests/orchestrator/full_target/test_allocator_form_gate.py:113-114"
+  }
+}

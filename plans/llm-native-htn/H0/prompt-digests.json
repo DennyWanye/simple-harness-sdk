@@ -1,0 +1,52 @@
+{
+  "date": "2026-09-18",
+  "phase": "H0",
+  "head": "7f839f0e3d83aa17a0d0e2e54157ca9b1c9465a5",
+  "head_short": "7f839f0",
+  "prompt_shas": {
+    "planner-v3": "353b0dd0a0727b4a8ce74fe82354d17a02b6afe0a6c883f011b77ee22c4287e9",
+    "planner-v4": "13537f0abf6322c7075af9b5ddb3c0b7316c0271830311f49c3d6c195f5c9aad",
+    "planner-hierarchical-v1": "2acb2294fca09f55c30831ffd43dd7eae5685af72daa4c85de8759b440e43830",
+    "planner-hierarchical-v2": "f8a8bba7221bfcc1c33d8b3f71517678bced6c905c7dbfdcee1558f0374a0387",
+    "planner-hierarchical-v3": "ba244a12bf504051d7ebc954f462cf23f9c7734dff980c539187834a0a670acb",
+    "planner-hierarchical-v4": "5ae3b39acf9326888e20bab934848ed6e1d21482884ccda932ac693b31122223",
+    "planner-hierarchical-v5": "2517d5fe727ba27ffffa105d72e786e72109893c342e56adebeaa033794f7608",
+    "planner-hierarchical-v6": "b13d16f7d1d5aaa8919d983e93b7639105446bd6d95bd73d05353571a9a185a6",
+    "planner-hierarchical-v7": "5b87b9624fbf4a4e1c31e6d9c4a765de2ac4ec689b5d708000b427676cb50f15",
+    "method-synthesizer-v1": "9341ab10390015fb45d528d95dac0af5b29658f0ee9b70060369d607f8f0ae32",
+    "method-synthesizer-v2": "27ccb23492ef00b73404735a03f51439d2bf0eb1339a6a6b4320950ee8beaccb",
+    "method-synthesizer-v3": "a38309fdb328c929d6ddefa37ff4de294628f0f508dfad82c7a27bb1cd0e6c9c",
+    "method-synthesizer-v4": "8d457abe7a74d614642ac7e2446e656aea9c46e4a7f509820353dd04f93f39b6",
+    "method-synthesizer-v5": "6973e125b9cc3b02b8af77190a9b0ff4b5a1ddd3cdfe8cc1f60900304fe21e6b",
+    "method-synthesizer-v6": "75a8a4a1a888e2ac165d16a711df9e981ad44da92c15b652bbc29bbc97774c42",
+    "method-synthesizer-v7": "4aa25e682ede38479a09a2a8d00da023aaed617e32384e7da85c44641a4e2f9b",
+    "worker-v2": "c0c35d2d2639ea6655c66bf7b30b6f46cf04ffbb458a79caba63b6477ae46f37",
+    "worker-v3": "c587ce55ff9a01e38ba5b362f8bb9de518b99404f712e63409f871d2d3f0d285",
+    "worker-hierarchical-v1": "e82e74aff9b37d4746da0e982b38855e3cb639efe848fb1a15116a18023e7de2",
+    "worker-hierarchical-v2": "120372b8a49162ab1d96c6cf2725d6fcf7adec1988c7c8646f378c21649870b7",
+    "worker-hierarchical-v3": "ed827cf56debe82de0fdf5604ce8ba570b84a3500ecc63beba89e4ba01efc19d",
+    "worker-hierarchical-v4": "d59d78049330d71d8a837f709b7b72003275be3999e36f8c3b20ce2ea6d61c52",
+    "worker-appworld-v3": "8fbea8282c1e8f4814e75fc9943bc41da21016db0af2026fe037f001b81bdd88",
+    "worker-appworld-hierarchical-v1": "9ad842af04458dd7f57d1935fb669a57fdb4b63d850427b5974716e3da994917",
+    "root-reviewer-v1": "2b5ebe37c1701f60e955a0e71d1d682fc344f2ccf6d06ed12606e2df9b9aa59a",
+    "root-reviewer-v2": "75debfd9640f1c635b808cdaf7657168ce10782d9e0cd93f08450fdc0d744c76",
+    "root-reviewer-v3": "21a7814076b72957f41c47bf21fb340d2c2243e3fc0687fb397a143373930980",
+    "critic-v2": "8eb51a32c06bfa16da88e4e89a28f48b50ce2e06969aec467abd803078a1c5ce",
+    "critic-v3": "427fb096fc0c4cf6acc67358cd631d3f3c4c39ce2fea60b768a529f6290b7120"
+  },
+  "package_versions": {
+    "planner-package-hierarchical": "planner-package-hierarchical-v4",
+    "hierarchical_planner_package_version": 3,
+    "plan_revision_proposal_schema_version": 1,
+    "method_contract_schema_version": 1,
+    "execution_feedback_schema_version": 1,
+    "legacy_semantics": "legacy",
+    "hierarchical_semantics": "hierarchical",
+    "semantics_alias": "full-target-v1"
+  },
+  "prompt_freeze_gaps": [
+    "planner-hierarchical-v1 not in FROZEN_PROMPT_DIGESTS",
+    "planner-hierarchical-v2 not in FROZEN_PROMPT_DIGESTS",
+    "root-reviewer-v3 has no FROZEN_* literal"
+  ]
+}

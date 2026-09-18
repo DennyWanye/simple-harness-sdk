@@ -51,3 +51,17 @@
 ### 下一步
 
 **等待计划修订需求裁定。** Host `v1.4/LLM-native-HTN计划-修订需求-2026-09-18.zh-CN.md`：H1 代码须等「第一组」裁定后再开，避免线上格式返工。H0 不依赖任何裁定，本阶段到此结束。
+
+---
+
+## 2026-09-18 重排（H0 基线包对齐 V2 布局）
+
+- 依据 `HTN-LLM-NATIVE-2.0`（`simpleharness-llm-native-htn-execution-plan-v2.zh-CN.md`）第 6 节与第 56 节重排 H0 交付物目录。
+- 目录变更（`git mv`，未重跑任何测试）：
+  - `plans/2026-09-18-llm-native-htn/H0-基线冻结-2026-09-18.md` → `plans/llm-native-htn/H0/baseline.md`
+  - `plans/2026-09-18-llm-native-htn/baseline.json` → `plans/llm-native-htn/H0/baseline.json`
+  - `plans/2026-09-18-llm-native-htn/journal.md` → `plans/llm-native-htn/journal.md`（全升级共用日志）
+- 从 `baseline.json` 拆出：`test-results.json`（full_target / legacy / new_mode_sentinel / ruff）、`prompt-digests.json`（prompt_shas / package_versions / prompt_freeze_gaps）、`event-golden-digests.json`（legacy_event_golden / legacy_function_hashes）。
+- 新增 `git-status.txt`：写入基线提交 `7f839f0` 完整哈希、移动前 `git status --short`（空）、`python3 --version`、`sqlite3 --version`。
+- `baseline.md` 顶部新增「与 V2 计划的对应」小节；全部数字仍取自 2026-09-18 实测，本次未重跑。
+- 提交信息：`docs(h0): realign the baseline package to the V2 plan layout`。未 push。

@@ -1,0 +1,42 @@
+{
+  "date": "2026-09-18",
+  "phase": "H0",
+  "head": "7f839f0e3d83aa17a0d0e2e54157ca9b1c9465a5",
+  "head_short": "7f839f0",
+  "full_target": {
+    "passed": 2960,
+    "skipped": 2,
+    "failed": 0,
+    "seconds": 132.3,
+    "wall_seconds": 134,
+    "log": "/tmp/h0-full.txt",
+    "tail": "2960 passed, 2 skipped in 132.30s (0:02:12)",
+    "skips": [
+      "tests/orchestrator/full_target/test_panda_backend.py:595 no real pandaPIparser configured via SH_PANDA_PARSER",
+      "tests/orchestrator/full_target/test_real_provider_hierarchical_smoke.py needs --run-real-provider"
+    ]
+  },
+  "legacy": {
+    "passed": 560,
+    "skipped": 13,
+    "failed": 0,
+    "seconds": 205.44,
+    "wall_seconds": 208,
+    "log": "/tmp/h0-legacy.txt",
+    "tail": "560 passed, 13 skipped in 205.44s (0:03:25)",
+    "paths": [
+      "tests/orchestrator/step02",
+      "tests/orchestrator/step05",
+      "tests/orchestrator/step06",
+      "tests/orchestrator/step07",
+      "tests/orchestrator/p34",
+      "tests/orchestrator/p35"
+    ]
+  },
+  "new_mode_sentinel": 19,
+  "new_mode_sentinel_test": "tests/orchestrator/full_target/test_hierarchical_event_flow.py:1540",
+  "ruff": {
+    "orchestrator_gate": "All checks passed",
+    "full_src_tests": "119 errors (pre-existing)"
+  }
+}

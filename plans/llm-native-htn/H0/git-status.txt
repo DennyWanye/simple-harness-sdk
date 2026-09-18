@@ -1,0 +1,13 @@
+# H0 基线环境与工作树快照（2026-09-18）
+
+## git rev-parse HEAD（H0 基线提交）
+7f839f0e3d83aa17a0d0e2e54157ca9b1c9465a5
+
+## git status --short（移动文件之前；空表示工作树干净）
+(empty)
+
+## python3 --version
+Python 3.9.6
+
+## sqlite3 --version
+3.50.6 2025-09-22 18:50:24 9cc554372371e07bf01d8070a64d461ac85b91be6eef0e642ed129a0c7fa8105 (64-bit)
