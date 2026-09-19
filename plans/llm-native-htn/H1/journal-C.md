@@ -113,9 +113,10 @@ $ git status --porcelain=v1 -b
 ```
 
 ```text
-$ git log --oneline -2
+$ git log --oneline -3
+8dc7cf0 test(h1-c): close the three verification gaps (all 23 system fields, later reason_refs, block-error fallback)
+f51ee09 docs(h1-c): implementation journal for the planning-decision codec
 4f84b2c feat(h1-c): planning decision codec (strict single-block parse, system-field guard, canonical hash)
-185c16a test(h1-c): red tests for the planning-decision codec
 ```
 
 ## 8. 流程自述（含一次误操作）
@@ -130,3 +131,64 @@ $ git log --oneline -2
 - 不把 `DECISION_NOT_ENABLED_IN_PHASE` 放进 codec（那是 admission / H1-F）。
 - 第 59 节「request 后 plan 变化 / 晚到决定」需要 admission+dispatch，C 只保证 id 公式与 raw hash 可供 B 做幂等（本片已交付公式与 `hash_raw_output`）。
 - 无新增 blocker；`plans/llm-native-htn/H1/BLOCKER-H1-C.md` 不需要建立。
+
+
+---
+
+## 10. 第 1 轮处置（核验：修后可合）
+
+**依据：** `plans/llm-native-htn/H1/reviews/verify-H1-C-2026-09-19.md`（核验副本目录 `simple-harness-sdk-h1c-verify-h1-c`，结论 `VERDICT: 修后可合`）。核验无 P0，3 条 P1 全是**测试缺口**：3 个追补变异在 codec 单跑与 `full_target` 全量下都存活，说明现有 42 条用例没能钉住这三处行为。实现本身正确（核验结论亦为「修后可合」），故本轮的修复是**补齐负向断言，不改实现**。
+
+### 三条 P1 与修复
+
+| # | 缺口 | 存活变异 | 修复（只改测试） |
+|---|---|---|---|
+| P1-1 | `SYSTEM_FIELD_KEYS` 的 23 键里 18 键无任何负向断言；删掉 `request_id` 全绿 | X5 | 新增 `SECTION_32_SYSTEM_FIELDS` 23 键字面量 + `test_the_system_field_keys_are_exactly_section_32`（断言集合逐键相等且长度为 23）；把顶层 / payload 结构层 / `reason_refs[]` 三处扫描测试改为对这 23 键**全部参数化**（原仅 3 键 / 1 键 / 1 键） |
+| P1-2 | `reason_refs` 扫描只被 `reason_refs[0]` 钉住；把循环改成只扫第 0 项，全套仍绿 | X7 | 新增 `test_a_system_field_in_a_later_reason_ref_is_still_refused`：`ref[0]` 干净、`ref[1]` 带 `plan_revision`，断言 `MODEL_SET_SYSTEM_FIELD` |
+| P1-3 | `_BLOCK_ERROR_CODES.get(..., MALFORMED_DECISION)` 的兜底分支无任何测试；把兜底码改成 `MULTIPLE_DECISIONS` 全套仍绿 | X3 | 新增 `test_the_block_error_table_covers_the_closed_reason_set`（表恰好覆盖 `extract_block` 的 5 个 reason）与 `test_an_unmapped_block_error_falls_back_to_malformed`（monkeypatch `extract_block` 抛未知 reason，断言 `MALFORMED_DECISION`） |
+
+### 先红后绿（三条缺口各自的对照）
+
+先写测试、再对**原实现**复现核验的变异，确认新断言把它们杀死，随后恢复实现：
+
+| 变异 | 修复前（核验） | 修复后（本轮实测） |
+|---|---|---|
+| X5 删 `request_id` | SURVIVED 0/42 | **KILLED**（4 failed, 106 passed） |
+| X7 只扫 `reason_refs[0]` | SURVIVED 0/42 | **KILLED**（1 failed, 109 passed） |
+| X3 兜底码改 `MULTIPLE_DECISIONS` | SURVIVED 0/42 | **KILLED**（1 failed, 109 passed） |
+
+三次变异均先备份实现到 `/tmp`、复现后恢复；恢复后 `decision_codec.py` 的 sha256 仍为 `0222d7a7fe6d16ad9c3a7acc8c3eb7e4e035010780cb0d1ac09bacb9896628bf`（**未改实现**）。
+
+### 处置轮验收（命令与尾行原样）
+
+```text
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_codec.py -q -p no:cacheprovider
+110 passed in 0.35s
+```
+
+```text
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
+3257 passed, 2 skipped in 127.10s (0:02:07)
+```
+
+```text
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/step02 tests/orchestrator/step05 tests/orchestrator/step06 tests/orchestrator/step07 tests/orchestrator/p34 tests/orchestrator/p35 -q -p no:cacheprovider
+560 passed, 13 skipped in 202.04s (0:03:22)
+```
+
+```text
+$ PYTHONPATH=src uv run --offline ruff check src/agent_orchestrator/planning/decision_codec.py tests/orchestrator/full_target/test_planning_decision_codec.py
+All checks passed!
+```
+
+sdk_gate.sh（`--tests tests/orchestrator/full_target/test_planning_decision_codec.py --allow <三文件白名单> --max-sentinel 26`）实测 `ok=true`，8 项全绿：`clean` / `allowlist` / `contracts_frozen` / `no_secrets` / `ruff` / `import_origin` / `targeted passed=110` / `sentinel count=26`。
+
+### P2（核验记录，本片不修）
+
+- **P2-1｜mixed 守卫是子串匹配**：`rationale` / `bindings` 值里出现字面量 `<plan_revision_proposal>` 会被判 `MIXED_PROTOCOL_BLOCKS`。任务书 C.1 第 2 步原文就是「若文本还含 `...`（即使 extract_block 已成功）」，属**规格自带的过度保守**；且同类行为在未改动的 `extract_block` 上一致（对任意 tag）。受「不改 extract_block」约束，本片记录不阻塞。
+- **P2-2｜超长整数字面量泄漏 `ValueError`**：块内 `9`×5000 会让 `json.loads` 抛 `ValueError`（非 `PlanningDecisionCodecError`）。来源是 `extract_block` 的既有边界，`parse_plan_proposal` 上同样存在，**非本片回归**；任务书禁止改 `output_blocks.py`，故留待后续片认领。
+
+### 边界确认
+
+- 本轮仅改测试文件 `tests/orchestrator/full_target/test_planning_decision_codec.py`；`decision_codec.py` 与 `journal-C.md` 之外无改动；未改任何 `contracts/` / 热文件。
+- 工作树最终 clean、全部 commit、未 push。
