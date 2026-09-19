@@ -24,14 +24,14 @@
 
 ## 2. 测试先行（红 → 绿）
 
-五个提交，先红后绿、再补判别力、最后把夹具清单改成「遍历而非钉数量」：
+先红后绿，再补判别力，最后把夹具清单改成「遍历而非钉数量」。完整提交列表以 `git log --oneline 0d89307..HEAD` 为准；按时间顺序：
 
 ```
-202907b test(h1-f): red tests for planning decision admission (ordered checks, golden fixtures)
-e587f97 test(h1-f): pin stage order, budget-account and one-problem-per-finding semantics
-8f861ca feat(h1-f): planning decision admission (ordered deterministic checks, typed admitted command, model-facing feedback)
-35310af test(h1-f): walk the H1-F fixture list instead of pinning its count
-88314d3 docs(h1-f): implementation journal (ordered admission stages, code-to-test table, mutation battery)
+test(h1-f): red tests for planning decision admission (ordered checks, golden fixtures)
+test(h1-f): pin stage order, budget-account and one-problem-per-finding semantics
+feat(h1-f): planning decision admission (ordered deterministic checks, typed admitted command, model-facing feedback)
+test(h1-f): walk the H1-F fixture list instead of pinning its count
+docs(h1-f): implementation journal (ordered admission stages, code-to-test table, mutation battery)
 ```
 
 **红：** 先写 `test_planning_decision_admission.py` 并提交（`202907b`）。此时实现文件不存在，跑任意用例都是：
@@ -263,7 +263,7 @@ M23 第一轮**存活**（测试只用一个 round-count 覆盖了预算），�
 | ruff（本片 2 文件） | `All checks passed!` |
 | 哨兵 `_new_mode` | 26（无新增） |
 | 变异 | 25/25 killed |
-| 工作树 | clean（五个提交，见下） |
+| 工作树 | clean（提交见文末） |
 
 ## 提交
 
