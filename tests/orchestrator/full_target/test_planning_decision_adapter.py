@@ -10,14 +10,14 @@ from typing import Any
 
 import pytest
 
-from simple_harness.contracts import canonical_json
-
 from agent_orchestrator.contracts.htn import (
     EvidenceRef,
+    MethodRef,
     ReadItem,
     ReadItemKind,
     RunningWorkPolicy,
 )
+from agent_orchestrator.contracts.models import ContractError
 from agent_orchestrator.contracts.planning_decisions import (
     BindExistingGoalDecision,
     BindExistingGoalMode,
@@ -34,19 +34,19 @@ from agent_orchestrator.contracts.planning_decisions import (
     RepairProposeSuccessorDecision,
     RepairReplaceMethodDecision,
     ResumableIf,
-    WaitDecision,
     VersionedTypeRefV1,
+    WaitDecision,
     canonical_decision_hash,
 )
 from agent_orchestrator.planning.decision_adapter import (
-    AdapterContext,
     AdaptedPlanningOutcome,
+    AdapterContext,
     DurableOnly,
     adapt_admitted_decision,
 )
 from agent_orchestrator.planning.decision_admission import AdmittedPlanningDecision
 from agent_orchestrator.planning.planner import parse_plan_proposal
-
+from simple_harness.contracts import canonical_json
 
 HASH_A = "a" * 64
 HASH_B = "b" * 64
@@ -98,22 +98,45 @@ def _admitted(envelope: PlanningDecisionEnvelopeV1, **method_refs: Any) -> Admit
             "task_id": "task-root",
             "obligation_id": "obl-root",
         },
-        method_refs=tuple(method_refs.values()),
+        method_refs=tuple(
+            MethodRef(
+                method_id=ref.id,
+                version=ref.semantic_revision,
+                content_hash=ref.content_hash,
+            )
+            for ref in method_refs.values()
+        ),
         method_instances=(),
         canonical_hash=canonical_decision_hash(envelope),
     )
 
 
 def _old_text(proposal_json: dict[str, Any]) -> str:
-    return "<plan_revision_proposal>" + json.dumps(proposal_json) + "</plan_revision_proposal>"
+    model_payload = {key: value for key, value in proposal_json.items() if key != "mission_id"}
+    return "<plan_revision_proposal>" + json.dumps(model_payload) + "</plan_revision_proposal>"
 
 
-def _assert_equivalent(admitted: AdmittedPlanningDecision, context: AdapterContext) -> None:
+def _assert_equivalent(
+    admitted: AdmittedPlanningDecision,
+    context: AdapterContext,
+    operations: list[dict[str, Any]],
+    running_work_policy: str = "retain_if_bindings_unchanged",
+) -> None:
     outcome = adapt_admitted_decision(admitted, context=context)
     assert isinstance(outcome, AdaptedPlanningOutcome)
     assert outcome.proposal is not None
+    old_json = {
+        "schema_version": 1,
+        "proposal_id": context.proposal_id,
+        "expected_plan_revision": context.base_plan_revision,
+        "trigger_refs": [ref.to_json() for ref in context.trigger_refs],
+        "read_set": [item.to_json() for item in context.read_set],
+        "operations": operations,
+        "rationale": admitted.decision.rationale,
+        "running_work_policy": running_work_policy,
+    }
     old = parse_plan_proposal(
-        _old_text(outcome.proposal.to_json()),
+        _old_text(old_json),
         mission_id=context.mission_id,
     )
     assert canonical_json(old.to_json()) == canonical_json(outcome.proposal.to_json())
@@ -125,7 +148,19 @@ def test_refine_is_byte_equivalent_to_the_existing_refine_proposal() -> None:
         PlanningDecisionType.REFINE,
         RefineDecision(method_ref=method, bindings={"target": "README.md"}),
     )
-    _assert_equivalent(_admitted(decision, method=method), _context())
+    _assert_equivalent(
+        _admitted(decision, method=method),
+        _context(),
+        operations=[
+            {
+                "op": "refine",
+                "goal_id": "task-root",
+                "obligation_id": "obl-root",
+                "method_ref": {"id": "code.fix", "version": 2, "content_hash": HASH_A},
+                "bindings": {"target": "README.md"},
+            }
+        ],
+    )
 
 
 def test_replace_method_is_retire_then_refine_and_requests_stop_then_reconcile() -> None:
@@ -149,7 +184,25 @@ def test_replace_method_is_retire_then_refine_and_requests_stop_then_reconcile()
         "refine",
     ]
     assert outcome.proposal.running_work_policy is RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE
-    _assert_equivalent(_admitted(decision, replacement=replacement), _context())
+    _assert_equivalent(
+        _admitted(decision, replacement=replacement),
+        _context(),
+        operations=[
+            {"op": "retire_method", "method_instance_id": "mi-old", "reason": decision.rationale},
+            {
+                "op": "refine",
+                "goal_id": "task-root",
+                "obligation_id": "obl-root",
+                "method_ref": {
+                    "id": "code.alt-fix",
+                    "version": 3,
+                    "content_hash": HASH_A,
+                },
+                "bindings": {"target": "README.md"},
+            },
+        ],
+        running_work_policy="request_stop_then_reconcile",
+    )
 
 
 def test_successor_is_byte_equivalent_to_the_existing_successor_proposal() -> None:
@@ -163,7 +216,19 @@ def test_successor_is_byte_equivalent_to_the_existing_successor_proposal() -> No
             bindings={"target": "README.md"},
         ),
     )
-    _assert_equivalent(_admitted(decision), _context())
+    _assert_equivalent(
+        _admitted(decision),
+        _context(),
+        operations=[
+            {
+                "op": "propose_successor",
+                "old_task_id": "task-old",
+                "obligation_id": "obl-root",
+                "goal_type_ref": {"id": "goal.next", "version": 2, "content_hash": HASH_A},
+                "bindings": {"target": "README.md"},
+            }
+        ],
+    )
 
 
 @pytest.mark.parametrize(
@@ -186,7 +251,19 @@ def test_both_existing_goal_binding_modes_are_byte_equivalent(
             resolution_ref=resolution,
         ),
     )
-    _assert_equivalent(_admitted(decision), _context())
+    _assert_equivalent(
+        _admitted(decision),
+        _context(),
+        operations=[
+            {
+                "op": "bind_shared_goal",
+                "consumer_method_instance_id": "mi-consumer",
+                "step": "inspect",
+                "goal_id": "goal-shared",
+                "resolution_id": None if resolution is None else resolution.id,
+            }
+        ],
+    )
 
 
 def test_wait_and_no_change_are_durable_only_and_never_proposals() -> None:
@@ -202,6 +279,8 @@ def test_wait_and_no_change_are_durable_only_and_never_proposals() -> None:
         outcome = adapt_admitted_decision(_admitted(decision), context=_context())
         assert outcome.proposal is None
         assert isinstance(outcome.durable_only, DurableOnly)
+    outcome = adapt_admitted_decision(_admitted(no_change), context=_context(read_set=()))
+    assert outcome.proposal is None and outcome.durable_only is not None
 
 
 def test_declare_blocked_preserves_the_minimal_synthesis_stall_signal() -> None:
@@ -247,5 +326,5 @@ def test_decode_only_decisions_are_programming_errors_at_the_adapter_boundary() 
         PlanningDecisionType.REQUEST_HUMAN,
         {"question": "q", "options": [], "blocking": True},
     )
-    with pytest.raises(Exception, match="not enabled"):
+    with pytest.raises(ContractError, match="not enabled"):
         adapt_admitted_decision(_admitted(decision), context=_context())
