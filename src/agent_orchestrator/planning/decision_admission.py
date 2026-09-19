@@ -642,17 +642,22 @@ def _check_package_binding(context: AdmissionContext, stage: _Stage) -> None:
 
     binding = context.binding
     pairs = (
-        ("package_version", binding.package_version, context.package_version, "/package_version"),
-        ("package_hash", binding.package_hash, context.package_hash, "/package_hash"),
-        ("prompt_version", binding.prompt_version, context.prompt_version, "/prompt_version"),
-        ("prompt_hash", binding.prompt_hash, context.prompt_hash, "/prompt_hash"),
+        (
+            "the package version",
+            binding.package_version,
+            context.package_version,
+            "/package_version",
+        ),
+        ("the package hash", binding.package_hash, context.package_hash, "/package_hash"),
+        ("the prompt version", binding.prompt_version, context.prompt_version, "/prompt_version"),
+        ("the prompt hash", binding.prompt_hash, context.prompt_hash, "/prompt_hash"),
     )
     for name, bound, current, pointer in pairs:
         if bound != current:
             stage.refuse(
                 REJECTION.PACKAGE_HASH_MISMATCH,
-                f"the request was bound to {name}={bound!r} but the decision was produced"
-                f" against {current!r}",
+                f"{name} this reply was produced against differs from the one the request"
+                " was bound to",
                 field_path=pointer,
                 expected=str(bound),
                 observed=str(current),
@@ -671,25 +676,30 @@ def _check_binding_revisions(context: AdmissionContext, stage: _Stage) -> None:
 
     binding = context.binding
     pairs = (
-        ("base_plan_revision", binding.base_plan_revision, context.plan_revision, "/plan_revision"),
         (
-            "requirements_revision",
+            "the plan has moved since this reply was requested",
+            binding.base_plan_revision,
+            context.plan_revision,
+            "/request_binding/plan",
+        ),
+        (
+            "the requirements have moved since this reply was requested",
             binding.requirements_revision,
             context.requirements_revision,
             "/requirements_revision",
         ),
         (
-            "scope_epoch_digest",
+            "the scope epoch has moved since this reply was requested",
             binding.scope_epoch_digest,
             context.scope_epoch_digest,
             "/scope_epoch_digest",
         ),
     )
-    for name, bound, current, pointer in pairs:
+    for detail, bound, current, pointer in pairs:
         if bound != current:
             stage.refuse(
                 REJECTION.REQUEST_BINDING_STALE,
-                f"the request was bound at {name}={bound!r}; it is now {current!r}",
+                detail,
                 field_path=pointer,
                 expected=str(bound),
                 observed=str(current),
@@ -1060,8 +1070,7 @@ def _check_one_method(
     if not context.authorization.approval_granted and context.authorization.required_approvals:
         stage.refuse(
             REJECTION.AUTHORIZATION_REQUIRED,
-            "the decision needs an approval that has not been granted:"
-            f" {', '.join(context.authorization.required_approvals)}",
+            "the decision needs an approval that has not been granted",
             field_path=pointer,
             subject_ref=method_ref,
             observed=method_ref.id,
@@ -1128,12 +1137,14 @@ def _check_operation_gate(
 
     if decision.decision_type in _STATE_FREE_TYPES:
         return
-    for operation_id in context.operations.unresolved_operations:
+    unresolved = len(context.operations.unresolved_operations)
+    if unresolved:
         stage.refuse(
             REJECTION.OPERATION_UNRESOLVED,
-            f"operation {operation_id!r} is UNKNOWN and must be reconciled first",
+            f"{unresolved} operation(s) are still UNKNOWN and must be reconciled before the"
+            " plan can change",
             field_path="/decision_type",
-            observed=operation_id,
+            observed=str(unresolved),
         )
 
 

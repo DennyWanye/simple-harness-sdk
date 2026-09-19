@@ -30,6 +30,7 @@ declares.  The list is walked, never transcribed:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -643,7 +644,7 @@ def test_a_stale_binding_outranks_a_bad_subject() -> None:
     decision = PlanningDecisionEnvelopeV1.from_json(raw)
     feedback = _reject(decision, _context(plan_revision=8))
     assert _codes(feedback) == ["REQUEST_BINDING_STALE"]
-    assert feedback.problems[0].field_path == "/plan_revision"
+    assert feedback.problems[0].field_path == "/request_binding/plan"
 
 
 def test_a_bad_subject_outranks_a_ref_outside_context() -> None:
@@ -1159,6 +1160,71 @@ def test_every_problem_is_located_by_a_json_pointer() -> None:
         assert problem.field_path.startswith("/")
         assert problem.code is REJECTION.PARAMETER_INVALID
         assert problem.detail
+
+
+#: V2 §32's structural system fields, transcribed as the codec transcribes them.
+#: A refusal must not put one of these names (or the caller's internal ids) into
+#: the feedback the model reads back.
+SECTION_32_SYSTEM_FIELDS = frozenset(
+    {
+        "mission_id",
+        "tenant_id",
+        "principal",
+        "principal_id",
+        "scope",
+        "scope_id",
+        "manager_epoch",
+        "budget_account",
+        "budget_grant_revision",
+        "registry_status",
+        "opened_by",
+        "authorization_ref",
+        "grant_ref",
+        "provenance",
+        "authored_by",
+        "dispatch_generation",
+        "plan_revision",
+        "expected_plan_revision",
+        "operation_id",
+        "acceptance_id",
+        "approval_id",
+        "decision_id",
+        "request_id",
+    }
+)
+
+
+@pytest.mark.parametrize("code", sorted(ADMISSION_CODE_CASES))
+def test_a_refusal_never_mentions_a_system_field_or_an_internal_id(code: str) -> None:
+    # §39: the feedback goes straight to the model.  A §32 name (or an internal
+    # operation / approval / mission id) in it would either teach the model to
+    # write a system field or leak the system's private vocabulary.
+    cases = {name: (raw, expect) for name, raw, expect in _h1f_cases()}
+    name = next(
+        key for key, (_, expect) in cases.items() if expect["expected_code"] == code
+    )
+    raw = cases[name][0]
+    feedback = _reject(_decision_for(raw, code), _context_for(code, raw))
+    # §39 fixes the *key names* (including ``previous_decision_id``), so the scan is
+    # over the human-facing values: what the model reads as prose, not the shape.
+    values: list[str] = []
+    for problem in feedback.problems:
+        values.extend(
+            item
+            for item in (problem.field_path, problem.detail, problem.expected, problem.observed)
+            if item
+        )
+        if problem.subject_ref is not None:
+            values.append(problem.subject_ref.id)
+    # Token equality, not substring: ``scope_epoch_digest`` is one identifier and
+    # is *not* the §32 field ``scope``; ``plan_revision`` is.
+    tokens = set()
+    for value in values:
+        tokens.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", value))
+    assert sorted(tokens & SECTION_32_SYSTEM_FIELDS) == [], code
+    blob = json.dumps(values, ensure_ascii=False)
+    for internal in ("mission-1", "request-1", "op-1", "approval-1", "intent-1"):
+        assert internal not in blob, (code, internal)
 
 
 def test_the_feedback_carries_no_internal_fields() -> None:
