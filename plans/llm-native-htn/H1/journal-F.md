@@ -24,12 +24,14 @@
 
 ## 2. 测试先行（红 → 绿）
 
-三个提交，先红后绿、再补判别力：
+五个提交，先红后绿、再补判别力、最后把夹具清单改成「遍历而非钉数量」：
 
 ```
 202907b test(h1-f): red tests for planning decision admission (ordered checks, golden fixtures)
 e587f97 test(h1-f): pin stage order, budget-account and one-problem-per-finding semantics
 8f861ca feat(h1-f): planning decision admission (ordered deterministic checks, typed admitted command, model-facing feedback)
+35310af test(h1-f): walk the H1-F fixture list instead of pinning its count
+88314d3 docs(h1-f): implementation journal (ordered admission stages, code-to-test table, mutation battery)
 ```
 
 **红：** 先写 `test_planning_decision_admission.py` 并提交（`202907b`）。此时实现文件不存在，跑任意用例都是：
@@ -179,7 +181,7 @@ frozen dataclass，字段：
 
 ## 7. 黄金夹具：脚本遍历，不手抄
 
-`test_every_h1f_fixture_yields_its_expected_code` 由 `_h1f_cases()` 参数化——它扫描 `invalid/*.expect.json`，取全部 `"checked_in": "H1-F"` 的样例（当前 **31** 个），与 `.expect.json` 里的 `expected_stage` / `expected_code` 逐一比对：
+`test_every_h1f_fixture_yields_its_expected_code` 由 `_h1f_cases()` 参数化——它扫描 `invalid/*.expect.json`，取全部 `"checked_in": "H1-F"` 的样例（当前 **31** 个；清单**靠遍历得出**，测试不钉数量，H1-I 加夹具不会误红），与 `.expect.json` 里的 `expected_stage` / `expected_code` 逐一比对：
 
 - **admission 阶段（28 个）**：`PlanningDecisionEnvelopeV1.from_json(raw)` 解码，再交给准入；上下文由 `_context_for(code, raw)` 生成，用**该夹具自己的引用**补进 `visible_refs`（否则更早的引用阶段会先说话），只有 `REF_OUTSIDE_CONTEXT` 自己保留越界引用。
 - **codec 阶段（3 个：`decision-block-missing` / `multiple-decisions` / `mixed-protocol-blocks`）**：这些 `.json` 是场景描述（`model_reply` 是一句说明，见补遗 §四），所以本片**构造**它们描述的原回复——由 `valid/refine.json` 经 `serialize_planning_decision` 得块，再拼两遍 / 拼一个 legacy 块——喂 `parse_planning_decision`，断言 `PlanningDecisionCodecError.code` 等于 expect 文件写的码。没有手抄任何码。
@@ -261,7 +263,7 @@ M23 第一轮**存活**（测试只用一个 round-count 覆盖了预算），�
 | ruff（本片 2 文件） | `All checks passed!` |
 | 哨兵 `_new_mode` | 26（无新增） |
 | 变异 | 25/25 killed |
-| 工作树 | clean（三个提交，见下） |
+| 工作树 | clean（五个提交，见下） |
 
 ## 提交
 
