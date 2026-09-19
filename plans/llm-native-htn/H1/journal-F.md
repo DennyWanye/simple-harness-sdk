@@ -14,7 +14,7 @@
 | 路径 | 说明 |
 |---|---|
 | `src/agent_orchestrator/planning/decision_admission.py` | 纯函数准入模块：`AdmissionContext`、`AdmittedPlanningDecision`、`admit_planning_decision` 及只读视图 |
-| `tests/orchestrator/full_target/test_planning_decision_admission.py` | 132 个用例：分阶段正反例、黄金夹具遍历、顺序稳定性、反馈不泄漏、变异判别 |
+| `tests/orchestrator/full_target/test_planning_decision_admission.py` | 161 个用例：分阶段正反例、黄金夹具遍历、顺序稳定性、反馈不泄漏、变异判别（第 12 节处置轮补 29 条） |
 
 **纯函数约束（无副作用）：** 模块不访问数据库、不 import 存储层读写类（`storage/` 下任何模块）、不 compile、不 commit、不发事件。只 import `contracts/`（`planning_decisions`、`evidence_state`、`htn`、`models`、`semantic_base`）——全部是数据契约，无 I/O。
 
@@ -40,21 +40,21 @@ docs(h1-f): implementation journal (ordered admission stages, code-to-test table
 E   ModuleNotFoundError: No module named 'agent_orchestrator.planning.decision_admission'
 ```
 
-**绿：** 再加入 `decision_admission.py`（`8f861ca`），targeted 全绿：
+**绿：** 再加入 `decision_admission.py`（`8f861ca`），targeted 全绿（处置轮补强后为 161 条，见第 12 节）：
 
 ```
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_admission.py -q -p no:cacheprovider
-132 passed in 0.22s
+161 passed in 0.23s
 ```
 
 **全量：** `tests/orchestrator/full_target` 在实现提交后：
 
 ```
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
-3582 passed, 2 skipped in 125.12s (0:02:05)
+3639 passed, 2 skipped in 134.10s (0:02:14)
 ```
 
-（2 个 skip：`test_panda_backend.py` 未配置 `SH_PANDA_PARSER`；`test_real_provider_hierarchical_smoke.py` 需 `--run-real-provider`。二者与本片无关。基线 `plans/llm-native-htn/H0/test-results.json` 记 full_target=2960；本片后 3582 ≥ 2960，0 新失败。）
+（2 个 skip：`test_panda_backend.py` 未配置 `SH_PANDA_PARSER`；`test_real_provider_hierarchical_smoke.py` 需 `--run-real-provider`。二者与本片无关。基线 `plans/llm-native-htn/H0/test-results.json` 记 full_target=2960；实现提交后 3582、处置轮后 3639，均 ≥ 2960，0 新失败。）
 
 **ruff：**
 
@@ -205,9 +205,9 @@ frozen dataclass，字段：
 
 ---
 
-## 9. 变异（本片 27 个，全 killed）
+## 9. 变异（本片 27 个，全 killed；处置轮再加 13 个，见第 12 节）
 
-用脚本注入 27 个变异，逐个跑 targeted 套件，全部转红；恢复实现后 targeted 仍 **132 passed**。脚本清单一字排开（每个变异都对应至少一条用例）：
+用脚本注入 27 个变异，逐个跑 targeted 套件，全部转红；恢复实现后 targeted 全绿。脚本清单一字排开（每个变异都对应至少一条用例）：
 
 | # | 变异 | 结果 |
 |---|---|---|
@@ -260,17 +260,110 @@ M23 第一轮**存活**（测试只用一个 round-count 覆盖了预算），�
 
 | 项 | 实测 |
 |---|---|
-| targeted（本片） | `132 passed in 0.22s` |
-| full_target | `3582 passed, 2 skipped in 125.12s (0:02:05)`（基线 2960，0 新失败） |
+| targeted（本片） | `161 passed in 0.23s`（处置轮补强后，见第 12 节） |
+| full_target | `3639 passed, 2 skipped in 134.10s (0:02:14)`（基线 2960，0 新失败） |
 | ruff（本片 2 文件） | `All checks passed!` |
 | 哨兵 `_new_mode` | 26（无新增） |
-| 变异 | 27/27 killed |
+| 变异 | 27/27 + 13/13 killed（处置轮，见第 12 节） |
 | 工作树 | clean（提交见文末） |
 
 ## 提交
 
+实现期间（`0d89307..5804dc3`）共 9 笔，完整列表见第 12 节的「最终提交」一栏（以 `git log --oneline 0d89307..HEAD` 为准，不在此处复制一份会漂移的清单）。
+
+**结论：** 本片交付如上，工作树在本文件提交后 clean。
+
+---
+
+## 12. 核验处置（第 1 轮：修后可合）
+
+**核验报告：** `plans/llm-native-htn/H1/reviews/verify-H1-F-2026-09-19.md`（含第 1 轮 + 复核 2/3/4）。**结论：VERDICT: 修后可合**（无 P0）。受检 HEAD `5804dc3`。
+
+### 12.1 问题收口
+
+| 编号 | 类型 | 处置 | 说明 |
+|---|---|---|---|
+| P1-1 | **行为 bug** | 已修 | 空集合拼进 `expected`/`observed` 时准入抛 `ContractError`：空启用集 → 期望 `DECISION_NOT_ENABLED_IN_PHASE`；空 `bindings` + 必填参数 → 期望 `PARAMETER_INVALID`。空串改传 `None`（§40 允许 `str \| None`）。 |
+| P1-2 | 测试缺口 | 已补 | 空 `visible_refs` 直接放行：加「空清单 + 决定引用四元组 → `REF_OUTSIDE_CONTEXT`」，并加「空清单 + NO_CHANGE 无引用 → 仍准入」以区分两种读法。 |
+| P1-3 | 测试缺口 | 已补 | 方法身份只比 version 不比 hash：加「version 对、hash 不对 → `METHOD_STALE`」。 |
+| P1-4 ~ P1-10、P1-13、P1-14 | 测试缺口 | 已补 | `_decision_refs` 的每个引用位置补一条「隐藏该引用 → `REF_OUTSIDE_CONTEXT`」，由 `CITATION_SITES` 参数化驱动（9 个位置），并另加每个位置「四元组动一个分量」的用例。 |
+| P1-6（实例侧） | 测试缺口 | 已补 | 修复目标实例「同 id、错 hash / 修订号动一格 → `METHOD_RETIRED`」。 |
+| P1-11、P1-12 | 测试缺口 | 已补 | `requirements_revision` / `scope_epoch_digest` 失配 → `REQUEST_BINDING_STALE`，指针各自钉死。 |
+| P2-3 | 文档笔误 | 已修 | `ADMISSION_CODE_CASES["DECISION_NOT_ENABLED_IN_PHASE"]` 指向不存在的测试名，改为真名 `test_every_decode_only_valid_fixture_is_phase_refused`。 |
+| P2-4 | 反馈质量 | 已修 | `METHOD_STALE` 的 `expected`/`observed` 改为 `版本@哈希`，哈希失配时两边不再都是 `"2"`。 |
+| P2-6 | 测试/文档 | 已修 | 「无可用上下文」用例现在断言抛出的就是 `INTERNAL_CONTRACT_ERROR` 语义（消息前缀 + 构造同码问题）；本 journal 提交列表改为以 `git log` 为准，不再手抄。 |
+| P2-1 | 不阻塞 | 备案 | 上下文类错误的 JSON 指针（`/package_hash` 等）在决定 JSON 上解析不到；§40 允许 `field_path=None`，不在模型 JSON 里的错误无指针可指，不改。 |
+| P2-2 | 不阻塞 | 备案 | 实现在 §43 列表之外插入预算阶段与结构前置阶段；§43 所列阶段相对顺序未乱，两码均属 §33，属扩展而非颠倒。 |
+| P2-5 | 不阻塞 | 备案 | `goal_type_ref` 不进 `visible_refs`、按类型注册表校验；`AdmissionContext` 最小集未含类型注册表，伪造该引用仍被准入。§43/任务书最小集未列此项，编译期也会接住，属扩展而非本片必做。 |
+
+### 12.2 本轮新增用例（161 = 上轮 132 + 29）
+
+先提交红测试（`64a5775`），再提交实现修复（`1fd8329`）。红态尾行：
+
 ```
-202907b test(h1-f): red tests for planning decision admission (ordered checks, golden fixtures)
-e587f97 test(h1-f): pin stage order, budget-account and one-problem-per-finding semantics
+4 failed, 157 passed in 0.36s
+```
+
+（4 条失败 = P1-1 的两条崩溃 + P1-3/P2-4 的两条身份反馈；其余 25 条新用例在旧实现上已绿——它们是判别力用例，靠变异电池证明其必要。）
+
+### 12.3 变异电池（本轮 40 个，全 killed）
+
+两脚本、两轮，实现被改后各自刷新基准 `/tmp/mut_h1f/orig.py` 再跑（脚本用 `cp` 备份/恢复，未用 `git stash`）：
+
+| 电池 | 数目 | 结果 |
+|---|---|---|
+| 原 27 个（含 M1–M27） | 27 | **27/27 killed** |
+| 核验员存活变异 13 个（P1-2 ~ P1-14） | 13 | **13/13 killed** |
+
+核验员记录的 13 个存活变异，逐个被新用例杀死（尾行原样）：
+
+| 变异 | 尾行 |
+|---|---|
+| P1-2 空清单放行 | `6 failed, 155 passed in 0.35s` |
+| P1-3 身份只比 version | `4 failed, 157 passed in 0.35s` |
+| P1-4 不扫描 WAIT `wait_for` | `7 failed, 154 passed in 0.36s` |
+| P1-5 不扫描 BIND 消费实例 | `6 failed, 155 passed in 0.39s` |
+| P1-6 修复实例只比 id | `6 failed, 155 passed in 0.38s` |
+| P1-7 不扫描 successor `old_task_ref` | `6 failed, 155 passed in 0.35s` |
+| P1-8 不扫描 BIND `resolution_ref` | `6 failed, 155 passed in 0.35s` |
+| P1-9 不扫描 `rejected_method_instance` | `6 failed, 155 passed in 0.36s` |
+| P1-10 不扫描 successor `obligation_ref` | `6 failed, 155 passed in 0.38s` |
+| P1-11 不比 `requirements_revision` | `6 failed, 155 passed in 0.39s` |
+| P1-12 不比 `scope_epoch_digest` | `6 failed, 155 passed in 0.34s` |
+| P1-13 不扫描 BIND `goal_ref` | `6 failed, 155 passed in 0.36s` |
+| P1-14 不扫描 `replacement_method_ref` | `6 failed, 155 passed in 0.37s` |
+
+（P1-4 第一次写成空 `elif` 体，是语法错误而非存活变异；已改成合法变异 `pass` 重跑，仍 killed。）
+
+### 12.4 复用正文对照表
+
+§6 的「拒绝码 → 用例名」表本轮只在 `DECISION_NOT_ENABLED_IN_PHASE` 一行更新了测试名（P2-3）。**归属不变：** 准入层 28 码属本片，其余 8 码（`DECISION_BLOCK_MISSING` / `MULTIPLE_DECISIONS` / `MIXED_PROTOCOL_BLOCKS` / `UNKNOWN_FIELD` / `MALFORMED_DECISION` / `MODEL_SET_SYSTEM_FIELD` / `DECISION_TYPE_UNKNOWN` / `STRUCTURE_INVALID`）属 H1-A2b / H1-C 的 codec 与契约层。
+
+### 12.5 处置轮验收数字（实测尾行）
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_admission.py -q -p no:cacheprovider
+161 passed in 0.23s
+
+$ uv run --offline ruff check src/agent_orchestrator/planning/decision_admission.py tests/orchestrator/full_target/test_planning_decision_admission.py
+All checks passed!
+
+$ grep -rn "_new_mode" src/agent_orchestrator --include='*.py' | wc -l
+      26
+```
+
+### 12.6 最终提交（原样粘贴 `git log --oneline 0d89307..HEAD`）
+
+```
+1fd8329 fix(h1-f): refuse instead of crashing on empty problem sides; name both halves of a method identity
+64a5775 test(h1-f): close the review's mutation holes (empty lists, hidden citations, same-id-wrong-hash instances)
+5804dc3 docs(h1-f): journal tails after the feedback-leak tests (committed by the orchestrator: the agent's turn was cut off by the endpoint quota; 132 passed re-measured)
+d897e97 test(h1-f): pin that a refusal never leaks a system field name or an internal id
+f6ba22d docs(h1-f): make the journal count-independent (commit list from git log)
+1285c16 docs(h1-f): fold the fixture-walk commit and mutation count into the journal
+35310af test(h1-f): walk the H1-F fixture list instead of pinning its count
+88314d3 docs(h1-f): implementation journal (ordered admission stages, code-to-test table, mutation battery)
 8f861ca feat(h1-f): planning decision admission (ordered deterministic checks, typed admitted command, model-facing feedback)
+e587f97 test(h1-f): pin stage order, budget-account and one-problem-per-finding semantics
+202907b test(h1-f): red tests for planning decision admission (ordered checks, golden fixtures)
 ```
