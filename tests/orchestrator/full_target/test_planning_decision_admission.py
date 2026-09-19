@@ -539,17 +539,24 @@ def test_every_h1f_fixture_yields_its_expected_code(
     assert _codes(feedback) == [code], name
 
 
-def test_the_h1f_case_list_is_not_empty_and_matches_the_expectation_files() -> None:
+def test_the_h1f_case_list_is_not_empty_and_every_case_owns_its_code() -> None:
+    # ``_h1f_cases`` is the *only* source of the case list: it is walked from the
+    # expectation files, never transcribed.  Every ``H1-F`` case must name a code
+    # this slice (or the codec layer it builds on) knows, and the vocabulary it is
+    # drawn from is the closed §33 enum.
     cases = _h1f_cases()
-    assert len(cases) == 31
-    assert {name for name, _, _ in cases} == {
-        path.stem for path in INVALID_DIR.glob("*.json") if not path.name.endswith(".expect.json")
-    } - {
-        path.stem
-        for path in INVALID_DIR.glob("*.json")
-        if not path.name.endswith(".expect.json")
-        and _read(path.with_name(path.stem + ".expect.json"))["checked_in"] != "H1-F"
-    }
+    assert cases, "no H1-F fixture was found"
+    owned = set(ADMISSION_CODE_CASES) | CODEC_LAYER_CODES
+    for name, _raw, expect in cases:
+        assert expect["checked_in"] == "H1-F", name
+        assert expect["expected_code"] in owned, name
+        assert expect["expected_code"] in {member.value for member in REJECTION}, name
+    # Every admission code the slice lists is exercised by a real fixture *or* by
+    # the named unit test in this module — a code with neither is a red test.
+    fixture_codes = {expect["expected_code"] for _, _, expect in cases}
+    module = Path(__file__).read_text(encoding="utf-8")
+    for code, test_name in ADMISSION_CODE_CASES.items():
+        assert code in fixture_codes or f"def {test_name}(" in module, code
 
 
 def test_every_admission_rejection_code_has_a_case() -> None:
