@@ -478,3 +478,75 @@ F  畸形入参行直接 raise           -> 1 failed, 72 passed
 | 包顶层键 = 旧 + 恰好五项 | 见 §10.1 | ✅ |
 | sealed 文本不含 `authoritative_refs` | 见 §10.1 | ✅ |
 | ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |
+
+---
+
+## 11. 第 4 轮处置（核验结论：修后可合）
+
+**核验来源：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 4」小节（同一核验员续做；
+上一轮核验副本 HEAD `881471c`，本轮验 `0d9d7fb`）。P0 无；P1 一条（P1-4，含 P1-5 / P1-6 两条派生
+测试缺口）；P2-8 已关闭。
+
+### 11.1 P1-4：生产路径下 task 权威哈希来源被调用方入参掩盖
+
+**问题。** 上一轮把权威摘要改成「调用方入参」后，测试里一律传 `authoritative_refs=task_authorities(
+network)`；而 `_authority_index` 对同一 `(kind,id)` **后写覆盖**，调用方行盖过了构建器 `_network_
+authorities` 自己生成的行。于是**生产调用方（`event_handler` 不传该入参）的 task 哈希取值没有任何
+测试钉死**：把 `_network_authorities` 的哈希加盐（变异 E1）后，测试路径仍显示正确、73 条全过，而
+生产包会暴露与库内权威值不一致的 task 哈希。
+
+**修复（两层）。**
+
+1. **补生产路径断言**（核验给出的第一方案）：新增
+   `test_the_production_path_task_hash_is_the_bindings_own_digest`——不给任何调用方权威行，直接断言
+   `package["visible_refs"]` 里每个 task 的 `content_hash == binding.content_hash() ==
+   content_hash_of(binding.to_json())`，且**不等于**任何「由 ref 派生」的值。
+2. **让构建器行不可被覆盖**（核验给出的第二方案，也是更稳的形态）：新增 `_merge_authorities`，
+   构建器（网络 binding）行在前、调用方行**只补缺不覆盖**——同一 `(kind,id)` 已有构建器行时丢弃
+   调用方行；调用方行先按 §5.1 四元组排序，保证「同一 `(kind,id)` 的重复行取最小键」与输入顺序无关。
+   新增 `test_a_caller_row_cannot_override_the_builders_task_digest` 钉死。
+
+### 11.2 P1-5：`_ref_sort_key` 的 kind 分量未真正钉死（T2 SURVIVED）
+
+原用例取 task id `"z"`、obligation id `"a"`，id 序恰好与 kind 序一致，故丢掉 kind 分量也能通过。
+改用**交叉 id**（task `"a"`、obligation `"z"`）：只有 kind 先于 id 才得到 `[("obligation","z"),
+("task","a")]`。
+
+### 11.3 P1-6：`_authority_sort_key` 并列分量与构建器排序无判别性断言（D/E/N8b/P5/N8 SURVIVED）
+
+原「旁路行序无关」用例只用两行**键完全不同**的 obligation 行，任何弱化排序键的写法都看不出差别。
+新增 `test_duplicate_authority_keys_are_order_independent`：对**同一 `(kind,id)`** 的重复调用方
+行（同 revision / 异 hash，以及异 revision / 异 hash 两组）断言 fwd / rev 两序得**同一个**包，并
+断言胜出者即**最小四元组**（revision 1、hash `f…`）。因调用方行会先排序，重复键的胜出者与输入顺序
+无关。
+
+### 11.4 本轮变异（复核 4 的存活项与学生项）
+
+复核 4 报的存活点与本人追加的「覆盖回写」缺陷，本轮逐条重做，**全部 KILLED**：
+
+```text
+E1  构建器 task 哈希加盐（生产路径）  -> 4 failed, 72 passed
+P5  构建器不排序调用方行              -> 1 failed, 75 passed
+T2  _ref_sort_key 丢 kind 分量        -> 1 failed, 75 passed
+D   _authority_sort_key 丢 hash 分量  -> 1 failed, 75 passed
+F   畸形入参行直接 raise              -> 1 failed, 75 passed
+O1  调用方行覆盖构建器行（原缺陷）    -> 2 failed, 74 passed
+```
+
+变异均以 `/tmp` 副本注入并恢复（`diff -q` 校验恢复后与备份一致），未使用任何 git 写命令。
+
+### 11.5 裁定落实仍成立（复核确认）
+
+新协议包顶层键 = 旧键集合 + **恰好五项**；`authoritative_refs` / `visible_refs_omitted` 均不在
+包体、不在 sealed 文本；旧协议黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等。
+
+### 11.6 本轮验收门
+
+| 完成标准 | 证据 | 结果 |
+|---|---|---|
+| 本片测试文件全绿 | `76 passed in 0.61s` | ✅ |
+| 相关四文件全绿 | `349 passed in 9.19s` | ✅ |
+| full_target 全绿 | `3088 passed, 2 skipped in 123.27s (0:02:03)` | ✅ |
+| 旧协议字节不变（黄金测试未改） | 黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等 | ✅ |
+| 包顶层键 = 旧 + 恰好五项 | §11.5 | ✅ |
+| ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |

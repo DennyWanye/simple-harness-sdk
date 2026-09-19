@@ -913,18 +913,23 @@ def test_the_refs_are_sorted_by_hash_as_the_last_component() -> None:
 
 
 def test_the_refs_are_sorted_by_kind_ahead_of_id() -> None:
-    """P2-9: a task/obligation pair sharing an id still orders by kind first."""
+    """P1-5: ``kind`` sorts ahead of ``id`` even when the ids disagree in the other direction.
+
+    The previous pair (task ``"z"``, obligation ``"a"``) had id order coinciding with
+    kind order, so dropping the ``kind`` component went unnoticed.  Here the task id
+    sorts *before* the obligation id, so only a kind-first key yields obligation first.
+    """
 
     package = empty_package(
-        open_compound_goals=[{"goal_id": "z", "obligation_id": "a", "contract_revision": 1}]
+        open_compound_goals=[{"goal_id": "a", "obligation_id": "z", "contract_revision": 1}]
     )
     authorities = [
-        authority("task", "z", 1, "a" * 64),
-        authority("obligation", "a", 1, "a" * 64),
+        authority("task", "a", 1, "a" * 64),
+        authority("obligation", "z", 1, "a" * 64),
     ]
-    assert [item["kind"] for item in refs_of(package, authorities)] == [
-        "obligation",
-        "task",
+    assert [(item["kind"], item["id"]) for item in refs_of(package, authorities)] == [
+        ("obligation", "z"),
+        ("task", "a"),
     ]
 
 
@@ -1133,6 +1138,39 @@ def test_the_built_decision_package_exposes_the_collector_output(tmp_path: Any) 
     assert kinds == {"method", "task", "obligation"}
 
 
+def test_the_production_path_task_hash_is_the_bindings_own_digest(tmp_path: Any) -> None:
+    """P1-4: without any caller ``authoritative_refs`` the builder's own rows must win.
+
+    The real caller (``event_handler``) passes no authority rows, so the only thing
+    that decides a task ref's hash is ``_network_authorities``.  This asserts that
+    path directly: the emitted hash must equal ``binding.content_hash()`` (the
+    ``task_semantics.content_hash`` column) and must **not** be a derived digest.
+    """
+
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    network = world.network()
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        network,
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+    )
+    emitted = {(item["kind"], item["id"]): dict(item) for item in package["visible_refs"]}
+    for spec in network.occurrences:
+        binding = network.binding_for_occurrence(spec.occurrence_id)
+        ref = emitted[("task", str(spec.task_id))]
+        assert ref["content_hash"] == binding.content_hash()
+        assert ref["content_hash"] == content_hash_of(binding.to_json())
+        derived = content_hash_of(
+            {
+                "kind": "task",
+                "id": str(spec.task_id),
+                "semantic_revision": int(binding.contract_revision),
+            }
+        )
+        assert ref["content_hash"] != derived
+
+
 def test_the_built_task_ref_carries_the_bindings_authoritative_hash(tmp_path: Any) -> None:
     """§5.1: ``task`` hash is ``task_semantics.content_hash`` — i.e. the binding's own."""
 
@@ -1266,6 +1304,78 @@ def test_the_caller_authority_order_does_not_move_the_package(tmp_path: Any) -> 
     forward, backward = build(rows), build(list(reversed(rows)))
     assert forward["visible_refs"] == backward["visible_refs"]
     assert forward == backward
+
+
+def test_duplicate_authority_keys_are_order_independent(tmp_path: Any) -> None:
+    """P1-6: two caller rows for one ``(kind, id)`` must not let input order leak.
+
+    Obligations are the kind the builder cannot attest, so the caller's rows decide
+    the ref and their duplicate must resolve deterministically.  A *complete* sort
+    key gives a fixed winner; drop any component (kind/id/revision/hash) and the order
+    the caller happened to use leaks into the emitted digest.
+    """
+
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    network = world.network()
+    build = lambda refs: e2e.hierarchical_planner_package(  # noqa: E731
+        world.mission,
+        network,
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+        authoritative_refs=refs,
+    )
+    # Same (kind,id), same revision, differing hash: only a hash-aware key is stable,
+    # and the smallest key wins (rows are sorted ascending, first occurrence kept).
+    same_rev = [
+        authority("obligation", "obl-root", 1, "b" * 64),
+        authority("obligation", "obl-root", 1, "a" * 64),
+    ]
+    forward = build(same_rev)
+    assert forward == build(list(reversed(same_rev)))
+    winner = {(item["kind"], item["id"]): item for item in forward["visible_refs"]}[(
+        "obligation",
+        "obl-root",
+    )]
+    assert winner["content_hash"] == "a" * 64
+    # Same (kind,id), differing revision *and* hash: the smallest quadruple wins too,
+    # so the caller's order still cannot change the package.
+    crossed = [
+        authority("obligation", "obl-root", 2, "a" * 64),
+        authority("obligation", "obl-root", 1, "f" * 64),
+    ]
+    forward = build(crossed)
+    assert forward == build(list(reversed(crossed)))
+    winner = {(item["kind"], item["id"]): item for item in forward["visible_refs"]}[(
+        "obligation",
+        "obl-root",
+    )]
+    assert winner["semantic_revision"] == 1
+    assert winner["content_hash"] == "f" * 64
+
+
+def test_a_caller_row_cannot_override_the_builders_task_digest(tmp_path: Any) -> None:
+    """P1-4 (stronger fix): the builder's binding-derived task row is authoritative.
+
+    §5.1 fixes a task's hash to ``task_semantics.content_hash``, which the builder
+    reads off the network itself.  A caller row naming the same task cannot replace
+    it — later rows may only *fill gaps* (obligations), never overwrite — so a bogus
+    caller digest for an existing task must not reach ``visible_refs``.
+    """
+
+    world = e2e.build_world(tmp_path, key="p23c-decided")
+    network = world.network()
+    binding = network.binding_for_occurrence("task-root")
+    bogus = authority("task", str(binding.task_id), 99, "f" * 64)
+    package = e2e.hierarchical_planner_package(
+        world.mission,
+        network,
+        registry=world.env.registry,
+        planning_protocol=PLANNING_DECISION_V1,
+        authoritative_refs=[bogus],
+    )
+    emitted = {(item["kind"], item["id"]): dict(item) for item in package["visible_refs"]}
+    assert emitted[("task", str(binding.task_id))]["content_hash"] == binding.content_hash()
+    assert emitted[("task", str(binding.task_id))]["content_hash"] != bogus["content_hash"]
 
 
 def test_the_caller_authority_rows_are_plain_quadruples(tmp_path: Any) -> None:

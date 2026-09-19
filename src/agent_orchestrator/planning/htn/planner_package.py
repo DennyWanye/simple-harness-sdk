@@ -960,6 +960,44 @@ def _network_authorities(network: TaskNetworkSnapshot) -> list[dict[str, Any]]:
     return authorities
 
 
+def _merge_authorities(
+    builder_rows: Sequence[Any], caller_rows: object
+) -> list[dict[str, Any]]:
+    """Builder-attested rows first, caller rows only filling kinds the builder cannot.
+
+    Both sides are ``{kind, id, semantic_revision, content_hash}`` quadruples and both
+    may name a task or an obligation.  The builder is authoritative for what it can
+    read (tasks, from the network's bindings), so a caller row whose ``(kind, id)`` is
+    already present is dropped instead of overwriting; caller rows for the kinds the
+    builder cannot reach (obligations) pass through.  The result keeps the builder's
+    ordering for its own rows and appends the caller's, and is stable under either
+    input's order.
+    """
+
+    # Sort the caller's rows first: the merge keeps the *first* occurrence of a key,
+    # so without a deterministic order two callers handing the same rows in a
+    # different order would pick different winners for a duplicate (kind, id).
+    caller = sorted(_as_json_refs(caller_rows), key=_authority_sort_key)
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in (*builder_rows, *caller):
+        if not isinstance(row, Mapping):
+            # A malformed row is skipped here exactly as ``_authority_index`` skips it.
+            merged.append(row)  # type: ignore[arg-type]
+            continue
+        kind = row.get("kind")
+        id = row.get("id")
+        if kind is None or id is None:
+            merged.append(dict(row))
+            continue
+        key = (str(kind), str(id))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(row))
+    return merged
+
+
 def _decision_fields(
     package: Mapping[str, Any],
     network: TaskNetworkSnapshot,
@@ -1144,11 +1182,17 @@ def hierarchical_planner_package(
     if planning_protocol == PLANNING_DECISION_V1:
         # The §38 fields go *on top of* the legacy ones — the plan, method library,
         # applicability, facts, operators and rejected refinements all stay.  The
-        # authority side table merges what the network can attest (every task binding)
-        # with what the caller supplies (obligations live in a ledger this module
-        # cannot read); §5.1 says a ref carries the object's own digest, so the
-        # collector emits a task/obligation ref only for a ``(kind, id)`` in there.
-        authorities = [*_network_authorities(network), *_as_json_refs(authoritative_refs)]
+        # authority list combines what the network can attest (every task binding, at
+        # its ``task_semantics.content_hash``) with what the caller supplies
+        # (obligations live in a ledger this module cannot read).
+        #
+        # The **builder's rows come first and a caller row may only fill a gap**: §5.1
+        # fixes a task's hash to the binding's own digest, so a caller row naming a
+        # task the network already attests must not replace it (an override would put
+        # a value the store disagrees with in front of the model).  This is why the
+        # merge de-duplicates on ``(kind, id)`` keeping the first occurrence rather
+        # than letting a later row win.
+        authorities = _merge_authorities(_network_authorities(network), authoritative_refs)
         package.update(_decision_fields(package, network, previous_feedback, authorities))
     return package
 
