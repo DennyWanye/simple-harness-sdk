@@ -14,7 +14,7 @@
 | 路径 | 说明 |
 |---|---|
 | `src/agent_orchestrator/planning/decision_admission.py` | 纯函数准入模块：`AdmissionContext`、`AdmittedPlanningDecision`、`admit_planning_decision` 及只读视图 |
-| `tests/orchestrator/full_target/test_planning_decision_admission.py` | 104 个用例：分阶段正反例、黄金夹具遍历、顺序稳定性、变异判别 |
+| `tests/orchestrator/full_target/test_planning_decision_admission.py` | 132 个用例：分阶段正反例、黄金夹具遍历、顺序稳定性、反馈不泄漏、变异判别 |
 
 **纯函数约束（无副作用）：** 模块不访问数据库、不 import 存储层读写类（`storage/` 下任何模块）、不 compile、不 commit、不发事件。只 import `contracts/`（`planning_decisions`、`evidence_state`、`htn`、`models`、`semantic_base`）——全部是数据契约，无 I/O。
 
@@ -44,7 +44,7 @@ E   ModuleNotFoundError: No module named 'agent_orchestrator.planning.decision_a
 
 ```
 PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_admission.py -q -p no:cacheprovider
-104 passed in 0.15s
+132 passed in 0.22s
 ```
 
 **全量：** `tests/orchestrator/full_target` 在实现提交后：
@@ -205,9 +205,9 @@ frozen dataclass，字段：
 
 ---
 
-## 9. 变异（本片 25 个，全 killed）
+## 9. 变异（本片 27 个，全 killed）
 
-用脚本注入 25 个变异，逐个跑 targeted 套件，全部转红；恢复实现后 targeted 仍 **104 passed**。脚本清单一字排开（每个变异都对应至少一条用例）：
+用脚本注入 27 个变异，逐个跑 targeted 套件，全部转红；恢复实现后 targeted 仍 **132 passed**。脚本清单一字排开（每个变异都对应至少一条用例）：
 
 | # | 变异 | 结果 |
 |---|---|---|
@@ -236,6 +236,8 @@ frozen dataclass，字段：
 | M23 | 忽略预算账户可用性 | KILLED（补 `test_a_budget_account_that_is_not_available_is_refused_even_with_rounds_left` 后） |
 | M24 | 反馈预算替换成 0 | KILLED |
 | M25 | 拒绝码去重取消 | KILLED |
+| M26 | 拒绝问题的指针写成 §32 字段名（`/plan_revision`） | KILLED |
+| M27 | 拒绝反馈里泄漏内部操作 id | KILLED |
 
 M23 第一轮**存活**（测试只用一个 round-count 覆盖了预算），补上「预算账户不可用但仍有轮次」的判别用例后 KILLED——这正是本轮测试补强的来由。
 
@@ -258,11 +260,11 @@ M23 第一轮**存活**（测试只用一个 round-count 覆盖了预算），�
 
 | 项 | 实测 |
 |---|---|
-| targeted（本片） | `104 passed in 0.15s` |
+| targeted（本片） | `132 passed in 0.22s` |
 | full_target | `3582 passed, 2 skipped in 125.12s (0:02:05)`（基线 2960，0 新失败） |
 | ruff（本片 2 文件） | `All checks passed!` |
 | 哨兵 `_new_mode` | 26（无新增） |
-| 变异 | 25/25 killed |
+| 变异 | 27/27 killed |
 | 工作树 | clean（提交见文末） |
 
 ## 提交
