@@ -419,6 +419,7 @@ F2  权威表只保留第一个 binding   -> 2 failed, 64 passed
 
 ## 10. 第 3 轮处置（裁定落实 + 复核 3 意见，核验结论：修后可合）
 
+**处置提交：** `2fe1062`（fix(h1-d): keep the decision package to §38's five fields (authorities as a collector argument)）。
 **裁定来源：** `LLM-native-HTN计划V2-裁定补遗-2026-09-18.zh-CN.md` 末尾「追加裁定 2026-09-19 06:30」。
 **核验来源：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 3」小节。
 
