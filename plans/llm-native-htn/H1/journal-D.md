@@ -483,6 +483,7 @@ F  畸形入参行直接 raise           -> 1 failed, 72 passed
 
 ## 11. 第 4 轮处置（核验结论：修后可合）
 
+**处置提交：** `e8e635b`（fix(h1-d): pin production task digest and make authority sorting discriminating）。
 **核验来源：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 4」小节（同一核验员续做；
 上一轮核验副本 HEAD `881471c`，本轮验 `0d9d7fb`）。P0 无；P1 一条（P1-4，含 P1-5 / P1-6 两条派生
 测试缺口）；P2-8 已关闭。
