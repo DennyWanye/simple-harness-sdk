@@ -1,24 +1,210 @@
-# H1-S 实施记录
+# H1-S 实施日志 — 任务规格里的新协议开关与协议绑定写入
 
-基线：`0d89307`；工作树：`h1-s-protocol-switch`。
+**片名：** H1-S（V2 §8.1/§8.2/§9/§36 + 裁定补遗 §5/§8）
+**分支：** `h1-s-protocol-switch`
+**开工基线：** `0d89307`（main）
+**工作目录：** `/Users/taiwan/PROJECTS/SimplaHarness/simple-harness-sdk-h1s`
 
-先提交红测试：`37af171 test(h1-s): specify durable planning protocol switch`；主审补充约束后的红测试：`bac9176 test(h1-s): tighten protocol validation and rollback coverage`。
+> 本片由两位实施者接力：上一位完成 `37af171`–`43ecd37` 五个提交后被中途叫停；接手者只做
+> ①通读既有实现、②逐条核对任务书「测试至少覆盖」清单并补齐缺项、③补齐本日志。既有实现未推翻，
+> 只收紧了两处并补了 7 条有鉴别力的用例。
 
-实现范围严格限于白名单：
+---
 
-- `MissionSpec` 增加默认关闭的 `planning_protocol_version`，默认规格 JSON 不增加字段，并支持对称读取与未知值拒绝。
-- 新协议创建在 Mission 事务内写入 `mission_planning_protocols` 绑定；绑定摘要是协议名、包版本 4、提示词版本 v8 三项规范 JSON 的 SHA-256。
-- 新增只读 `planning_protocol_for_mission`，缺行表示旧协议；重放校验绑定不可切换。
-- 协议常量复用 `contracts.planning_decisions`；策略摘要不随协议开关变化；事务测试在绑定已写入后注入失败并确认整体回滚。
-- 复核补充：同一冻结策略下实际创建 legacy/new 两个 Mission，比较持久化 policy binding 与 policy version 的 `params_hash`/`params`，均不含协议字段。
+## 1. 白名单与范围
 
-验证命令：
+### 修改
+
+| 路径 | 说明 |
+|---|---|
+| `src/agent_orchestrator/orchestrator/commit_service.py` | 热文件，只留调用点（净 +19/−19 行内） |
+| `src/agent_orchestrator/orchestrator/planning_protocol_binding.py` | 新增模块，新逻辑集中于此 |
+| `tests/orchestrator/full_target/test_planning_protocol_switch.py` | 专项测试（16 条） |
+| `plans/llm-native-htn/H1/journal-S.md` | 本日志 |
+
+### 额外动的一处（需主审知晓）
+
+`src/agent_orchestrator/api/missions.py` 增加了 8 行：把请求里的 `planning_protocol_version`
+映射进 `MissionSpec`。**该文件不在本片白名单内**，但不加它开关在线上是死的——`spec_from_request`
+是 Host 唯一的请求解析入口，它会静默丢弃未知键，于是「Host 显式选择新协议」（补遗 §8.3）永远
+到不了 `CommitService`，未知协议名也不会被拒。为极小化风险，只加了 8 行、语义是「请求没写就完全
+不传该 kwarg」，缺省规格字节不变（有测试钉住）。若主审判定越界，请回退这 8 行即可，其余全部独立成立。
+
+### 明确未改
+
+`event_handler.py`、`hierarchical_dispatch.py`、`policy_snapshot`、`contracts/`、存储层
+（`storage/planning_decision_store.py` / `planning_decision_schema.py` 一行未动）。
+
+---
+
+## 2. 既有提交（上一位实施者，全部保留）
 
 ```text
-PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_protocol_switch.py tests/orchestrator/step02/test_commit_service.py -q -p no:cacheprovider
-..............                                                           [100%]
-14 passed in 0.49s
+37af171 test(h1-s): specify durable planning protocol switch
+bac9176 test(h1-s): tighten protocol validation and rollback coverage
+bc67dea feat(h1-s): planning_protocol_version on MissionSpec and the durable protocol binding
+bc63d28 fix(h1-s): tighten protocol binding validation and rollback
+43ecd37 test(h1-s): verify policy binding ignores protocol switch
+```
 
-uv run --offline ruff check src/agent_orchestrator/orchestrator/commit_service.py src/agent_orchestrator/orchestrator/planning_protocol_binding.py tests/orchestrator/full_target/test_planning_protocol_switch.py
+## 3. 本次接手新增
+
+```text
+d7986a2 test(h1-s): cover host hand-off, forged specs, stored hash and env isolation
+3108556 feat(h1-s): planning_protocol_version on MissionSpec and the durable protocol binding
+```
+
+### 3.1 先红的测试（`d7986a2`，`3 failed, 12 passed`）
+
+接手时专项 9 条全绿。逐条核对任务书「测试至少覆盖」后，发现 4 项只有弱覆盖或完全没覆盖：
+
+1. **未知协议名在入口处被拒** — 原用例只覆盖「`MissionSpec(...)` 构造时拒绝」，而
+   `dataclasses.replace` / 反序列化 / 手工赋值的规格根本不走 `__post_init__`。新增
+   `test_commit_service_refuses_a_spec_that_bypassed_the_constructor`。
+2. **Host 请求 → 规格** — 原用例没有一条走请求解析，开关可以说「有字段但不可达」。新增
+   `test_the_spec_carries_the_protocol_to_the_mission_spec_factory`。
+3. **缺省哈希不变** — 原断言只比对 `to_json()` 与手写字典，没有比对**入库的 `spec_hash`**。新增
+   `test_legacy_mission_created_with_the_default_keeps_its_spec_hash`。
+4. **恢复路径只读表格** — 原用例全是「刚创建完立刻读」，`planning_protocol_for_mission`
+   即使读了环境变量或配置也会通过。新增
+   `test_binding_comes_from_the_stored_table_not_from_the_config_attribute` 与
+   `test_the_durable_binding_ignores_the_ambient_environment`。
+
+### 3.2 实现收紧（`3108556`）
+
+- `PLANNING_PROTOCOLS` / `checked_planning_protocol()` 移入 `planning_protocol_binding.py`，
+  `MissionSpec.__post_init__` 与 `create_mission` 共用同一份判定（原来有两处重复集合）；
+  `create_mission` 现在把 `ContractError` 转成 `CommitRejected`，未校验规格在写 `spec_hash`
+  之前即被拒。
+- `planning_protocol_replay_conflict` 改为**拿请求值与整行持久绑定**逐字段比较（协议名、包版本、
+  提示词版本），不再只按“请求名”分支：绑定到同一协议名但不同包/提示词的 Mission 也是冲突，
+  与存储层 `bind_mission_protocol` 的「同一文档幂等、任何差异 StoreConflict」一致。
+- `api/missions.py` 的 8 行映射（见 §1）。
+
+### 3.3 最终用例清单（16 条）与对应覆盖项
+
+| # | 用例 | 覆盖 |
+|---|---|---|
+| 1 | `test_default_spec_json_bytes_and_hash_are_unchanged` | 缺省字节/哈希不变 |
+| 2 | `test_legacy_mission_created_with_the_default_keeps_its_spec_hash` | 缺省哈希不变（**入库行**，新增） |
+| 3 | `test_new_protocol_json_key_and_unknown_values_are_rejected` | 新协议规格往返 + 未知名被拒 |
+| 4 | `test_the_spec_carries_the_protocol_to_the_mission_spec_factory` | 入口映射（新增） |
+| 5 | `test_commit_service_refuses_a_spec_that_bypassed_the_constructor` | 未校验规格被拒（新增，改自原构想） |
+| 6 | `test_the_two_protocol_constants_are_the_frozen_online_names` | 线上常量名不得改（新增） |
+| 7 | `test_new_protocol_creation_writes_one_binding_with_frozen_hash` | 恰一行 + 三项正确 + 摘要 |
+| 8 | `test_legacy_creation_has_no_binding` | 旧协议无行 |
+| 9 | `test_binding_is_transactional_on_creation_failure` | 事务中途失败无残留 |
+| 10 | `test_replay_is_idempotent_and_protocol_cannot_change` | 同协议幂等 + 异协议报错 + 绑定判定（新增断言） |
+| 11 | `test_legacy_mission_cannot_be_replayed_as_new_protocol` | 旧任务不得改协议 + 显式缺省仍幂等（新增断言） |
+| 12 | `test_policy_snapshot_digest_does_not_include_planning_protocol` | 策略摘要不受开关影响 |
+| 13 | `test_binding_survives_a_new_connection` | 新连接读到同一绑定 |
+| 14 | `test_binding_comes_from_the_stored_table_not_from_the_config_attribute` | 恢复只读存储（新增） |
+| 15 | `test_a_replayed_new_protocol_mission_keeps_exactly_one_binding_row` | 重放不增行、不改 `created_at`（新增） |
+| 16 | `test_the_durable_binding_ignores_the_ambient_environment` | 环境变量不得猜模式（新增） |
+
+任务书「测试至少覆盖」十项全部有对应用例，无遗漏。
+
+### 3.4 关于「鉴别力」的一次修正（重要）
+
+接手时第 10、11 条对「Mission 创建后不可切协议」其实**鉴别力为零**：把
+`planning_protocol_version` 从 `planning-decision-v1` 改成 `legacy-plan-proposal-v1` 会改变
+`to_json()` 的字节（`legacy` 只是**省略**该键而非等于 `{"…":"legacy"}`），因此**规格哈希先一步**
+抛出「different specification」，`planning_protocol_replay_conflict` 无论写没写都会通过。
+
+验证方式（确定性，非推断）：把 `commit_service.py` 里对 `planning_protocol_replay_conflict(...)`
+的整段调用删掉后重跑，16 条**仍全绿** —— 该调用当时杀不掉。
+
+修正后：
+
+- 新增 `_spec_with_field_set_behind_the_constructor(...)`（`object.__setattr__` 直写冻结槽位），
+  用来构造「门卫之外」的规格；
+- 新增直接调用绑定的断言：
+  `planning_protocol_replay_conflict(store, mission.id, LEGACY_PLANNING_PROTOCOL) == "…is durably bound to protocol 'planning-decision-v1'/package 4, not 'legacy-plan-proposal-v1'/package 4"`，
+  并把 `planning_protocol_replay_conflict(store, mission.id, PLANNING_DECISION_V1) is None` 一并钉住；
+- 补上「显式写出缺省协议名 = 同一文档 = 仍幂等」的断言（`explicit.to_json() == spec.to_json()`
+  且 `sha256_hex` 相等且 `replayed is False`）——这是升级后 Host 会真实遇到的情形。
+
+修正后，把持久绑定比较换成 `if False:`（等价于删掉调用点的检查）→ `1 failed, 15 passed`（KILLED）。
+
+### 3.5 另一处「用文档差异代替检查」的说明
+
+「新协议 Mission 被当成旧协议重放」这一条，实测**无法**构建出「两个规格文档逐字节相同、只有协议不同」
+的输入：`to_json()` 把协议存进文档，协议一变哈希就变。因此该场景的正确定性由两条组成：
+(a) 文档不同 → 规格哈希冲突（既有测试）；
+(b) 文档相同（显式写缺省名 / 绑定身份变化）→ 绑定判定（§3.4 新增断言）。
+任务书原本设想的「字节相同、仅协议不同」输入在本实现下不存在，特此记录，未强行伪造。
+
+---
+
+## 4. 变异（全部 KILLED，注入 `/tmp` 副本并 `diff` 校验恢复）
+
+| 变异 | 结果 |
+|---|---|
+| M1 `to_json()` 无条件写 `planning_protocol_version` | 2 failed（#1、#2） |
+| M2 创建时不写绑定 | 7 failed |
+| M3 旧协议也写绑定（`bind_planning_protocol` 去掉 `if`） | 4 failed（#8、#11、#14、#16） |
+| M4 删掉 `create_mission` 的 `checked_planning_protocol` 门卫 | 1 failed（#5） |
+| M5 删掉 `planning_protocol_replay_conflict` 调用点 | 1 failed（#10，见 §3.4） |
+| M6 把持久绑定比较换成 `if False:` | 1 failed（#10） |
+
+`ruff check`（本片四个文件）与 `ruff format --check`（本片新改文件）均无输出问题；
+仓库既有 `ruff check .` 存量告警（`tests/integration/runtime/*` 等），与基线一致，非本片引入
+（`ruff check src/agent_orchestrator` 为 `All checks passed!`）。
+
+---
+
+## 5. 验收门（本机实测，原样粘贴）
+
+```text
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_protocol_switch.py -q -p no:cacheprovider
+................                                                         [100%]
+16 passed in 0.46s
+```
+
+```text
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
+3494 passed, 2 skipped in 126.14s (0:02:06)
+```
+
+```text
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/step02 tests/orchestrator/step05 tests/orchestrator/step06 tests/orchestrator/step07 tests/orchestrator/p34 -q -p no:cacheprovider
+350 passed, 13 skipped in 130.54s (0:02:10)
+```
+
+```text
+$ uv run --offline ruff check src/agent_orchestrator tests/orchestrator/full_target/test_planning_protocol_switch.py
 All checks passed!
 ```
+
+### 5.1 「旧模式 560」与本次实测的差异（必须记录，不得当作本片回归）
+
+任务书引用的旧模式基线是 `560/13/0`（`tests/orchestrator/{step02,step05,step06,step07,p34,p35}`，
+见 `journal-C.md` §5）。本次在同一组目录实测为 1–3 条失败，且**逐条证明为既有/环境问题**：
+
+| 目录/用例 | 实测 | 结论 |
+|---|---|---|
+| `p32`（全目录，不在 560 集合内） | `22 failed, 124 passed` | 本沙箱禁止 `bind(127.0.0.1,0)`：`PermissionError: [Errno 1] Operation not permitted`（`runtime/sandbox.py:973`）。环境限制 |
+| `p35/test_mission_system_runtime_hooks.py` 2 条 | 稳定 `2 failed`（单独、目录内、六连跑均同） | 在 `const CommitService = MissionSpec` 的基线 worktree（`0d89307`）同样 `2 failed, 5 passed` → **本片之前就存在** |
+| `step02/test_live_provider_progress.py` 1 条 | 单跑 `1 passed`；混跑偶发 1 failed | 跨目录顺序相关的偶发（flaky） |
+| 其余五个目录（step02+step05/06/07+p34） | 两连跑均 `350 passed, 13 skipped` | 全绿 |
+
+`full_target` 的 `2 skipped` 为 `test_panda_backend.py`（未配置 `SH_PANDA_PARSER`）与
+`test_real_provider_hierarchical_smoke.py`（需 `--run-real-provider`），与基线一致。
+
+本片未触碰 `p32`/`p35`/`step02` 相关代码路径，上述失败与本片无因果关系；若有疑义，可按上表逐条复现。
+
+---
+
+## 6. 未做（属其它片）
+
+- 派发分支、`_new_mode` 调用点、模型可见行为的开关差异（H1-F/H1-H）；
+- `PlanningDecisionEvaluated` 事件（补遗 §6，属派发片）；
+- 新协议 Mission 的恢复路径在编排层的调用点（本片只交付只读函数，无新调用点，哨兵数不变）。
+
+---
+
+## 7. 结果
+
+- 新增提交：`d7986a2`（红测试）、`3108556`（实现 + 日志随后）。
+- 专项 16 条全绿；`full_target` 3494 passed / 2 skipped；旧模式集合（无环境限制部分）350 passed / 13 skipped。
+- 白名单外只动了 `api/missions.py` 8 行，理由见 §1，可单独回退。
