@@ -246,13 +246,13 @@ All checks passed!
 
 ```
 $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py -q -p no:cacheprovider
-123 passed in 0.22s
+123 passed in 0.20s
 
 $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py tests/orchestrator/full_target/test_planning_decision_contract.py tests/orchestrator/full_target/test_planning_decision_envelope.py -q -p no:cacheprovider
 275 passed in 0.25s
 
 $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
-3283 passed, 2 skipped in 124.37s (0:02:04)
+3283 passed, 2 skipped in 123.94s (0:02:03)
 
 $ uv run --offline ruff check src/agent_orchestrator/contracts/schemas/__init__.py tests/orchestrator/full_target/test_planning_decision_json_schema.py
 All checks passed!
