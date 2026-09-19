@@ -412,8 +412,15 @@ def test_the_decision_package_states_the_protocol_and_its_enabled_types() -> Non
         name for name, enablement in H1_DECISION_ENABLEMENT.items() if enablement.executable
     )
     assert protocol["enabled_decision_types"] == expected
-    # The three decode-only kinds are never advertised as executable in H1 (§12).
-    for decode_only in ("REQUEST_EVIDENCE", "REQUEST_HUMAN", "PROPOSE_METHOD"):
+    # Decode-only kinds are never advertised as executable in H1 (§12), including
+    # the two operations demoted by the 2026-09-19 ruling.
+    for decode_only in (
+        "REPAIR/PROPOSE_SUCCESSOR",
+        "BIND_EXISTING_GOAL",
+        "REQUEST_EVIDENCE",
+        "REQUEST_HUMAN",
+        "PROPOSE_METHOD",
+    ):
         assert decode_only not in protocol["enabled_decision_types"]
 
 

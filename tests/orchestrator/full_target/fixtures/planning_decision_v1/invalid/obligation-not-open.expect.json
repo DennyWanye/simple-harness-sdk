@@ -1,6 +1,6 @@
 {
   "expected_stage": "admission",
-  "expected_code": "OBLIGATION_NOT_OPEN",
+  "expected_code": "DECISION_NOT_ENABLED_IN_PHASE",
   "checked_in": "H1-F",
   "scenario": "the successor binds a closed obligation"
 }

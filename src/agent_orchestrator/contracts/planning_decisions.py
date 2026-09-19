@@ -263,8 +263,8 @@ H1_DECISION_ENABLEMENT: Mapping[str, DecisionEnablement] = MappingProxyType(
     {
         "REFINE": _EXECUTABLE,
         "REPAIR/REPLACE_METHOD": _EXECUTABLE,
-        "REPAIR/PROPOSE_SUCCESSOR": _EXECUTABLE,
-        "BIND_EXISTING_GOAL": _EXECUTABLE,
+        "REPAIR/PROPOSE_SUCCESSOR": _DECODE_ONLY,
+        "BIND_EXISTING_GOAL": _DECODE_ONLY,
         "DECLARE_BLOCKED": _EXECUTABLE,
         "WAIT": _EXECUTABLE,
         "NO_CHANGE": _EXECUTABLE,
@@ -994,7 +994,7 @@ def _has_method_instance_kind(ref: PlanningRefV1, name: str) -> PlanningRefV1:
 
 
 # --------------------------------------------------------------------------------------
-# The seven executable payloads plus three decode-only payloads (V2 section 24-31)
+# The five executable payloads plus five decode-only payloads in H1 (V2 section 24-31)
 # --------------------------------------------------------------------------------------
 
 

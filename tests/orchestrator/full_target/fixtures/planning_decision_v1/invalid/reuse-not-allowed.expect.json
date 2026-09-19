@@ -1,6 +1,6 @@
 {
   "expected_stage": "admission",
-  "expected_code": "REUSE_NOT_ALLOWED",
+  "expected_code": "DECISION_NOT_ENABLED_IN_PHASE",
   "checked_in": "H1-F",
   "scenario": "the resolution is not CURRENT for reuse"
 }

@@ -725,8 +725,6 @@ PLANNER_HIERARCHICAL_V8 = RoleTemplate(
         "用一个 REPAIR 决定表达修复，payload.repair_kind = \"REPLACE_METHOD\"，"
         "rejected_method_instance 与 replacement_method_ref 都从 visible_refs 照抄——"
         "不要拆成两个顶层决定，也不要用别的 repair_kind 代替。\n"
-        "  - BIND_EXISTING_GOAL：把一个已有目标共享/复用到某个方法槽位（不重做同一件事）时用这个类型，"
-        "payload 里给出 mode 与被复用的 goal_ref / resolution_ref，引用同样照抄 visible_refs。\n"
         "  - DECLARE_BLOCKED：当你找不到任何可用方法、也证明不了目标能推进时用这个类型，"
         "在 payload.blockers 里写清 code 与 detail；系统据此决定是否进入方法合成轮，"
         "你不需要也不能自己合成方法，也不要直接宣布 Mission 失败。\n"

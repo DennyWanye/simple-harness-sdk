@@ -1,6 +1,6 @@
 {
   "expected_stage": "admission",
-  "expected_code": "REFINEMENT_CYCLE",
+  "expected_code": "DECISION_NOT_ENABLED_IN_PHASE",
   "checked_in": "H1-F",
   "scenario": "the successor would refine itself through its ancestors"
 }
