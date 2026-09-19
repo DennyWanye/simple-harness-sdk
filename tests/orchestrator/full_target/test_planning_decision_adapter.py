@@ -266,6 +266,36 @@ def test_both_existing_goal_binding_modes_are_byte_equivalent(
     )
 
 
+def test_decode_only_existing_goal_binding_is_a_programming_error_if_admitted() -> None:
+    decision = _envelope(
+        PlanningDecisionType.BIND_EXISTING_GOAL,
+        BindExistingGoalDecision(
+            mode=BindExistingGoalMode.SHARE_ACTIVE,
+            consumer_method_instance_ref=_ref(PlanningRefKind.METHOD_INSTANCE, "mi-consumer"),
+            step="inspect",
+            goal_ref=_ref(PlanningRefKind.TASK, "goal-shared"),
+            resolution_ref=None,
+        ),
+    )
+    with pytest.raises(ContractError, match="not enabled"):
+        adapt_admitted_decision(_admitted(decision), context=_context())
+
+
+def test_decode_only_successor_is_a_programming_error_if_admitted() -> None:
+    decision = _envelope(
+        PlanningDecisionType.REPAIR,
+        RepairProposeSuccessorDecision(
+            repair_kind=RepairKind.PROPOSE_SUCCESSOR,
+            old_task_ref=_ref(PlanningRefKind.TASK, "task-old"),
+            obligation_ref=_ref(PlanningRefKind.OBLIGATION, "obl-root"),
+            goal_type_ref=VersionedTypeRefV1("goal.next", 1, HASH_A),
+            bindings={},
+        ),
+    )
+    with pytest.raises(ContractError, match="not enabled"):
+        adapt_admitted_decision(_admitted(decision), context=_context())
+
+
 def test_wait_and_no_change_are_durable_only_and_never_proposals() -> None:
     wait = _envelope(
         PlanningDecisionType.WAIT,
@@ -276,9 +306,13 @@ def test_wait_and_no_change_are_durable_only_and_never_proposals() -> None:
         NoChangeDecision(reason="当前计划仍然有效"),
     )
     for decision in (wait, no_change):
-        outcome = adapt_admitted_decision(_admitted(decision), context=_context())
+        admitted = _admitted(decision)
+        outcome = adapt_admitted_decision(admitted, context=_context())
         assert outcome.proposal is None
         assert isinstance(outcome.durable_only, DurableOnly)
+        assert outcome.durable_only.canonical_hash == admitted.canonical_hash
+        if decision.decision_type is PlanningDecisionType.WAIT:
+            assert outcome.durable_only.wait_for == decision.payload.wait_for
     outcome = adapt_admitted_decision(_admitted(no_change), context=_context(read_set=()))
     assert outcome.proposal is None and outcome.durable_only is not None
 
@@ -291,9 +325,11 @@ def test_declare_blocked_preserves_the_minimal_synthesis_stall_signal() -> None:
             resumable_if=(ResumableIf.NEW_METHOD_ADMITTED,),
         ),
     )
-    outcome = adapt_admitted_decision(_admitted(decision), context=_context())
+    admitted = _admitted(decision)
+    outcome = adapt_admitted_decision(admitted, context=_context())
     assert outcome.proposal is None
     assert outcome.durable_only is not None
+    assert outcome.durable_only.canonical_hash == admitted.canonical_hash
     assert outcome.durable_only.blockers == decision.payload.blockers
     assert outcome.durable_only.resumable_if == decision.payload.resumable_if
 
