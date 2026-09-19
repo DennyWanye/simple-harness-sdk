@@ -569,7 +569,7 @@ obligation **共用同一 id**，后者会被当成「已有键」丢弃——�
 
 **修复。** 新增 `test_a_caller_obligation_sharing_a_task_id_is_not_dropped`：令一个 task 与其
 obligation 共用同一 id（`shared`），构建器提供 task 行（网络 binding）、调用方提供 obligation 行，
-断言两条 ref 都在 `visible_refs` 里，且各取自己的哈希。变异 A2 → `1 failed, 77 passed`（KILLED）。
+断言两条 ref 都在 `visible_refs` 里，且各取自己的哈希。变异 A2 → `1 failed, 81 passed`（KILLED）。
 
 ### 12.2 P1-8：`_network_authorities` 的 `semantic_revision` 取值未被钉死（A7 SURVIVED）
 
@@ -582,7 +582,7 @@ obligation 共用同一 id（`shared`），构建器提供 task 行（网络 bin
 
 **修复。** `_WideBinding` 增加 `revision` 入参，新增
 `test_a_task_ref_revision_comes_from_the_binding_even_past_one`：构造 `contract_revision = 3` 的
-binding，断言该 task 的 ref `semantic_revision == 3` 且 `!= 1`。变异 A7 → `1 failed, 77 passed`（KILLED）。
+binding，断言该 task 的 ref `semantic_revision == 3` 且 `!= 1`。变异 A7 → `1 failed, 81 passed`（KILLED）。
 
 ### 12.3 自查：其它「恰好相等 / 恰好有序 / 恰好唯一」的鉴别力缺口
 
@@ -603,8 +603,8 @@ binding，断言该 task 的 ref `semantic_revision == 3` 且 `!= 1`。变异 A7
 ### 12.4 本轮变异汇总（复核 5 的存活项 + 自查项）
 
 ```text
-A2  _merge_authorities 去重键丢 kind        -> 1 failed, 77 passed
-A7  _network_authorities revision 写死 1    -> 1 failed, 77 passed
+A2  _merge_authorities 去重键丢 kind        -> 1 failed, 81 passed
+A7  _network_authorities revision 写死 1    -> 1 failed, 81 passed
 R_drop_kind  排序键丢 kind                  -> 1 failed, 81 passed
 R_drop_id    排序键丢 id                    -> 2 failed, 80 passed
 R_drop_rev   排序键丢 revision              -> 2 failed, 80 passed
