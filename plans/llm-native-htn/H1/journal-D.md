@@ -556,6 +556,7 @@ O1  调用方行覆盖构建器行（原缺陷）    -> 2 failed, 74 passed
 
 ## 12. 第 5 轮处置（核验结论：修后可合）
 
+**处置提交：** `2967b43`（test(h1-d): discriminate merge kind, binding revision, and sort/dedup components）、`85129c7`（journal 记录）。
 **核验来源：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 5」小节（同一核验员续做；
 上一轮核验副本 HEAD `0d9d7fb`，本轮验 `75be3df`）。P0 无；P1 两条（P1-7 / P1-8，均为「测试输入恰好
 相等而使断言失去鉴别力」的缺口）。
