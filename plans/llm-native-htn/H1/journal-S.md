@@ -19,16 +19,29 @@
 |---|---|
 | `src/agent_orchestrator/orchestrator/commit_service.py` | 热文件，只留调用点（净 +19/−19 行内） |
 | `src/agent_orchestrator/orchestrator/planning_protocol_binding.py` | 新增模块，新逻辑集中于此 |
-| `tests/orchestrator/full_target/test_planning_protocol_switch.py` | 专项测试（16 条） |
+| `tests/orchestrator/full_target/test_planning_protocol_switch.py` | 专项测试（17 条） |
 | `plans/llm-native-htn/H1/journal-S.md` | 本日志 |
 
-### 额外动的一处（需主审知晓）
+### 已回退的越界改动：`api/missions.py`（闸门红 → 修复）
 
-`src/agent_orchestrator/api/missions.py` 增加了 8 行：把请求里的 `planning_protocol_version`
-映射进 `MissionSpec`。**该文件不在本片白名单内**，但不加它开关在线上是死的——`spec_from_request`
-是 Host 唯一的请求解析入口，它会静默丢弃未知键，于是「Host 显式选择新协议」（补遗 §8.3）永远
-到不了 `CommitService`，未知协议名也不会被拒。为极小化风险，只加了 8 行、语义是「请求没写就完全
-不传该 kwarg」，缺省规格字节不变（有测试钉住）。若主审判定越界，请回退这 8 行即可，其余全部独立成立。
+上一位实施者曾在 `src/agent_orchestrator/api/missions.py` 加过 8 行，把请求里的
+`planning_protocol_version` 映射进 `MissionSpec`。**该文件不在 `h1s-allow.txt` 白名单内**，
+闸门因此判红（`gate-1.json` 的 `allowlist` 项：`files outside allowlist:
+src/agent_orchestrator/api/missions.py`），工作树再干净也过不了。
+
+修法是**把那 8 行整块删掉**，让该文件与基线 `0d89307` **逐字节相同**（`git diff 0d89307 --
+src/agent_orchestrator/api/missions.py` 无输出）。理由：开关本来就落在白名单内。
+
+- `MissionSpec` 就是任务契约本身，`planning_protocol_version` 是它的字段，**任何自己构造契约的
+  调用方**（`__main__` 的 CLI、`evaluation/` 各 runner、Host 自己的记录读取路径）都能直接命名该
+  wire，不依赖请求解析器；
+- `spec_from_request` 保持原样（继续静默丢弃未知键）已被两条新用例钉死，所以「回退会悄悄重演」
+  不会发生；
+- 缺省规格字节/哈希不变：`to_json()` 只在非缺省时才写该键，回退不影响这一点。
+
+> 遗留（**明确留给后续切片**）：Host 通过 HTTP 请求体里的 `planning_protocol_version` 选择新协议
+> 这条路径，本片（白名单内）无法启用——它必须改 `api/missions.py`。这属于**派发/Host 接线片**
+> （H1-F/H1-H 一带）的工作，不是本片的验收面。本片交付的是「契约字段 + 持久绑定 + 只读恢复函数」。
 
 ### 明确未改
 
@@ -47,12 +60,30 @@ bc63d28 fix(h1-s): tighten protocol binding validation and rollback
 43ecd37 test(h1-s): verify policy binding ignores protocol switch
 ```
 
-## 3. 本次接手新增
+## 3. 接手者新增（含第三位接手者的修复）
 
 ```text
 d7986a2 test(h1-s): cover host hand-off, forged specs, stored hash and env isolation
 3108556 feat(h1-s): planning_protocol_version on MissionSpec and the durable protocol binding
+3362c4c docs(h1-s): record the hand-off audit, the added cases and the measured gates
 ```
+
+### 3.0 闸门红与修复（第三位接手者）
+
+`gate-1.json` 对 `3362c4c` 判红：`allowlist` 项报 `files outside allowlist:
+src/agent_orchestrator/api/missions.py`，其余 8 项全绿。修法见 §1「已回退的越界改动」。
+
+```text
+c5c8f12 test(h1-s): pin the switch reachable without the out-of-allowlist parser edit
+8df04e6 fix(h1-s): keep the protocol switch inside the slice allowlist
+```
+
+- `c5c8f12`（先红）：新增两条用例——`test_the_protocol_switch_is_reachable_without_editing_the_request_parser`
+  与 `test_the_slice_touches_no_file_outside_its_allowlist`；同时删掉 `d7986a2` 里那条把
+  **越界映射**当期望钉住的 `test_the_spec_carries_the_protocol_to_the_mission_spec_factory`
+  （它断言的正是白名单禁止的行为，必须换掉而不是留着）。旧用例在回退后实测 `2 failed, 16 passed`。
+- `8df04e6`（转绿）：整块删掉 `api/missions.py` 的 8 行，该文件回到与 `0d89307` 逐字节相同；
+  专项 `17 passed`。
 
 ### 3.1 先红的测试（`d7986a2`，`3 failed, 12 passed`）
 
@@ -81,14 +112,14 @@ d7986a2 test(h1-s): cover host hand-off, forged specs, stored hash and env isola
   与存储层 `bind_mission_protocol` 的「同一文档幂等、任何差异 StoreConflict」一致。
 - `api/missions.py` 的 8 行映射（见 §1）。
 
-### 3.3 最终用例清单（16 条）与对应覆盖项
+### 3.3 最终用例清单（17 条）与对应覆盖项
 
 | # | 用例 | 覆盖 |
 |---|---|---|
 | 1 | `test_default_spec_json_bytes_and_hash_are_unchanged` | 缺省字节/哈希不变 |
 | 2 | `test_legacy_mission_created_with_the_default_keeps_its_spec_hash` | 缺省哈希不变（**入库行**，新增） |
 | 3 | `test_new_protocol_json_key_and_unknown_values_are_rejected` | 新协议规格往返 + 未知名被拒 |
-| 4 | `test_the_spec_carries_the_protocol_to_the_mission_spec_factory` | 入口映射（新增） |
+| 4 | — | 原「入口映射」用例已删除（它钉住的越界映射被白名单禁止，见 §1） |
 | 5 | `test_commit_service_refuses_a_spec_that_bypassed_the_constructor` | 未校验规格被拒（新增，改自原构想） |
 | 6 | `test_the_two_protocol_constants_are_the_frozen_online_names` | 线上常量名不得改（新增） |
 | 7 | `test_new_protocol_creation_writes_one_binding_with_frozen_hash` | 恰一行 + 三项正确 + 摘要 |
@@ -101,10 +132,12 @@ d7986a2 test(h1-s): cover host hand-off, forged specs, stored hash and env isola
 | 14 | `test_binding_comes_from_the_stored_table_not_from_the_config_attribute` | 恢复只读存储（新增） |
 | 15 | `test_a_replayed_new_protocol_mission_keeps_exactly_one_binding_row` | 重放不增行、不改 `created_at`（新增） |
 | 16 | `test_the_durable_binding_ignores_the_ambient_environment` | 环境变量不得猜模式（新增） |
+| 17 | `test_the_protocol_switch_is_reachable_without_editing_the_request_parser` | 开关在**白名单内**可达：请求解析器丢弃该键、直接构造契约可命名该 wire（新增） |
+| 18 | `test_the_slice_touches_no_file_outside_its_allowlist` | 防回归：`spec_from_request` 源码里不得再出现该字段（新增） |
 
 任务书「测试至少覆盖」十项全部有对应用例，无遗漏。
 
-### 3.4 关于「鉴别力」的一次修正（重要）
+### 3.4 关于「鉴别力」的一次修正（重要，第一位接手者）
 
 接手时第 10、11 条对「Mission 创建后不可切协议」其实**鉴别力为零**：把
 `planning_protocol_version` 从 `planning-decision-v1` 改成 `legacy-plan-proposal-v1` 会改变
@@ -146,6 +179,8 @@ d7986a2 test(h1-s): cover host hand-off, forged specs, stored hash and env isola
 | M4 删掉 `create_mission` 的 `checked_planning_protocol` 门卫 | 1 failed（#5） |
 | M5 删掉 `planning_protocol_replay_conflict` 调用点 | 1 failed（#10，见 §3.4） |
 | M6 把持久绑定比较换成 `if False:` | 1 failed（#10） |
+| M7 回退 `api/missions.py` 后仍断言「解析器会映射该键」 | 1 failed（旧 #4，故已删除） |
+| M8 删掉 `to_json()` 里的协议键（直写槽位也不再生效） | 5 failed（含新增 #17） |
 
 `ruff check`（本片四个文件）与 `ruff format --check`（本片新改文件）均无输出问题；
 仓库既有 `ruff check .` 存量告警（`tests/integration/runtime/*` 等），与基线一致，非本片引入
@@ -153,28 +188,39 @@ d7986a2 test(h1-s): cover host hand-off, forged specs, stored hash and env isola
 
 ---
 
-## 5. 验收门（本机实测，原样粘贴）
+## 5. 验收门（本机实测，原样粘贴；数字为**修复后** `8df04e6` 的复测值）
 
 ```text
 $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_protocol_switch.py -q -p no:cacheprovider
-................                                                         [100%]
-16 passed in 0.46s
+.................                                                        [100%]
+17 passed in 0.44s
 ```
 
 ```text
 $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
-3494 passed, 2 skipped in 126.14s (0:02:06)
+3495 passed, 2 skipped in 127.58s (0:02:07)
 ```
 
 ```text
 $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/step02 tests/orchestrator/step05 tests/orchestrator/step06 tests/orchestrator/step07 tests/orchestrator/p34 -q -p no:cacheprovider
-350 passed, 13 skipped in 130.54s (0:02:10)
+350 passed, 13 skipped in 126.52s (0:02:06)
 ```
 
 ```text
-$ uv run --offline ruff check src/agent_orchestrator tests/orchestrator/full_target/test_planning_protocol_switch.py
+$ uv run --offline ruff check src/agent_orchestrator/orchestrator/commit_service.py src/agent_orchestrator/orchestrator/planning_protocol_binding.py src/agent_orchestrator/api/missions.py tests/orchestrator/full_target/test_planning_protocol_switch.py
 All checks passed!
 ```
+
+### 5.0 闸门本身（`sdk_gate.sh`，修复前 → 修复后）
+
+```text
+$ sdk_gate.sh "$PWD" 0d89307 --allow .../h1s-allow.txt --tests "tests/orchestrator/full_target/test_planning_protocol_switch.py" --max-sentinel 26 --out /tmp/gate-after.json
+sdk_gate: ok=true (failed items: -)
+```
+
+8 项 `clean / allowlist / contracts_frozen / no_secrets / ruff / import_origin / targeted / sentinel`
+全部 `ok=true`；`targeted` 为 `passed=17 failed=0 errors=0`，`sentinel count=26 (max=26)`。
+修复前同一命令为 `ok=false (failed items: allowlist)`。
 
 ### 5.1 「旧模式 560」与本次实测的差异（必须记录，不得当作本片回归）
 
@@ -186,7 +232,8 @@ All checks passed!
 | `p32`（全目录，不在 560 集合内） | `22 failed, 124 passed` | 本沙箱禁止 `bind(127.0.0.1,0)`：`PermissionError: [Errno 1] Operation not permitted`（`runtime/sandbox.py:973`）。环境限制 |
 | `p35/test_mission_system_runtime_hooks.py` 2 条 | 稳定 `2 failed`（单独、目录内、六连跑均同） | 在 `const CommitService = MissionSpec` 的基线 worktree（`0d89307`）同样 `2 failed, 5 passed` → **本片之前就存在** |
 | `step02/test_live_provider_progress.py` 1 条 | 单跑 `1 passed`；混跑偶发 1 failed | 跨目录顺序相关的偶发（flaky） |
-| 其余五个目录（step02+step05/06/07+p34） | 两连跑均 `350 passed, 13 skipped` | 全绿 |
+| 其余五个目录（step02+step05/06/07+p34） | 修复后复测 `350 passed, 13 skipped` | 全绿 |
+| `p33` 全目录（不在 560 集合内） | `8 failed, 1042 passed` | 在基线 worktree（`0d89307`）实测**同样 8 条失败**（`8 failed, 1037 passed`），逐条同名前缀 → **本片之前就存在**，与本次回退无关 |
 
 `full_target` 的 `2 skipped` 为 `test_panda_backend.py`（未配置 `SH_PANDA_PARSER`）与
 `test_real_provider_hierarchical_smoke.py`（需 `--run-real-provider`），与基线一致。
@@ -199,12 +246,16 @@ All checks passed!
 
 - 派发分支、`_new_mode` 调用点、模型可见行为的开关差异（H1-F/H1-H）；
 - `PlanningDecisionEvaluated` 事件（补遗 §6，属派发片）；
-- 新协议 Mission 的恢复路径在编排层的调用点（本片只交付只读函数，无新调用点，哨兵数不变）。
+- 新协议 Mission 的恢复路径在编排层的调用点（本片只交付只读函数，无新调用点，哨兵数不变）；
+- **Host HTTP 请求体里的 `planning_protocol_version` 接线**：`api/missions.py` 不在白名单内，
+  本片无法启用该路径（详见 §1）。需要它的切片必须同时把该文件纳入 allowlist。
 
 ---
 
 ## 7. 结果
 
-- 新增提交：`d7986a2`（红测试）、`3108556`（实现 + 日志随后）。
-- 专项 16 条全绿；`full_target` 3494 passed / 2 skipped；旧模式集合（无环境限制部分）350 passed / 13 skipped。
-- 白名单外只动了 `api/missions.py` 8 行，理由见 §1，可单独回退。
+- 提交链：上一位 `37af171`–`43ecd37`；接手者 `d7986a2`（红测试）、`3108556`（实现）、`3362c4c`（日志）；
+  第三位接手者 `c5c8f12`（红测试）、`8df04e6`（修复 + 本日志）。
+- 专项 17 条全绿；`full_target` 3495 passed / 2 skipped；旧模式集合（无环境限制部分）350 passed / 13 skipped。
+- **白名单内改动已收敛**：`api/missions.py` 与基线 `0d89307` 逐字节相同，本片不再有任何越界文件；
+  闸门 8 项全绿。
