@@ -12,6 +12,10 @@ from dataclasses import replace
 import pytest
 
 from agent_orchestrator.contracts import Budget, ContractError
+from agent_orchestrator.contracts.planning_decisions import (
+    LEGACY_PLANNING_PROTOCOL as CONTRACT_LEGACY_PLANNING_PROTOCOL,
+    PLANNING_DECISION_V1 as CONTRACT_PLANNING_DECISION_V1,
+)
 from agent_orchestrator.orchestrator.commit_service import (
     LEGACY_PLANNING_PROTOCOL,
     PLANNING_DECISION_V1,
@@ -65,11 +69,14 @@ def test_default_spec_json_bytes_and_hash_are_unchanged() -> None:
     )
 
 
-def test_new_protocol_round_trips_and_unknown_is_rejected() -> None:
+def test_new_protocol_json_key_and_unknown_values_are_rejected() -> None:
     spec = _spec("round-trip", planning_protocol_version=PLANNING_DECISION_V1)
-    assert MissionSpec.from_json(spec.to_json()).to_json() == spec.to_json()
+    assert spec.to_json()["planning_protocol_version"] == PLANNING_DECISION_V1
     with pytest.raises(ContractError, match="planning protocol"):
         _spec("unknown", planning_protocol_version="planning-decision-v99")
+    for invalid in ([], {}):
+        with pytest.raises(ContractError, match="planning protocol"):
+            _spec("invalid-type", planning_protocol_version=invalid)
 
 
 def test_new_protocol_creation_writes_one_binding_with_frozen_hash(tmp_path) -> None:
@@ -102,22 +109,28 @@ def test_legacy_creation_has_no_binding(tmp_path) -> None:
     mission, _ = CommitService(store).create_mission(_spec("legacy"))
     assert planning_protocol_for_mission(store, mission.id) is None
     assert LEGACY_PLANNING_PROTOCOL == "legacy-plan-proposal-v1"
+    assert LEGACY_PLANNING_PROTOCOL == CONTRACT_LEGACY_PLANNING_PROTOCOL
+    assert PLANNING_DECISION_V1 == CONTRACT_PLANNING_DECISION_V1
 
 
 def test_binding_is_transactional_on_creation_failure(tmp_path) -> None:
     store = Store.open(tmp_path / "orchestrator.db")
-    def reject_profile(_profile: str, _params: object) -> None:
+    service = CommitService(store)
+    observed: dict[str, object] = {}
+
+    def fail_after_binding(mission: object) -> None:
+        observed["binding"] = planning_protocol_for_mission(store, mission.id)  # type: ignore[attr-defined]
         raise CommitRejected("boom")
 
-    service = CommitService(store, mission_profile_validator=reject_profile)
+    service._reserve_mission_system_pools = fail_after_binding  # type: ignore[method-assign]
     with pytest.raises(CommitRejected, match="boom"):
         service.create_mission(
             _spec(
                 "rollback",
                 planning_protocol_version=PLANNING_DECISION_V1,
-                runtime_profile_id="p",
             )
         )
+    assert observed["binding"] is not None
     assert (
         store.connection.execute("SELECT count(*) FROM mission_planning_protocols").fetchone()[0]
         == 0
@@ -134,6 +147,27 @@ def test_replay_is_idempotent_and_protocol_cannot_change(tmp_path) -> None:
     assert again == mission and not replayed
     with pytest.raises(MissionConflict):
         service.create_mission(replace(spec, planning_protocol_version=LEGACY_PLANNING_PROTOCOL))
+
+
+def test_legacy_mission_cannot_be_replayed_as_new_protocol(tmp_path) -> None:
+    store = Store.open(tmp_path / "orchestrator.db")
+    service = CommitService(store)
+    spec = _spec("legacy-first")
+    service.create_mission(spec)
+    with pytest.raises(MissionConflict):
+        service.create_mission(replace(spec, planning_protocol_version=PLANNING_DECISION_V1))
+
+
+def test_policy_snapshot_digest_does_not_include_planning_protocol(tmp_path) -> None:
+    from agent_orchestrator.governance.policies import policy_snapshot
+    from agent_orchestrator.runtime.assembly import OrchestratorConfig
+
+    legacy = _spec("policy-legacy")
+    enabled = replace(legacy, planning_protocol_version=PLANNING_DECISION_V1)
+    assert enabled.to_json() != legacy.to_json()
+    first = policy_snapshot(OrchestratorConfig(evidence_root=tmp_path / "legacy"))
+    second = policy_snapshot(OrchestratorConfig(evidence_root=tmp_path / "enabled"))
+    assert first["hash"] == second["hash"]
 
 
 def test_binding_survives_a_new_connection(tmp_path) -> None:
