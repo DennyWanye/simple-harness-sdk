@@ -125,6 +125,11 @@ from .plan_commits import (
     normalise_semantics,
     semantics_of,
 )
+from .planning_protocol_binding import (
+    PLANNING_PROTOCOL_BINDING,
+    bind_planning_protocol,
+    planning_protocol_for_mission,
+)
 from .policy_commits import PolicyCommitsMixin
 from .protected_tail_commits import ProtectedTailCommitsMixin
 from .resolution_commits import ResolutionCommitsMixin
@@ -190,6 +195,10 @@ SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
 ACTOR_SYSTEM = "system"
 ORCHESTRATOR_ID = "orchestrator"
 
+LEGACY_PLANNING_PROTOCOL = "legacy-plan-proposal-v1"
+PLANNING_DECISION_V1 = "planning-decision-v1"
+_PLANNING_PROTOCOLS = frozenset({LEGACY_PLANNING_PROTOCOL, PLANNING_DECISION_V1})
+
 
 class CommitRejected(StoreError):
     """The proposal violates a contract, a budget or the state machine; nothing was written."""
@@ -234,6 +243,13 @@ class MissionSpec:
     # §18.5 rule 1: the server-side default is ``legacy``.  Only a Mission that asks
     # for the hierarchical semantics in so many words requires semantic bindings.
     orchestration_semantics_version: str = LEGACY_SEMANTICS
+    planning_protocol_version: str = LEGACY_PLANNING_PROTOCOL
+
+    def __post_init__(self) -> None:
+        if self.planning_protocol_version not in _PLANNING_PROTOCOLS:
+            raise ContractError(
+                f"unknown planning protocol version {self.planning_protocol_version!r}"
+            )
 
     def to_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -266,7 +282,34 @@ class MissionSpec:
             # like ``domain`` above: the default must not change ``spec_hash``, or a
             # Host re-sending the same request after upgrading gets a MissionConflict
             data[SEMANTICS_KEY] = self.orchestration_semantics_version
+        if self.planning_protocol_version != LEGACY_PLANNING_PROTOCOL:
+            data["planning_protocol_version"] = self.planning_protocol_version
         return data
+
+    @classmethod
+    def from_json(cls, value: object) -> MissionSpec:
+        if not isinstance(value, Mapping):
+            raise ContractError("mission spec must be an object")
+        return cls(
+            goal=str(value["goal"]),
+            success_criteria=tuple(value["success_criteria"]),
+            tenant_id=str(value["tenant_id"]),
+            idempotency_key=str(value["idempotency_key"]),
+            stop_conditions=tuple(value.get("stop_conditions", ("verification_passed", "budget_exhausted"))),
+            allowed_tools=tuple(value.get("allowed_tools", ())),
+            risk_level=str(value.get("risk_level", "sandbox")),
+            budget=Budget.from_json(value.get("budget", {})),
+            task_kind=str(value.get("task_kind", "code")),
+            workspace_seed=dict(value.get("workspace_seed", {})),
+            untrusted_sources=tuple(value.get("untrusted_sources", ())),
+            synthesis=value.get("synthesis"),
+            conflict_reserve_tokens=int(value.get("conflict_reserve_tokens", 0)),
+            domain=str(value.get("domain", CODE_DOMAIN)),
+            search_policy_version_id=value.get("search_policy_version_id"),
+            runtime_profile_id=value.get("runtime_profile_id"),
+            orchestration_semantics_version=str(value.get(SEMANTICS_KEY, LEGACY_SEMANTICS)),
+            planning_protocol_version=str(value.get("planning_protocol_version", LEGACY_PLANNING_PROTOCOL)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -711,6 +754,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             semantics_version = normalise_semantics(spec.orchestration_semantics_version)
         except ContractError as error:
             raise CommitRejected(str(error)) from error
+        if spec.planning_protocol_version not in _PLANNING_PROTOCOLS:
+            raise CommitRejected(
+                f"unknown planning protocol version {spec.planning_protocol_version!r}"
+            )
         spec_hash = sha256_hex(spec.to_json())
         try:  # P3.3 (D1): an unknown domain is refused before anything is written
             domain = resolve_domain(spec.domain)
@@ -724,6 +771,23 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     raise MissionConflict(
                         f"mission {mission.id} already exists with a different specification"
                     )
+                stored_binding = planning_protocol_for_mission(self._store, mission.id)
+                if spec.planning_protocol_version == PLANNING_DECISION_V1:
+                    expected_binding = {
+                        "protocol_version": PLANNING_DECISION_V1,
+                        **{
+                            key: PLANNING_PROTOCOL_BINDING[key]
+                            for key in ("package_version", "prompt_version")
+                        },
+                    }
+                    if stored_binding is None or any(
+                        stored_binding.get(key) != value for key, value in expected_binding.items()
+                    ):
+                        raise MissionConflict(
+                            f"mission {mission.id} has no matching durable planning protocol binding"
+                        )
+                elif stored_binding is not None:
+                    raise MissionConflict(f"mission {mission.id} cannot switch planning protocol")
                 return mission, False
             mission_id = ids.mission_id(spec.tenant_id, spec.idempotency_key)
             # review fix: with a Global Budget the Mission's unnamed dimensions are inherited, and
@@ -811,6 +875,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 domain_version=domain.version,
                 snapshot=domain.to_json(),
             )
+            if spec.planning_protocol_version == PLANNING_DECISION_V1:
+                bind_planning_protocol(self._store, mission_id, spec.planning_protocol_version)
             self._reserve_mission_system_pools(mission)
             self._emit(
                 "MissionCreated",

@@ -47,15 +47,22 @@ def test_default_spec_json_bytes_and_hash_are_unchanged() -> None:
         "stop_conditions": ["verification_passed", "budget_exhausted"],
         "allowed_tools": [],
         "risk_level": "sandbox",
-        "budget": {"max_tokens": 1000, "max_attempts": 1},
+        "budget": {
+            "max_tokens": 1000,
+            "max_cost_micros": None,
+            "max_attempts": 1,
+            "max_runtime_seconds": None,
+            "max_concurrency": None,
+            "max_tool_calls": None,
+        },
         "task_kind": "code",
         "workspace_seed": {},
     }
     assert spec.to_json() == expected
     encoded = json.dumps(expected, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    assert hashlib.sha256(encoded.encode()).hexdigest() == hashlib.sha256(
-        json.dumps(spec.to_json(), ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
-    ).hexdigest()
+    assert hashlib.sha256(encoded.encode()).hexdigest() == (
+        "d0903d35e0062418f244304251be0f3f87a8885e3bef5170c5b6a30f3b0dd161"
+    )
 
 
 def test_new_protocol_round_trips_and_unknown_is_rejected() -> None:
@@ -77,7 +84,11 @@ def test_new_protocol_creation_writes_one_binding_with_frozen_hash(tmp_path) -> 
     assert binding["protocol_version"] == PLANNING_DECISION_V1
     assert binding["package_version"] == 4
     assert binding["prompt_version"] == "planner-hierarchical-v8"
-    expected = {"protocol_version": PLANNING_DECISION_V1, "package_version": 4, "prompt_version": "planner-hierarchical-v8"}
+    expected = {
+        "protocol_version": PLANNING_DECISION_V1,
+        "package_version": 4,
+        "prompt_version": "planner-hierarchical-v8",
+    }
     assert binding["binding_hash"] == hashlib.sha256(
         json.dumps(expected, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
@@ -95,12 +106,22 @@ def test_legacy_creation_has_no_binding(tmp_path) -> None:
 
 def test_binding_is_transactional_on_creation_failure(tmp_path) -> None:
     store = Store.open(tmp_path / "orchestrator.db")
-    service = CommitService(store, mission_profile_validator=lambda _profile, _params: (_ for _ in ()).throw(CommitRejected("boom")))
+    def reject_profile(_profile: str, _params: object) -> None:
+        raise CommitRejected("boom")
+
+    service = CommitService(store, mission_profile_validator=reject_profile)
     with pytest.raises(CommitRejected, match="boom"):
         service.create_mission(
-            _spec("rollback", planning_protocol_version=PLANNING_DECISION_V1, runtime_profile_id="p")
+            _spec(
+                "rollback",
+                planning_protocol_version=PLANNING_DECISION_V1,
+                runtime_profile_id="p",
+            )
         )
-    assert store.connection.execute("SELECT count(*) FROM mission_planning_protocols").fetchone()[0] == 0
+    assert (
+        store.connection.execute("SELECT count(*) FROM mission_planning_protocols").fetchone()[0]
+        == 0
+    )
     assert store.find_mission("tenant", "rollback") is None
 
 
@@ -123,4 +144,7 @@ def test_binding_survives_a_new_connection(tmp_path) -> None:
     )
     first.close()
     second = Store.open(path)
-    assert planning_protocol_for_mission(second, mission.id)["protocol_version"] == PLANNING_DECISION_V1
+    assert (
+        planning_protocol_for_mission(second, mission.id)["protocol_version"]
+        == PLANNING_DECISION_V1
+    )
