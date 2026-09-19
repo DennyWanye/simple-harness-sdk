@@ -112,14 +112,6 @@ def spec_from_request(
             domain=str(request.get("domain", CODE_DOMAIN)),
             search_policy_version_id=search_policy,
             runtime_profile_id=runtime_profile,
-            # H1-S (§8.1): the charter's planning protocol.  Named only when the request
-            # names it, so an omitted key keeps the legacy default byte for byte; an
-            # unknown value is refused by ``MissionSpec.__post_init__`` just below.
-            **(
-                {}
-                if request.get("planning_protocol_version") is None
-                else {"planning_protocol_version": str(request["planning_protocol_version"])}
-            ),
         )
     except (ContractError, TypeError, ValueError) as error:
         raise MissionRequestError(str(error)) from error

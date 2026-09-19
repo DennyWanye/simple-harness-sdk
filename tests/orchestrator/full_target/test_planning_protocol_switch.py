@@ -278,31 +278,6 @@ def test_binding_survives_a_new_connection(tmp_path) -> None:
 # ---------------------------------------------------------------------------------------
 
 
-def test_the_spec_carries_the_protocol_to_the_mission_spec_factory() -> None:
-    """A Host that asks for the new protocol must get it; the field must not be dropped.
-
-    The whole switch is worthless if the one request parser the Host uses drops the key:
-    ``MissionSpec.__post_init__`` would never see an unknown protocol and the Mission
-    would silently be created legacy.
-    """
-
-    from agent_orchestrator.api.missions import spec_from_request
-
-    omitted = spec_from_request("tenant", {"idempotency_key": "omitted"})
-    assert omitted.planning_protocol_version == LEGACY_PLANNING_PROTOCOL
-    assert (
-        spec_from_request(
-            "tenant",
-            {"idempotency_key": "asked", "planning_protocol_version": PLANNING_DECISION_V1},
-        ).planning_protocol_version
-        == PLANNING_DECISION_V1
-    )
-    with pytest.raises(Exception, match="planning protocol"):
-        spec_from_request(
-            "tenant", {"idempotency_key": "unknown", "planning_protocol_version": "v99"}
-        )
-
-
 def test_commit_service_refuses_a_spec_that_bypassed_the_constructor(tmp_path) -> None:
     """A spec whose field was set behind the constructor's back is still refused (§8.1).
 
@@ -473,9 +448,15 @@ def test_the_protocol_switch_is_reachable_without_editing_the_request_parser() -
 
     from agent_orchestrator.api.missions import spec_from_request
 
-    assert spec_from_request("tenant", {"planning_protocol_version": PLANNING_DECISION_V1}).to_json() == (
-        _spec("x").to_json() | {"idempotency_key": "x"}
+    named = spec_from_request(
+        "tenant", {"idempotency_key": "x", "planning_protocol_version": PLANNING_DECISION_V1}
     )
+    plain = spec_from_request("tenant", {"idempotency_key": "x"})
+    # The key is dropped, not defaulted: the two documents are byte for byte the same,
+    # so a request cannot smuggle the wire in through HTTP and the legacy bytes hold.
+    assert named.to_json() == plain.to_json()
+    assert named.planning_protocol_version == LEGACY_PLANNING_PROTOCOL
+    assert "planning_protocol_version" not in named.to_json()
     named = MissionSpec(
         goal="g",
         success_criteria=("ok",),
