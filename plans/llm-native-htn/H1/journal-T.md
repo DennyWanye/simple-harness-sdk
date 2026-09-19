@@ -81,3 +81,36 @@ All checks passed!
 
 本片没有 UI 或真实 provider 入口；手工验收门不适用。全量回归中首次发现的是夹具覆盖元测试
 与新裁定不一致，已按事实修正测试而未掩盖失败；其余流程检查未发现空转门。
+
+## 6. 提交态与终态
+
+功能提交命令的 git 输出（原样）：
+
+```text
+[h1-t-decode-only c4142fc] feat(h1-t): demote bind-existing-goal and propose-successor to decode-only per the 2026-09-19 ruling
+ Committer: 台湾 <taiwan@taiwandeMac-mini.local>
+Your name and email address were configured automatically based
+on your username and hostname. Please check that they are accurate.
+You can suppress this message by setting them explicitly. Run
+
+    git config --global --edit
+
+And then the commit will be marked with your user identity.
+
+    git commit --amend --reset-author
+
+ 14 files changed, 195 insertions(+), 45 deletions(-)
+ create mode 100644 plans/llm-native-htn/H1/journal-T.md
+```
+
+提交 `c4142fc` 后定向复验尾行（原样）：
+
+```text
+422 passed, 3 skipped in 0.79s
+All checks passed!
+c4142fc feat(h1-t): demote bind-existing-goal and propose-successor to decode-only per the 2026-09-19 ruling
+```
+
+`git status --short` 为空输出。
+
+VERDICT: SHIPPED — H1-T decode-only change — 2026-09-19 — c4142fc
