@@ -52,6 +52,7 @@ from ..contracts.models import (
     jsonable,
     sha256_hex,
 )
+from ..contracts.planning_decisions import LEGACY_PLANNING_PROTOCOL, PLANNING_DECISION_V1
 from ..governance.budgets import AccountSnapshot, BudgetError, BudgetLedger, UsageFact
 from ..governance.domains import (
     CODE_DOMAIN,
@@ -125,6 +126,11 @@ from .plan_commits import (
     normalise_semantics,
     semantics_of,
 )
+from .planning_protocol_binding import (
+    bind_planning_protocol,
+    checked_planning_protocol,
+    planning_protocol_replay_conflict,
+)
 from .policy_commits import PolicyCommitsMixin
 from .protected_tail_commits import ProtectedTailCommitsMixin
 from .resolution_commits import ResolutionCommitsMixin
@@ -190,7 +196,6 @@ SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
 ACTOR_SYSTEM = "system"
 ORCHESTRATOR_ID = "orchestrator"
 
-
 class CommitRejected(StoreError):
     """The proposal violates a contract, a budget or the state machine; nothing was written."""
 
@@ -234,6 +239,10 @@ class MissionSpec:
     # §18.5 rule 1: the server-side default is ``legacy``.  Only a Mission that asks
     # for the hierarchical semantics in so many words requires semantic bindings.
     orchestration_semantics_version: str = LEGACY_SEMANTICS
+    planning_protocol_version: str = LEGACY_PLANNING_PROTOCOL
+
+    def __post_init__(self) -> None:
+        checked_planning_protocol(self.planning_protocol_version)
 
     def to_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -266,6 +275,8 @@ class MissionSpec:
             # like ``domain`` above: the default must not change ``spec_hash``, or a
             # Host re-sending the same request after upgrading gets a MissionConflict
             data[SEMANTICS_KEY] = self.orchestration_semantics_version
+        if self.planning_protocol_version != LEGACY_PLANNING_PROTOCOL:
+            data["planning_protocol_version"] = self.planning_protocol_version
         return data
 
 
@@ -711,6 +722,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             semantics_version = normalise_semantics(spec.orchestration_semantics_version)
         except ContractError as error:
             raise CommitRejected(str(error)) from error
+        try:  # §8.1: a spec that skipped ``__post_init__`` is refused before any write
+            checked_planning_protocol(spec.planning_protocol_version)
+        except ContractError as error:
+            raise CommitRejected(str(error)) from error
         spec_hash = sha256_hex(spec.to_json())
         try:  # P3.3 (D1): an unknown domain is refused before anything is written
             domain = resolve_domain(spec.domain)
@@ -724,6 +739,11 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     raise MissionConflict(
                         f"mission {mission.id} already exists with a different specification"
                     )
+                conflict = planning_protocol_replay_conflict(
+                    self._store, mission.id, spec.planning_protocol_version
+                )
+                if conflict is not None:
+                    raise MissionConflict(conflict)
                 return mission, False
             mission_id = ids.mission_id(spec.tenant_id, spec.idempotency_key)
             # review fix: with a Global Budget the Mission's unnamed dimensions are inherited, and
@@ -811,6 +831,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 domain_version=domain.version,
                 snapshot=domain.to_json(),
             )
+            if spec.planning_protocol_version == PLANNING_DECISION_V1:
+                bind_planning_protocol(self._store, mission_id, spec.planning_protocol_version)
             self._reserve_mission_system_pools(mission)
             self._emit(
                 "MissionCreated",
