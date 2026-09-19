@@ -237,10 +237,12 @@ def task_authorities(network: Any) -> list[dict[str, Any]]:
 class _WideBinding:
     """Enough of ``TaskSemanticBindingV1`` for the packager: id, revision, digest."""
 
-    def __init__(self, task_id: str, obligation_id: str, digest: str) -> None:
+    def __init__(
+        self, task_id: str, obligation_id: str, digest: str, revision: int = 1
+    ) -> None:
         self.task_id = task_id
         self.obligation_id = obligation_id
-        self.contract_revision = 1
+        self.contract_revision = revision
         self.contract_hash = digest
         self.goal_signature = _Signature()
         self.typed_parameters: dict[str, Any] = {}
@@ -844,6 +846,41 @@ def test_the_authority_table_keys_on_kind_and_id_not_id_alone() -> None:
     }
 
 
+def test_a_caller_obligation_sharing_a_task_id_is_not_dropped() -> None:
+    """P1-7: the merge's de-dup key must be ``(kind, id)``, not ``id`` alone.
+
+    ``test_the_authority_table_keys_on_kind_and_id_not_id_alone`` covers the *lookup*
+    side (``_authority_index``).  This covers the *merge* side (``_merge_authorities``)
+    through the public builder: a task and an obligation **sharing an id** must both
+    survive, the builder attesting the task and the caller supplying the obligation.
+    A de-dup keyed on ``id`` alone would drop the caller's obligation.
+    """
+
+    shared = "shared"
+    network = _WideNetwork(1)
+    binding = network.task_bindings[0]
+    # The two kinds carry their own identities by default; make them collide so the
+    # only thing keeping the obligation is the *kind* component of the merge key.
+    binding.task_id = shared
+    binding.obligation_id = shared
+    network.occurrences[0].task_id = shared
+    network.occurrences[0].obligation_id = shared
+    network.root_occurrence_ids = (network.occurrences[0].occurrence_id,)
+    obligation_hash = "b" * 64
+    package = hierarchical_planner_package(
+        _Mission(),
+        network,
+        registry=None,
+        planning_protocol=PLANNING_DECISION_V1,
+        authoritative_refs=[authority("obligation", shared, 1, obligation_hash)],
+    )
+    emitted = {(item["kind"], item["id"]): dict(item) for item in package["visible_refs"]}
+    assert ("task", shared) in emitted
+    assert ("obligation", shared) in emitted, "the obligation ref was dropped by the merge"
+    assert emitted[("task", shared)]["content_hash"] == binding.content_hash()
+    assert emitted[("obligation", shared)]["content_hash"] == obligation_hash
+
+
 def test_an_authority_row_with_only_one_kind_does_not_answer_for_the_other() -> None:
     """P2-5: the obligation entry is not served by a task row that shares its id."""
 
@@ -910,6 +947,67 @@ def test_the_refs_are_sorted_by_hash_as_the_last_component() -> None:
         ]
     )
     assert [item["content_hash"] for item in refs_of(package)] == ["a" * 64, "b" * 64]
+
+
+def test_the_refs_are_sorted_by_id_ahead_of_revision_and_hash() -> None:
+    """Self-audit: two same-kind refs whose id order opposes their (rev, hash) order.
+
+    The kind test uses one ref per kind; without a second same-kind pair whose id
+    order disagrees with the rest of the key, dropping the ``id`` component is
+    invisible.  Here ``m-a`` sorts before ``m-z`` only because of the id.
+    """
+
+    package = empty_package(
+        method_library=[
+            {"refine_method_ref": {"id": "m-z", "version": 1, "content_hash": "a" * 64}},
+            {"refine_method_ref": {"id": "m-a", "version": 2, "content_hash": "e" * 64}},
+        ]
+    )
+    assert [item["id"] for item in refs_of(package)] == ["m-a", "m-z"]
+
+
+def test_the_refs_are_sorted_by_revision_ahead_of_hash() -> None:
+    """Self-audit: two refs sharing (kind, id) whose revision order opposes hash order."""
+
+    package = empty_package(
+        method_library=[
+            {"refine_method_ref": {"id": "m-same", "version": 2, "content_hash": "a" * 64}},
+            {"refine_method_ref": {"id": "m-same", "version": 1, "content_hash": "e" * 64}},
+        ]
+    )
+    assert [item["semantic_revision"] for item in refs_of(package)] == [1, 2]
+
+
+def test_refs_differing_only_in_revision_are_not_collapsed() -> None:
+    """Self-audit: the de-dup key includes ``semantic_revision``.
+
+    Two refs with the same (kind, id, content_hash) but different revisions are two
+    distinct §17 quadruples; keying de-dup without the revision would merge them.
+    """
+
+    package = empty_package(
+        accepted_results=[
+            {"acceptance_ref": {"id": "acc-1", "semantic_revision": 1, "content_hash": "a" * 64}},
+            {"acceptance_ref": {"id": "acc-1", "semantic_revision": 2, "content_hash": "a" * 64}},
+        ]
+    )
+    assert [item["semantic_revision"] for item in refs_of(package)] == [1, 2]
+
+
+def test_refs_differing_only_in_id_are_not_collapsed() -> None:
+    """Self-audit: the de-dup key includes ``id``.
+
+    Two refs with the same (kind, revision, content_hash) but different ids are two
+    distinct quadruples; keying de-dup without the id would merge them.
+    """
+
+    package = empty_package(
+        method_library=[
+            {"refine_method_ref": {"id": "m-one", "version": 1, "content_hash": "a" * 64}},
+            {"refine_method_ref": {"id": "m-two", "version": 1, "content_hash": "a" * 64}},
+        ]
+    )
+    assert [item["id"] for item in refs_of(package)] == ["m-one", "m-two"]
 
 
 def test_the_refs_are_sorted_by_kind_ahead_of_id() -> None:
@@ -1169,6 +1267,31 @@ def test_the_production_path_task_hash_is_the_bindings_own_digest(tmp_path: Any)
             }
         )
         assert ref["content_hash"] != derived
+
+
+def test_a_task_ref_revision_comes_from_the_binding_even_past_one(tmp_path: Any) -> None:
+    """P1-8: §5.1's ``semantic_revision`` is ``binding_revision``, not the constant 1.
+
+    Every binding in the fixture worlds happens to sit at revision 1, so an
+    implementation that wrote ``1`` (or dropped the field's source) would pass them
+    all.  A binding at ``contract_revision = 3`` — reachable in production, where a
+    superseded binding is re-versioned — must surface ``3`` in the ref, because the
+    §17 quadruple is byte-matched against ``task_semantics.binding_revision``.
+    """
+
+    network = _WideNetwork(1)
+    binding = network.task_bindings[0]
+    binding.contract_revision = 3
+    package = hierarchical_planner_package(
+        _Mission(),
+        network,
+        registry=None,
+        planning_protocol=PLANNING_DECISION_V1,
+    )
+    emitted = {(item["kind"], item["id"]): dict(item) for item in package["visible_refs"]}
+    ref = emitted[("task", str(binding.task_id))]
+    assert ref["semantic_revision"] == 3
+    assert ref["semantic_revision"] != 1
 
 
 def test_the_built_task_ref_carries_the_bindings_authoritative_hash(tmp_path: Any) -> None:

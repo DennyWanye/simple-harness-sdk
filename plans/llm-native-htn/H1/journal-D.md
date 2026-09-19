@@ -551,3 +551,85 @@ O1  调用方行覆盖构建器行（原缺陷）    -> 2 failed, 74 passed
 | 旧协议字节不变（黄金测试未改） | 黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等 | ✅ |
 | 包顶层键 = 旧 + 恰好五项 | §11.5 | ✅ |
 | ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |
+
+---
+
+## 12. 第 5 轮处置（核验结论：修后可合）
+
+**核验来源：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 5」小节（同一核验员续做；
+上一轮核验副本 HEAD `0d9d7fb`，本轮验 `75be3df`）。P0 无；P1 两条（P1-7 / P1-8，均为「测试输入恰好
+相等而使断言失去鉴别力」的缺口）。
+
+### 12.1 P1-7：`_merge_authorities` 去重键的 kind 维度未被钉死（A2 SURVIVED）
+
+**问题。** 把合并去重键从 `(kind, id)` 弱化成 `("", id)` 后 76 条全过。此时若一个 task 与一个
+obligation **共用同一 id**，后者会被当成「已有键」丢弃——而冲突检查 §5.1 允许 task / obligation
+共享 id（按 kind 分列）。既有 `test_the_authority_table_keys_on_kind_and_id_not_id_alone` 只覆盖
+**查询侧**（`_authority_index`），未覆盖**合并侧**（`_merge_authorities`）。
+
+**修复。** 新增 `test_a_caller_obligation_sharing_a_task_id_is_not_dropped`：令一个 task 与其
+obligation 共用同一 id（`shared`），构建器提供 task 行（网络 binding）、调用方提供 obligation 行，
+断言两条 ref 都在 `visible_refs` 里，且各取自己的哈希。变异 A2 → `1 failed, 77 passed`（KILLED）。
+
+### 12.2 P1-8：`_network_authorities` 的 `semantic_revision` 取值未被钉死（A7 SURVIVED）
+
+**问题。** 把 `_network_authorities` 的 `semantic_revision` 写死为 `1` 后 76 条全过——现有
+`build_world` / `committed` 世界里每个 binding 的 `contract_revision` **恰好都是 1**，故断言
+`semantic_revision == int(binding.contract_revision)` 没有鉴别力。真实系统会产出
+`contract_revision > 1` 的 binding（`orchestrator/plan_commits.py:1507` 对 supersede 的 binding 做
+`ContractRevision(int(rev) + 1)`）；写死 1 会让 ref 与 `task_semantics.binding_revision` 不一致，
+破坏 §17 四元组的逐字节匹配。
+
+**修复。** `_WideBinding` 增加 `revision` 入参，新增
+`test_a_task_ref_revision_comes_from_the_binding_even_past_one`：构造 `contract_revision = 3` 的
+binding，断言该 task 的 ref `semantic_revision == 3` 且 `!= 1`。变异 A7 → `1 failed, 77 passed`（KILLED）。
+
+### 12.3 自查：其它「恰好相等 / 恰好有序 / 恰好唯一」的鉴别力缺口
+
+按任务书要求对同类问题做了一次系统自查，用**变异扫描排序键 / 去重键各分量**找出仍存活的退化输入，
+并各补一条有鉴别力的用例：
+
+| 缺口 | 退化点 | 新增用例 | 变异结果 |
+|---|---|---|---|
+| 排序键 id 分量 | 同 kind 的 id 序恰好与 (revision, hash) 序一致 | `test_the_refs_are_sorted_by_id_ahead_of_revision_and_hash`（`m-a` v2 vs `m-z` v1） | `R_drop_id` → `2 failed`（KILLED） |
+| 排序键 revision 分量 | 同 (kind, id) 的 revision 序恰好与 hash 序一致 | `test_the_refs_are_sorted_by_revision_ahead_of_hash`（v2/hash-a vs v1/hash-e） | `R_drop_rev` → `2 failed`（KILLED） |
+| 去重键 revision 分量 | 现有用例中同一 (kind, id, hash) 的 revision 全相同 | `test_refs_differing_only_in_revision_are_not_collapsed`（acc-1 @ rev1 / rev2） | `D_dedup_drop_rev` → `1 failed`（KILLED） |
+| 去重键 id 分量 | 现有用例中 (kind, revision, hash) 全不同的 id 从未重复 | `test_refs_differing_only_in_id_are_not_collapsed`（m-one / m-two 同 rev、同 hash） | `D_dedup_drop_id` → `1 failed`（KILLED） |
+
+**判定为等价（非缺口）的退化：** `_authority_sort_key` 的 kind / id 分量——合并对同一 `(kind, id)`
+分组取最小行，而组内 kind 与 id 是**常量**，故丢弃它们不改变任何分组的胜者（`A_drop_kind` /
+`A_drop_id` 不可观测，已用脚本证明）。畸形行透传与否同属等价（`_authority_index` 一律跳过）。
+
+### 12.4 本轮变异汇总（复核 5 的存活项 + 自查项）
+
+```text
+A2  _merge_authorities 去重键丢 kind        -> 1 failed, 77 passed
+A7  _network_authorities revision 写死 1    -> 1 failed, 77 passed
+R_drop_kind  排序键丢 kind                  -> 1 failed, 81 passed
+R_drop_id    排序键丢 id                    -> 2 failed, 80 passed
+R_drop_rev   排序键丢 revision              -> 2 failed, 80 passed
+R_drop_hash  排序键丢 hash                  -> 1 failed, 81 passed
+D_dedup_drop_id   去重键丢 id               -> 1 failed, 81 passed
+D_dedup_drop_rev  去重键丢 revision         -> 1 failed, 81 passed
+D_dedup_drop_hash 去重键丢 hash             -> 1 failed, 81 passed
+M_drop_kind  合并键丢 kind                  -> 1 failed, 81 passed
+M_drop_id    合并键丢 id                    -> 2 failed, 80 passed
+```
+
+变异均以 `/tmp` 副本注入并恢复（`diff -q` 校验恢复后与备份一致），未使用任何 git 写命令。
+
+### 12.5 保持不变项（复核确认）
+
+旧协议字节不变（黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等）；新协议包顶层键 = 旧键 + **恰好五项**；
+sealed 文本不含 `authoritative_refs` / `visible_refs_omitted`；§5.1 生产路径 task 哈希 =
+`binding.content_hash()`。
+
+### 12.6 本轮验收门
+
+| 完成标准 | 证据 | 结果 |
+|---|---|---|
+| 本片测试文件全绿 | `82 passed in 0.62s` | ✅ |
+| 相关四文件全绿 | `355 passed in 9.22s` | ✅ |
+| full_target 全绿 | `3094 passed, 2 skipped in 123.00s (0:02:03)` | ✅ |
+| 旧协议字节不变（黄金测试未改） | 黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等 | ✅ |
+| ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |
