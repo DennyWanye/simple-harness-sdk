@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "SUBJECT_NOT_IN_REQUEST",
+  "checked_in": "H1-F",
+  "scenario": "subject_key is unknown to this planner request"
+}

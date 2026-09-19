@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "decision_type": "REQUEST_HUMAN",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "question": "which option?",
+    "options": [
+      {
+        "key": "a",
+        "label": "A"
+      }
+    ],
+    "blocking": false
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "DATA_UNBOUND",
+  "checked_in": "H1-F",
+  "scenario": "a required DATA edge has no producer"
+}

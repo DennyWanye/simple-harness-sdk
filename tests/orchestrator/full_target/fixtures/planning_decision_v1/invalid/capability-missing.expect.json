@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "CAPABILITY_MISSING",
+  "checked_in": "H1-F",
+  "scenario": "no live provider exposes the capability the method needs"
+}

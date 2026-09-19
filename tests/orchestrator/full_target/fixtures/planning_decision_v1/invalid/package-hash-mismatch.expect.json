@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "PACKAGE_HASH_MISMATCH",
+  "checked_in": "H1-F",
+  "scenario": "the decision was produced against a different package hash"
+}

@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "STRUCTURE_INVALID",
+  "checked_in": "H1-A2b",
+  "scenario": "SHARE_ACTIVE must carry a null resolution_ref"
+}

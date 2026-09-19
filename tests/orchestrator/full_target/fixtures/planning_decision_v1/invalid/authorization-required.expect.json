@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "AUTHORIZATION_REQUIRED",
+  "checked_in": "H1-F",
+  "scenario": "the method needs an approval that has not been granted"
+}

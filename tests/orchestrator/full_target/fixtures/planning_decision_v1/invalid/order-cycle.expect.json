@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "ORDER_CYCLE",
+  "checked_in": "H1-F",
+  "scenario": "the proposed refinement closes an ORDER cycle"
+}

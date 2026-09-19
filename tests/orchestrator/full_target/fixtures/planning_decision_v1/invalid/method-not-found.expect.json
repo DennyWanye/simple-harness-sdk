@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "METHOD_NOT_FOUND",
+  "checked_in": "H1-F",
+  "scenario": "the named method is not in the visible method set"
+}

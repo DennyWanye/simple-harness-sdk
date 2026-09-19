@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "REF_OUTSIDE_CONTEXT",
+  "checked_in": "H1-F",
+  "scenario": "reason_ref is absent from the request's visible_refs"
+}

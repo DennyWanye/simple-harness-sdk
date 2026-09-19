@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "COVERAGE_GAP",
+  "checked_in": "H1-F",
+  "scenario": "the refinement leaves a required obligation uncovered"
+}

@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "REPAIR_NOT_ALLOWED",
+  "checked_in": "H1-F",
+  "scenario": "the phase does not allow this repair sub-kind"
+}

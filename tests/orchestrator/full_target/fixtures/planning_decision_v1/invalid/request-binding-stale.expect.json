@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "REQUEST_BINDING_STALE",
+  "checked_in": "H1-F",
+  "scenario": "the plan revision moved after the request was bound"
+}

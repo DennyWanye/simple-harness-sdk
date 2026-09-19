@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "decision_type": "PROPOSE_METHOD",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "method_proposal": {
+      "id": "m1",
+      "goal_signature": "sig",
+      "steps": [
+        {
+          "name": "do"
+        }
+      ]
+    }
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "STRUCTURE_INVALID",
+  "checked_in": "H1-A2b",
+  "scenario": "reason_refs repeats the same (kind, id, revision, hash) identity"
+}

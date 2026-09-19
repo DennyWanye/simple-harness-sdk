@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "PARAMETER_INVALID",
+  "checked_in": "H1-F",
+  "scenario": "a binding does not satisfy the method parameter schema"
+}

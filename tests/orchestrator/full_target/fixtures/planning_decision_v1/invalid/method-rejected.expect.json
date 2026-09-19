@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "METHOD_REJECTED",
+  "checked_in": "H1-F",
+  "scenario": "the method was already rejected by this mission"
+}

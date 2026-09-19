@@ -1,0 +1,6 @@
+{
+  "expected_stage": "codec",
+  "expected_code": "DECISION_BLOCK_MISSING",
+  "checked_in": "H1-F",
+  "scenario": "the model reply contains no <planning_decision> block"
+}

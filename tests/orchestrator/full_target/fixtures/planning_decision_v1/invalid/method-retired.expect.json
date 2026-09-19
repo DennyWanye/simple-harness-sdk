@@ -1,0 +1,6 @@
+{
+  "expected_stage": "admission",
+  "expected_code": "METHOD_RETIRED",
+  "checked_in": "H1-F",
+  "scenario": "the method was retired after the package was built"
+}
