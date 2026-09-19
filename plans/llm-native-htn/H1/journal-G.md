@@ -86,3 +86,53 @@ feat(h1-g): adapter from admitted planning decisions to the existing proposal ch
 
 提交后再次检查工作树；本片不删除任何文件，不改 `contracts/`、`planner.py`、
 `event_handler.py`、`hierarchical_dispatch.py` 或存储层。
+
+## 6. 变基后的接手与 2026-09-19 15:20 追加裁定
+
+接手时工作树干净，上一轮本片提交为：
+
+```text
+4d3fb90 test(h1-g): add red tests for planning decision adapter
+1eb7b66 feat(h1-g): adapter from admitted planning decisions to the existing proposal chain
+```
+
+新主干同时带入合并提交 `400e3c4 merge(h1-t): demote bind-existing-goal and propose-successor to decode-only`。
+追加裁定明确：本阶段 `BIND_EXISTING_GOAL` 与 `REPAIR/PROPOSE_SUCCESSOR` 只解码、持久化，
+准入层应拒绝；适配层即使异常收到它们，也必须报编程错误，不能静默生成现网编译器无法消费的提案。
+
+本轮变更如下：
+
+1. 删除适配器对 `BindSharedGoalOperation` 与 `ProposeSuccessorOperation` 的执行映射和相关的旧正例等价性测试。
+2. 新增两条回归测试：若这两种决定绕过准入到达适配器，均抛 `ContractError`。
+3. `DurableOnly` 新增并保留输入决定的 `canonical_hash`，覆盖 `WAIT`、`NO_CHANGE`、`DECLARE_BLOCKED`。
+4. WAIT 测试逐项断言 `wait_for` 与决定载荷相等，避免清空等待引用的变异静默通过。
+
+本轮仍保留并验证的执行等价类型为 `REFINE`、`REPAIR/REPLACE_METHOD`；声明受阻、等待、
+不改继续只产生 durable-only，不生成计划提案。上一轮的共享绑定/提后继等价性测试不再适用，
+原因是追加裁定已将它们从本阶段执行集合移除，而不是改变现网编译器。
+
+## 7. 本轮验证
+
+测试先行的新增回归测试初次运行确实失败，尾行如下：
+
+```text
+4 failed, 7 passed in 0.32s
+```
+
+实现后的定向测试与 ruff 尾行如下：
+
+```text
+........                                                                 [100%]
+8 passed in 0.25s
+All checks passed!
+```
+
+全量目标目录尾行原样如下：
+
+```text
+SKIPPED [1] tests/orchestrator/full_target/test_panda_backend.py:595: no real pandaPIparser configured via SH_PANDA_PARSER
+SKIPPED [3] tests/orchestrator/full_target/test_planning_decision_admission.py:1248: codec-level refusal is covered by the codec test
+SKIPPED [1] tests/orchestrator/full_target/test_real_provider_hierarchical_smoke.py: needs --run-real-provider
+
+3651 passed, 5 skipped in 131.52s (0:02:11)
+```

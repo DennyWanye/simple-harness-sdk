@@ -16,10 +16,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..contracts.htn import (
-    BindSharedGoalOperation,
     EvidenceRef,
     PlanProposal,
-    ProposeSuccessorOperation,
     ReadItem,
     ReadItemKind,
     RefineOperation,
@@ -42,7 +40,7 @@ from ..contracts.planning_decisions import (
     ResumableIf,
     WaitDecision,
 )
-from ..contracts.semantic_base import VersionedRef, identifier, index
+from ..contracts.semantic_base import VersionedRef, hash_hex, identifier, index
 from .decision_admission import AdmissionContext, AdmittedPlanningDecision
 
 
@@ -128,9 +126,17 @@ class DurableOnly:
 
     decision_type: PlanningDecisionType
     reason: str
+    canonical_hash: str
     wait_for: tuple[PlanningRefV1, ...] = ()
     blockers: tuple[BlockedItemV1, ...] = ()
     resumable_if: tuple[ResumableIf, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "canonical_hash",
+            hash_hex(self.canonical_hash, "durable.canonical_hash"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +170,7 @@ def _versioned_ref(ref: Any) -> VersionedRef:
     return VersionedRef(id=ref.method_id, version=ref.version, content_hash=ref.content_hash)
 
 
-def _method_ref(admitted: AdmittedPlanningDecision, payload_ref: PlanningRefV1) -> VersionedRef:
+def _method_ref(admitted: AdmittedPlanningDecision) -> VersionedRef:
     """Use admission's resolved method identity, never a model-supplied revision."""
 
     if not admitted.method_refs:
@@ -186,18 +192,12 @@ def _instance_id(admitted: AdmittedPlanningDecision, payload_ref: PlanningRefV1)
 
 def _refine_operation(
     admitted: AdmittedPlanningDecision,
-    context: AdapterContext,
     payload: RefineDecision | RepairReplaceMethodDecision,
 ) -> RefineOperation:
     return RefineOperation(
         goal_id=_subject_id(admitted.subject, "task_id"),
         obligation_id=_subject_id(admitted.subject, "obligation_id"),
-        method_ref=_method_ref(
-            admitted,
-            payload.method_ref
-            if isinstance(payload, RefineDecision)
-            else payload.replacement_method_ref,
-        ),
+        method_ref=_method_ref(admitted),
         bindings=dict(payload.bindings),
     )
 
@@ -224,13 +224,14 @@ def _proposal(
     )
 
 
-def _durable(decision: PlanningDecisionEnvelopeV1) -> AdaptedPlanningOutcome:
+def _durable(decision: PlanningDecisionEnvelopeV1, canonical_hash: str) -> AdaptedPlanningOutcome:
     payload = decision.payload
     if isinstance(payload, DeclareBlockedDecision):
         return AdaptedPlanningOutcome(
             durable_only=DurableOnly(
                 decision_type=decision.decision_type,
                 reason=decision.rationale,
+                canonical_hash=canonical_hash,
                 blockers=payload.blockers,
                 resumable_if=payload.resumable_if,
             )
@@ -240,12 +241,17 @@ def _durable(decision: PlanningDecisionEnvelopeV1) -> AdaptedPlanningOutcome:
             durable_only=DurableOnly(
                 decision_type=decision.decision_type,
                 reason=payload.reason,
+                canonical_hash=canonical_hash,
                 wait_for=payload.wait_for,
             )
         )
     if isinstance(payload, NoChangeDecision):
         return AdaptedPlanningOutcome(
-            durable_only=DurableOnly(decision_type=decision.decision_type, reason=payload.reason)
+            durable_only=DurableOnly(
+                decision_type=decision.decision_type,
+                reason=payload.reason,
+                canonical_hash=canonical_hash,
+            )
         )
     raise ContractError("decision is not a durable-only type")
 
@@ -263,13 +269,18 @@ def adapt_admitted_decision(
     decision = admitted.decision
     payload = decision.payload
 
+    if isinstance(payload, (BindExistingGoalDecision, RepairProposeSuccessorDecision)):
+        raise ContractError(
+            f"decision type {decision.decision_type!s} is not enabled in the adapter"
+        )
+
     if decision.decision_type is PlanningDecisionType.REFINE:
         if not isinstance(payload, RefineDecision):
             raise ContractError("REFINE payload is not a RefineDecision")
         return _proposal(
             admitted,
             adapter_context,
-            (_refine_operation(admitted, adapter_context, payload),),
+            (_refine_operation(admitted, payload),),
         )
 
     if decision.decision_type is PlanningDecisionType.REPAIR:
@@ -278,58 +289,21 @@ def adapt_admitted_decision(
                 method_instance_id=_instance_id(admitted, payload.rejected_method_instance),
                 reason=decision.rationale,
             )
-            refine = _refine_operation(admitted, adapter_context, payload)
+            refine = _refine_operation(admitted, payload)
             return _proposal(
                 admitted,
                 adapter_context,
                 (retire, refine),
                 running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE,
             )
-        if isinstance(payload, RepairProposeSuccessorDecision):
-            return _proposal(
-                admitted,
-                adapter_context,
-                (
-                    ProposeSuccessorOperation(
-                        old_task_id=payload.old_task_ref.id,
-                        obligation_id=payload.obligation_ref.id,
-                        goal_type_ref=VersionedRef(
-                            id=payload.goal_type_ref.id,
-                            version=payload.goal_type_ref.version,
-                            content_hash=payload.goal_type_ref.content_hash,
-                        ),
-                        bindings=dict(payload.bindings),
-                    ),
-                ),
-            )
         raise ContractError("REPAIR payload has no enabled repair kind")
-
-    if decision.decision_type is PlanningDecisionType.BIND_EXISTING_GOAL:
-        if not isinstance(payload, BindExistingGoalDecision):
-            raise ContractError("BIND_EXISTING_GOAL payload is not a BindExistingGoalDecision")
-        return _proposal(
-            admitted,
-            adapter_context,
-            (
-                BindSharedGoalOperation(
-                    consumer_method_instance_id=_instance_id(
-                        admitted, payload.consumer_method_instance_ref
-                    ),
-                    step=payload.step,
-                    goal_id=payload.goal_ref.id,
-                    resolution_id=(
-                        None if payload.resolution_ref is None else payload.resolution_ref.id
-                    ),
-                ),
-            ),
-        )
 
     if decision.decision_type in {
         PlanningDecisionType.DECLARE_BLOCKED,
         PlanningDecisionType.WAIT,
         PlanningDecisionType.NO_CHANGE,
     }:
-        return _durable(decision)
+        return _durable(decision, admitted.canonical_hash)
 
     raise ContractError(
         f"decision type {decision.decision_type!s} is not enabled for the adapter"

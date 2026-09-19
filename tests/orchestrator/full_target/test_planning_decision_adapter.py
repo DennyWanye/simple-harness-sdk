@@ -205,67 +205,6 @@ def test_replace_method_is_retire_then_refine_and_requests_stop_then_reconcile()
     )
 
 
-def test_successor_is_byte_equivalent_to_the_existing_successor_proposal() -> None:
-    decision = _envelope(
-        PlanningDecisionType.REPAIR,
-        RepairProposeSuccessorDecision(
-            repair_kind=RepairKind.PROPOSE_SUCCESSOR,
-            old_task_ref=_ref(PlanningRefKind.TASK, "task-old", 4, HASH_A),
-            obligation_ref=_ref(PlanningRefKind.OBLIGATION, "obl-root", 1, HASH_B),
-            goal_type_ref=VersionedTypeRefV1("goal.next", 2, HASH_A),
-            bindings={"target": "README.md"},
-        ),
-    )
-    _assert_equivalent(
-        _admitted(decision),
-        _context(),
-        operations=[
-            {
-                "op": "propose_successor",
-                "old_task_id": "task-old",
-                "obligation_id": "obl-root",
-                "goal_type_ref": {"id": "goal.next", "version": 2, "content_hash": HASH_A},
-                "bindings": {"target": "README.md"},
-            }
-        ],
-    )
-
-
-@pytest.mark.parametrize(
-    ("mode", "resolution"),
-    [
-        (BindExistingGoalMode.REUSE_ACCEPTED, _ref(PlanningRefKind.RESOLUTION, "resolution-1")),
-        (BindExistingGoalMode.SHARE_ACTIVE, None),
-    ],
-)
-def test_both_existing_goal_binding_modes_are_byte_equivalent(
-    mode: BindExistingGoalMode, resolution: PlanningRefV1 | None
-) -> None:
-    decision = _envelope(
-        PlanningDecisionType.BIND_EXISTING_GOAL,
-        BindExistingGoalDecision(
-            mode=mode,
-            consumer_method_instance_ref=_ref(PlanningRefKind.METHOD_INSTANCE, "mi-consumer"),
-            step="inspect",
-            goal_ref=_ref(PlanningRefKind.TASK, "goal-shared"),
-            resolution_ref=resolution,
-        ),
-    )
-    _assert_equivalent(
-        _admitted(decision),
-        _context(),
-        operations=[
-            {
-                "op": "bind_shared_goal",
-                "consumer_method_instance_id": "mi-consumer",
-                "step": "inspect",
-                "goal_id": "goal-shared",
-                "resolution_id": None if resolution is None else resolution.id,
-            }
-        ],
-    )
-
-
 def test_decode_only_existing_goal_binding_is_a_programming_error_if_admitted() -> None:
     decision = _envelope(
         PlanningDecisionType.BIND_EXISTING_GOAL,
