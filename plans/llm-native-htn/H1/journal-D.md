@@ -634,3 +634,77 @@ sealed 文本不含 `authoritative_refs` / `visible_refs_omitted`；§5.1 生产
 | full_target 全绿 | `3094 passed, 2 skipped in 123.00s (0:02:03)` | ✅ |
 | 旧协议字节不变（黄金测试未改） | 黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等 | ✅ |
 | ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |
+
+---
+
+## 13. 第 6 轮处置（核验结论：修后可合）
+
+**核验来源：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 6」小节（同一核验员续做；
+上一轮核验副本 HEAD `75be3df`，本轮验 `a5acea1`）。P0 无；P1 两条（P1-9 / P1-10，均为「测试输入退化
+使断言失去鉴别力」的缺口，实现本身已正确）；P2-14 记录三条等价变异。
+
+### 13.1 P1-9：`_network_authorities` 的 revision 来源未被判别性钉死（C4 SURVIVED）
+
+**问题。** 把 `semantic_revision` 改成 `int(network.plan_revision) + int(binding.contract_revision)`
+后 82 条全过——现有 fixture 世界的 `plan_revision` **恰好为 0**，该表达式与 binding 修订号数值相同。
+生产世界 `plan_revision > 0`（提交后即非 0），此变异会把 ref 写成 `plan_revision + binding_revision`，
+与 `task_semantics.binding_revision` 不一致，破坏 §17 四元组逐字节匹配。
+
+**修复。** 新增 `test_a_task_ref_revision_is_the_binding_not_the_plan_revision`：构造
+`plan_revision = 5`、`binding.contract_revision = 1`，断言 ref `semantic_revision == 1` 且
+`!= plan_revision + contract_revision`。变异 C4 → `1 failed, 84 passed`（KILLED）。
+
+### 13.2 P1-10：`_ref_sort_key` 的 revision 分量类型未被钉死（C7 SURVIVED）
+
+**问题。** 把 `int(ref["semantic_revision"])` 改成 `str(...)` 后 82 条全过——现有用例只用到 revision
+1 / 2（同一数量级），`str` 与 `int` 排序结果相同。两位数字 revision 下字典序会把 `"10"` 排在 `"2"`
+前；`visible_refs` 的数组顺序参与 canonical hash（§15），故属行为差异。
+
+**修复。** 新增 `test_the_refs_are_sorted_by_revision_numerically_not_as_strings`（同 `(kind,id)`
+下 v10 与 v2，断言升序为 `[2, 10]`）。变异 C7 → `1 failed, 84 passed`（KILLED）。
+
+### 13.3 自查：其它「恰好相等 / 恰好同数量级」的鉴别力缺口
+
+按任务书要求再次系统自查（对本轮相关排序键 / 去重键 / 来源表达式做变异扫描），又发现并补上一个同类缺口：
+
+- **`_authority_sort_key` 的 revision 分量**：合并对同一 `(kind,id)` 分组取最小行；若该分量用
+  `str` 比较，rev 10 会被当成小于 rev 2（`"10" < "2"`），从而选出错误胜者。新增
+  `test_caller_authority_revisions_sort_numerically_not_as_strings`（同一 obligation 键的 rev 10
+  与 rev 2，断言胜出者 rev == 2）。变异 `A_rev_str` → `1 failed, 84 passed`（KILLED）。
+
+以下退化经证为**等价**（非缺口）：`_authority_sort_key` 的 kind / id 分量在分组内为常量（丢弃不改变
+胜者）；畸形行透传与否被 `_authority_index` 一律跳过；`_one_ref` 的 revision 下界/类型分支已有用例
+（`one_ref_bool`、`one_ref_hash_optional` 均 KILLED）。
+
+### 13.4 本轮变异汇总（复核 6 的存活项 + 自查项）
+
+```text
+C4  revision 取 plan_revision + contract_revision -> 1 failed, 84 passed
+C7  _ref_sort_key revision 用 str()               -> 1 failed, 84 passed
+A_rev_str  _authority_sort_key revision 用 str()  -> 1 failed, 84 passed
+R_drop_kind / R_drop_id / R_drop_rev / R_drop_hash -> KILLED（1–3 failed）
+R_rev_str                                           -> 1 failed, 84 passed
+A_drop_hash                                         -> 1 failed, 84 passed
+D_dedup_drop_id / _rev / _hash                      -> KILLED（1–2 failed）
+M_drop_kind / M_drop_id                             -> KILLED（2 failed）
+A7  revision 写死 1                                 -> 1 failed, 84 passed
+```
+
+共 14 个变异全部 KILLED。变异均以 `/tmp` 副本注入并恢复（`diff -q` 校验恢复后与备份一致），未使用
+任何 git 写命令。
+
+### 13.5 保持不变项（复核确认）
+
+旧协议字节不变（黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等）；新协议包顶层键 = 旧键 + **恰好五项**；
+sealed 文本不含 `authoritative_refs` / `visible_refs_omitted`；§5.1 生产路径 task 哈希 =
+`binding.content_hash()`；合并语义与调用方行序无关。
+
+### 13.6 本轮验收门
+
+| 完成标准 | 证据 | 结果 |
+|---|---|---|
+| 本片测试文件全绿 | `85 passed in 0.61s` | ✅ |
+| 相关四文件全绿 | `358 passed in 9.18s` | ✅ |
+| full_target 全绿 | `3097 passed, 2 skipped in 123.09s (0:02:03)` | ✅ |
+| 旧协议字节不变（黄金测试未改） | 黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等 | ✅ |
+| ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |

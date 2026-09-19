@@ -966,6 +966,23 @@ def test_the_refs_are_sorted_by_id_ahead_of_revision_and_hash() -> None:
     assert [item["id"] for item in refs_of(package)] == ["m-a", "m-z"]
 
 
+def test_the_refs_are_sorted_by_revision_numerically_not_as_strings() -> None:
+    """P1-10: revision 10 must sort *after* 2, so the component is an int, not a str.
+
+    ``_ref_sort_key`` compares the revision as an integer; if it were compared as a
+    string, ``"10" < "2"`` would put revision 10 first.  The array order of
+    ``visible_refs`` feeds the canonical hash (§15), so this is behaviour, not style.
+    """
+
+    package = empty_package(
+        method_library=[
+            {"refine_method_ref": {"id": "m-same", "version": 10, "content_hash": "a" * 64}},
+            {"refine_method_ref": {"id": "m-same", "version": 2, "content_hash": "a" * 64}},
+        ]
+    )
+    assert [item["semantic_revision"] for item in refs_of(package)] == [2, 10]
+
+
 def test_the_refs_are_sorted_by_revision_ahead_of_hash() -> None:
     """Self-audit: two refs sharing (kind, id) whose revision order opposes hash order."""
 
@@ -1269,6 +1286,32 @@ def test_the_production_path_task_hash_is_the_bindings_own_digest(tmp_path: Any)
         assert ref["content_hash"] != derived
 
 
+def test_a_task_ref_revision_is_the_binding_not_the_plan_revision() -> None:
+    """P1-9: §5.1's ``semantic_revision`` is ``binding_revision`` — never ``plan_revision``.
+
+    The fixture worlds all sit at ``plan_revision = 0``, so ``int(network.plan_revision)
+    + int(binding.contract_revision)`` is indistinguishable from the binding's own
+    revision there.  With ``plan_revision = 5`` and a binding at revision 1 the ref
+    must still read 1: a plan-revision offset would break the §17 byte-match against
+    ``task_semantics.binding_revision``.
+    """
+
+    network = _WideNetwork(1)
+    binding = network.task_bindings[0]
+    network.plan_revision = 5
+    binding.contract_revision = 1
+    package = hierarchical_planner_package(
+        _Mission(),
+        network,
+        registry=None,
+        planning_protocol=PLANNING_DECISION_V1,
+    )
+    emitted = {(item["kind"], item["id"]): dict(item) for item in package["visible_refs"]}
+    ref = emitted[("task", str(binding.task_id))]
+    assert ref["semantic_revision"] == int(binding.contract_revision) == 1
+    assert ref["semantic_revision"] != int(network.plan_revision) + int(binding.contract_revision)
+
+
 def test_a_task_ref_revision_comes_from_the_binding_even_past_one(tmp_path: Any) -> None:
     """P1-8: §5.1's ``semantic_revision`` is ``binding_revision``, not the constant 1.
 
@@ -1499,6 +1542,36 @@ def test_a_caller_row_cannot_override_the_builders_task_digest(tmp_path: Any) ->
     emitted = {(item["kind"], item["id"]): dict(item) for item in package["visible_refs"]}
     assert emitted[("task", str(binding.task_id))]["content_hash"] == binding.content_hash()
     assert emitted[("task", str(binding.task_id))]["content_hash"] != bogus["content_hash"]
+
+
+def test_caller_authority_revisions_sort_numerically_not_as_strings() -> None:
+    """Self-audit: the authority sort key's revision is an int too (P1-10 sibling).
+
+    ``_authority_sort_key`` fixes the winner of a duplicate ``(kind, id)``; with
+    revisions 2 and 10 the numeric minimum is 2.  A string comparison would pick 10
+    (``"10" < "2"``), so the emitted obligation ref would carry the wrong revision.
+    """
+
+    shared = "shared"
+    network = _WideNetwork(1)
+    binding = network.task_bindings[0]
+    binding.task_id = shared
+    binding.obligation_id = shared
+    network.occurrences[0].task_id = shared
+    network.occurrences[0].obligation_id = shared
+    network.root_occurrence_ids = (network.occurrences[0].occurrence_id,)
+    package = hierarchical_planner_package(
+        _Mission(),
+        network,
+        registry=None,
+        planning_protocol=PLANNING_DECISION_V1,
+        authoritative_refs=[
+            authority("obligation", shared, 10, "a" * 64),
+            authority("obligation", shared, 2, "a" * 64),
+        ],
+    )
+    emitted = {(item["kind"], item["id"]): dict(item) for item in package["visible_refs"]}
+    assert emitted[("obligation", shared)]["semantic_revision"] == 2
 
 
 def test_the_caller_authority_rows_are_plain_quadruples(tmp_path: Any) -> None:
