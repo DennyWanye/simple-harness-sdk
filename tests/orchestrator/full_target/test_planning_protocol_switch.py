@@ -165,11 +165,32 @@ def test_policy_snapshot_digest_does_not_include_planning_protocol(tmp_path) -> 
     from agent_orchestrator.runtime.assembly import OrchestratorConfig
 
     legacy = _spec("policy-legacy")
-    enabled = replace(legacy, planning_protocol_version=PLANNING_DECISION_V1)
+    enabled = replace(
+        legacy,
+        idempotency_key="policy-enabled",
+        planning_protocol_version=PLANNING_DECISION_V1,
+    )
     assert enabled.to_json() != legacy.to_json()
     first = policy_snapshot(OrchestratorConfig(evidence_root=tmp_path / "legacy"))
     second = policy_snapshot(OrchestratorConfig(evidence_root=tmp_path / "enabled"))
     assert first["hash"] == second["hash"]
+    assert "planning_protocol_version" not in first["config"]
+    assert "planning_protocol_version" not in json.dumps(first)
+
+    store = Store.open(tmp_path / "policy.db")
+    service = CommitService(store)
+    legacy_mission, _ = service.create_mission(legacy)
+    enabled_mission, _ = service.create_mission(enabled)
+    legacy_binding = store.get_mission_policy(legacy_mission.id)
+    enabled_binding = store.get_mission_policy(enabled_mission.id)
+    assert legacy_binding is not None and enabled_binding is not None
+    legacy_policy = store.get_policy_version(legacy_binding["version_id"])
+    enabled_policy = store.get_policy_version(enabled_binding["version_id"])
+    assert legacy_policy is not None and enabled_policy is not None
+    assert legacy_policy["params_hash"] == enabled_policy["params_hash"]
+    assert legacy_policy["params"] == enabled_policy["params"]
+    assert "planning_protocol_version" not in legacy_policy["params"]
+    assert "planning_protocol_version" not in enabled_policy["params"]
 
 
 def test_binding_survives_a_new_connection(tmp_path) -> None:

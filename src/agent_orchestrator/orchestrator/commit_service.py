@@ -286,6 +286,7 @@ class MissionSpec:
             data["planning_protocol_version"] = self.planning_protocol_version
         return data
 
+
 @dataclass(frozen=True, slots=True)
 class TaskProposal:
     """What the Planner proposes (§6.3 / §15); never applied without a Commit."""
