@@ -483,3 +483,74 @@ def test_the_slice_touches_no_file_outside_its_allowlist() -> None:
 
     source = inspect.getsource(spec_from_request)
     assert "planning_protocol_version" not in source
+
+
+# ---------------------------------------------------------------------------------------
+# The two assertions the independent review found missing (P1-1, P1-2).
+# ---------------------------------------------------------------------------------------
+
+
+def test_the_binding_hash_names_the_protocol_and_is_sensitive_to_it() -> None:
+    """The digest must be the *three*-field document, for either wire name (§8.2).
+
+    The creation test pins the digest of the new protocol only, and the constant it
+    compares against carries ``planning-decision-v1`` twice — once as the well-known
+    ``PLANNING_PROTOCOL_BINDING`` entry and once as the requested name — so a digest
+    computed from the constant alone lands on the same value.  Compute the expected
+    document here from the *argument* instead, and pin that the two names differ: a
+    hash that ignores the protocol name would collide the two binding identities, which
+    contradicts the per-mission ``protocol_version`` column it is stored next to.
+    """
+
+    from agent_orchestrator.orchestrator.planning_protocol_binding import (
+        planning_protocol_binding_hash,
+    )
+
+    for protocol in (LEGACY_PLANNING_PROTOCOL, PLANNING_DECISION_V1):
+        document = {
+            "protocol_version": protocol,
+            "package_version": 4,
+            "prompt_version": "planner-hierarchical-v8",
+        }
+        expected = hashlib.sha256(
+            json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+        assert planning_protocol_binding_hash(protocol) == expected
+    assert planning_protocol_binding_hash(LEGACY_PLANNING_PROTOCOL) != (
+        planning_protocol_binding_hash(PLANNING_DECISION_V1)
+    )
+
+
+def test_the_snapshot_mechanism_would_expose_a_config_field_marked_include(
+    tmp_path, monkeypatch
+) -> None:
+    """Make the ``policy_snapshot`` guard discriminating instead of vacuous (P1-2).
+
+    ``test_policy_snapshot_digest_does_not_include_planning_protocol`` asserts that a key
+    the config does not even have is absent, which proves nothing: ``SNAPSHOT_FIELDS`` is
+    consulted by *config field name*, so the guard only bites once a field the config
+    really carries is marked ``include``.  Mark a real field, show the digest moves, then
+    show that the switch is not that field — the guard is about the mechanism.
+    """
+
+    from agent_orchestrator.governance import policies
+    from agent_orchestrator.runtime.assembly import OrchestratorConfig
+
+    witness = "owner_id"
+    assert policies.SNAPSHOT_FIELDS.get(witness) != "include"
+    baseline = policies.policy_snapshot(OrchestratorConfig(evidence_root=tmp_path / "base"))
+    assert witness not in baseline["config"]
+
+    with monkeypatch.context() as patch:
+        patch.setitem(policies.SNAPSHOT_FIELDS, witness, "include")
+        promoted = policies.policy_snapshot(OrchestratorConfig(evidence_root=tmp_path / "base"))
+    assert witness in promoted["config"]
+    assert promoted["hash"] != baseline["hash"]
+
+    # …and the switch itself is not a config field, so no ``include`` row can smuggle it
+    # into the digest: this is the fact the weaker assertion was trying (and failing) to
+    # state.
+    assert "planning_protocol_version" not in policies.SNAPSHOT_FIELDS
+    assert "planning_protocol_version" not in {
+        field.name for field in __import__("dataclasses").fields(OrchestratorConfig)
+    }
