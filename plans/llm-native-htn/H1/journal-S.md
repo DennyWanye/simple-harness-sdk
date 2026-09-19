@@ -251,22 +251,24 @@ P2-5 的修补（按 mission id 计数）使 M3 的失败用例从 4 条增至 5
 
 ---
 
-## 5. 验收门（本机实测，原样粘贴；数字为**修复后** `8df04e6` 的复测值）
+## 5. 验收门（本机实测，原样粘贴；数字为**本次处置后** `328750d` 的复测值）
 
 ```text
 $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_protocol_switch.py -q -p no:cacheprovider
-.................                                                        [100%]
-17 passed in 0.44s
+...................                                                      [100%]
+19 passed in 0.44s
 ```
 
 ```text
 $ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
-3495 passed, 2 skipped in 127.58s (0:02:07)
+3497 passed, 2 skipped in 135.09s (0:02:15)
 ```
 
+与核验员同口径的旧模式集合（含 `p35`）：
+
 ```text
-$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/step02 tests/orchestrator/step05 tests/orchestrator/step06 tests/orchestrator/step07 tests/orchestrator/p34 -q -p no:cacheprovider
-350 passed, 13 skipped in 126.52s (0:02:06)
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/step02 tests/orchestrator/step05 tests/orchestrator/step06 tests/orchestrator/step07 tests/orchestrator/p34 tests/orchestrator/p35 -q -p no:cacheprovider
+560 passed, 13 skipped in 204.89s (0:03:24)
 ```
 
 ```text
@@ -274,21 +276,25 @@ $ uv run --offline ruff check src/agent_orchestrator/orchestrator/commit_service
 All checks passed!
 ```
 
-### 5.0 闸门本身（`sdk_gate.sh`，修复前 → 修复后）
+### 5.0 闸门本身（`sdk_gate.sh`）
 
 ```text
-$ sdk_gate.sh "$PWD" 0d89307 --allow .../h1s-allow.txt --tests "tests/orchestrator/full_target/test_planning_protocol_switch.py" --max-sentinel 26 --out /tmp/gate-after.json
+$ sdk_gate.sh "$PWD" 0d89307 --allow .../h1s-allow.txt --tests "tests/orchestrator/full_target/test_planning_protocol_switch.py" --max-sentinel 26 --out /tmp/gate-disposition.json
 sdk_gate: ok=true (failed items: -)
 ```
 
 8 项 `clean / allowlist / contracts_frozen / no_secrets / ruff / import_origin / targeted / sentinel`
-全部 `ok=true`；`targeted` 为 `passed=17 failed=0 errors=0`，`sentinel count=26 (max=26)`。
-修复前同一命令为 `ok=false (failed items: allowlist)`。
+全部 `ok=true`；`targeted` 为 `passed=19 failed=0 errors=0`，`sentinel count=26 (max=26)`。
 
-### 5.1 「旧模式 560」与本次实测的差异（必须记录，不得当作本片回归）
+历史对照：`gate-1.json`（对 `3362c4c`）为 `ok=false (failed items: allowlist)`；
+`8df04e6` 之后 `targeted` 为 `passed=17`。
 
-任务书引用的旧模式基线是 `560/13/0`（`tests/orchestrator/{step02,step05,step06,step07,p34,p35}`，
-见 `journal-C.md` §5）。本次在同一组目录实测为 1–3 条失败，且**逐条证明为既有/环境问题**：
+### 5.1 旧模式回归（含 `p35`，与核验员同口径）
+
+`tests/orchestrator/{step02,step05,step06,step07,p34,p35}` 本机实测 **`560 passed, 13 skipped`**，
+与任务书引用的基线 `560/13/0`（`journal-C.md` §5）一致，**无回归**。
+
+下表为**不在该集合内**、但为审慎起见单独跑过的目录，逐条证明为既有/环境问题：
 
 | 目录/用例 | 实测 | 结论 |
 |---|---|---|
@@ -317,8 +323,11 @@ sdk_gate: ok=true (failed items: -)
 
 ## 7. 结果
 
-- 提交链：上一位 `37af171`–`43ecd37`；接手者 `d7986a2`（红测试）、`3108556`（实现）、`3362c4c`（日志）；
-  第三位接手者 `c5c8f12`（红测试）、`8df04e6`（修复 + 本日志）。
-- 专项 17 条全绿；`full_target` 3495 passed / 2 skipped；旧模式集合（无环境限制部分）350 passed / 13 skipped。
+- 提交链：`37af171`–`43ecd37`（第一位）→ `d7986a2`、`3108556`、`3362c4c`（第二位）→
+  `c5c8f12`、`8df04e6`、`a57ccc7`（第三位）→ `04115f9`、`328750d`（本次）。
+- 专项 **19 条全绿**；`full_target` **3497 passed / 2 skipped**；旧模式集合（含 `p35`）
+  **560 passed / 13 skipped**，与基线一致；`ruff` 本片文件全绿。
+- **独立核验的 3 条 P1 与 4 条 P2 已全部处置**：P1-1/P1-2 的两个存活变异实测已 KILLED；
+  P1-3 落为 `BLOCKER-H1-S.md`（白名单内）；P2-1/P2-3/P2-4/P2-5 已修，P2-2 按核验结论备案不改语义。
 - **白名单内改动已收敛**：`api/missions.py` 与基线 `0d89307` 逐字节相同，本片不再有任何越界文件；
-  闸门 8 项全绿。
+  闸门 8 项全绿；工作树干净。
