@@ -112,7 +112,7 @@ ADMISSION_CODE_CASES: dict[str, str] = {
     "REF_OUTSIDE_CONTEXT": "test_a_one_character_difference_in_any_quadruple_component_is_refused",
     "REQUEST_BINDING_STALE": "test_plan_revision_mismatch_is_request_binding_stale",
     "PACKAGE_HASH_MISMATCH": "test_a_package_or_prompt_binding_mismatch_is_refused",
-    "DECISION_NOT_ENABLED_IN_PHASE": "test_a_decode_only_type_is_phase_refused",
+    "DECISION_NOT_ENABLED_IN_PHASE": "test_every_decode_only_valid_fixture_is_phase_refused",
     "METHOD_NOT_FOUND": "test_a_method_the_library_does_not_hold_is_refused",
     "METHOD_STALE": "test_a_method_behind_the_library_revision_is_refused",
     "METHOD_RETIRED": "test_a_retired_method_is_refused",
@@ -1284,3 +1284,281 @@ def test_the_repair_kind_of_the_payload_names_the_enabled_key() -> None:
 
 def test_only_the_admission_codes_are_listed_as_this_slice_owner() -> None:
     assert PlanningDecisionType.REFINE in PlanningDecisionType
+
+
+# --------------------------------------------------------------------------------------
+# The review round: every hole an independent mutator could punch must fail a test.
+#
+# The battery behind the previous round found mutations that survived the suite: a
+# check that is never entered (an empty list, a hidden citation, a same-id-wrong-hash
+# instance) or a comparison that quietly drops a component.  These tests exist so
+# each of those mutations turns red instead of just changing behaviour.
+# --------------------------------------------------------------------------------------
+
+
+def _raw_fixture(name: str) -> dict[str, Any]:
+    return json.loads(json.dumps(_read(VALID_DIR / f"{name}.json")))
+
+
+def _exposed(*refs: PlanningRefV1) -> tuple[PlanningRefV1, ...]:
+    """The default saved list with the given quadruples added to it."""
+
+    seen = {_key(ref): ref for ref in _context().visible_refs}
+    for ref in refs:
+        seen[_key(ref)] = ref
+    return tuple(seen[key] for key in sorted(seen))
+
+
+# --- P1-1: an empty collection must not crash the feedback builder ----------------
+
+def test_an_empty_enabled_set_refuses_rather_than_crashing() -> None:
+    # §12: a phase that enables nothing still owes the model a refusal, not an
+    # exception.  The gate's ``expected`` list is empty here, and §40 allows the
+    # field to be absent instead of blank.
+    feedback = _reject(_valid_envelope("refine"), _context(enabled_decision_types=frozenset()))
+    assert _codes(feedback) == ["DECISION_NOT_ENABLED_IN_PHASE"]
+    assert feedback.problems[0].field_path == "/decision_type"
+    assert feedback.problems[0].observed == "REFINE"
+    assert feedback.problems[0].expected in (None, "")
+
+
+def test_empty_bindings_refuse_rather_than_crashing() -> None:
+    # A method that needs a parameter and a reply that binds nothing is a common
+    # model mistake; the ``observed`` side of that problem is the empty binding set.
+    raw = _raw_fixture("refine")
+    raw["payload"]["bindings"] = {}
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    context = _context(
+        methods=_with_method(_method(required_parameters=("target",)), "code.fix-by-patch")
+    )
+    feedback = _reject(decision, context)
+    assert _codes(feedback) == ["PARAMETER_INVALID"]
+    assert feedback.problems[0].field_path == "/payload/bindings"
+    assert feedback.problems[0].expected == "target"
+    assert feedback.problems[0].observed in (None, "")
+
+
+# --- P1-2: an empty saved list is a refusal, not a pass ---------------------------
+
+def test_an_empty_saved_list_still_refuses_a_cited_reference() -> None:
+    determination = _reject(
+        _valid_envelope("refine"),
+        _context(visible_refs=()),
+    )
+    assert _codes(determination) == ["REF_OUTSIDE_CONTEXT"]
+    assert determination.problems[0].field_path == "/payload/method_ref"
+
+
+def test_an_empty_saved_list_still_refuses_a_wait_target() -> None:
+    feedback = _reject(_valid_envelope("wait"), _context(visible_refs=()))
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/wait_for/0"
+
+
+def test_an_empty_saved_list_does_not_block_a_decision_that_cites_nothing() -> None:
+    # The complement: NO_CHANGE names no reference, so an unexposed plan is no
+    # reason to refuse it.  Without this the "empty list refuses everything"
+    # reading would be untested.
+    outcome = _admit(_valid_envelope("no-change"), _context(visible_refs=()))
+    assert isinstance(outcome, AdmittedPlanningDecision)
+
+
+# --- P1-3 / P2-4: method identity is version AND content hash ---------------------
+
+def test_a_method_whose_hash_moved_under_the_same_version_is_refused() -> None:
+    raw = _raw_fixture("refine")
+    raw["payload"]["method_ref"]["content_hash"] = HASH_B
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    method_ref = decision.payload.method_ref  # type: ignore[union-attr]
+    feedback = _reject(decision, _context(visible_refs=_exposed(method_ref)))
+    assert _codes(feedback) == ["METHOD_STALE"]
+    problem = feedback.problems[0]
+    # §24 identity is the pair, so the feedback must name both sides: the library's
+    # hash and the one the reply cited.  Writing the version twice would tell the
+    # model nothing.
+    assert problem.expected == f"2@{HASH_A}"
+    assert problem.observed == f"2@{HASH_B}"
+    assert problem.expected != problem.observed
+
+
+def test_a_method_whose_version_moved_is_still_refused() -> None:
+    # The companion of the hash test: the version component still speaks.
+    raw = _raw_fixture("refine")
+    raw["payload"]["method_ref"]["semantic_revision"] = 3
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    method_ref = decision.payload.method_ref  # type: ignore[union-attr]
+    feedback = _reject(decision, _context(visible_refs=_exposed(method_ref)))
+    assert _codes(feedback) == ["METHOD_STALE"]
+    assert feedback.problems[0].expected == f"2@{HASH_A}"
+
+
+# --- P1-4 .. P1-10, P1-13, P1-14: every cited reference is scanned -----------------
+
+#: One row per citation site: (valid fixture, JSON pointer, the reference it names).
+#: Hiding that reference from the saved list must yield REF_OUTSIDE_CONTEXT; a
+#: mutation that stops scanning the site admits the decision instead.
+CITATION_SITES: tuple[tuple[str, str], ...] = (
+    ("refine", "/payload/method_ref"),
+    ("repair-replace-method", "/payload/rejected_method_instance"),
+    ("repair-replace-method", "/payload/replacement_method_ref"),
+    ("repair-propose-successor", "/payload/old_task_ref"),
+    ("repair-propose-successor", "/payload/obligation_ref"),
+    ("bind-existing-goal-reuse", "/payload/consumer_method_instance_ref"),
+    ("bind-existing-goal-reuse", "/payload/goal_ref"),
+    ("bind-existing-goal-reuse", "/payload/resolution_ref"),
+    ("wait", "/payload/wait_for/0"),
+)
+
+
+def _pointer_value(raw: dict[str, Any], pointer: str) -> PlanningRefV1:
+    """The reference a JSON pointer locates inside a fixture."""
+
+    node: Any = raw
+    for token in pointer.split("/")[1:]:
+        node = node[int(token)] if token.isdigit() else node[token]
+    return PlanningRefV1.from_json(node)
+
+
+@pytest.mark.parametrize(
+    ("name", "pointer"),
+    CITATION_SITES,
+    ids=[f"{name}{pointer}" for name, pointer in CITATION_SITES],
+)
+def test_a_citation_the_saved_list_does_not_hold_is_refused(name: str, pointer: str) -> None:
+    raw = _raw_fixture(name)
+    hidden = _pointer_value(raw, pointer)
+    exposed = tuple(ref for ref in _context().visible_refs if _key(ref) != _key(hidden))
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context(visible_refs=exposed))
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"], (name, pointer)
+    assert feedback.problems[0].field_path == pointer
+
+
+def test_the_wait_target_is_compared_as_a_full_quadruple() -> None:
+    # A WAIT whose target moved by one revision is not the work that was exposed.
+    raw = _raw_fixture("wait")
+    raw["payload"]["wait_for"][0]["semantic_revision"] = 2
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context())
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/wait_for/0"
+
+
+def test_a_moved_goal_ref_is_refused() -> None:
+    raw = _raw_fixture("bind-existing-goal-share")
+    raw["payload"]["goal_ref"]["content_hash"] = HASH_C
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context())
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/goal_ref"
+
+
+def test_a_moved_consumer_instance_ref_is_refused() -> None:
+    raw = _raw_fixture("bind-existing-goal-reuse")
+    raw["payload"]["consumer_method_instance_ref"]["content_hash"] = HASH_C
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context())
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/consumer_method_instance_ref"
+
+
+def test_a_moved_successor_old_task_ref_is_refused() -> None:
+    raw = _raw_fixture("repair-propose-successor")
+    raw["payload"]["old_task_ref"]["semantic_revision"] = 5
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context())
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/old_task_ref"
+
+
+def test_a_moved_successor_obligation_ref_is_refused() -> None:
+    raw = _raw_fixture("repair-propose-successor")
+    raw["payload"]["obligation_ref"]["content_hash"] = HASH_A
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context())
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/obligation_ref"
+
+
+def test_a_moved_repair_instance_ref_is_refused() -> None:
+    raw = _raw_fixture("repair-replace-method")
+    raw["payload"]["rejected_method_instance"]["content_hash"] = HASH_A
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context())
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/rejected_method_instance"
+
+
+def test_a_moved_replacement_method_ref_is_refused() -> None:
+    raw = _raw_fixture("repair-replace-method")
+    raw["payload"]["replacement_method_ref"]["semantic_revision"] = 2
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context())
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/replacement_method_ref"
+
+
+def test_a_moved_resolution_ref_is_refused() -> None:
+    raw = _raw_fixture("bind-existing-goal-reuse")
+    raw["payload"]["resolution_ref"]["semantic_revision"] = 2
+    decision = PlanningDecisionEnvelopeV1.from_json(raw)
+    feedback = _reject(decision, _context())
+    assert _codes(feedback) == ["REF_OUTSIDE_CONTEXT"]
+    assert feedback.problems[0].field_path == "/payload/resolution_ref"
+
+
+# --- P1-6: the repair target is the instance that quadruple names ------------------
+
+def test_a_repair_target_with_the_right_id_and_the_wrong_hash_is_refused() -> None:
+    feedback = _reject(
+        _valid_envelope("repair-replace-method"),
+        _context(
+            active_method_instances=(
+                _instance(content_hash=HASH_A),
+                _instance(instance_id="mi-2", semantic_revision=1, content_hash=HASH_A),
+            )
+        ),
+    )
+    assert _codes(feedback) == ["METHOD_RETIRED"]
+    assert feedback.problems[0].field_path == "/payload/rejected_method_instance"
+
+
+def test_a_repair_target_whose_revision_moved_is_refused() -> None:
+    feedback = _reject(
+        _valid_envelope("repair-replace-method"),
+        _context(
+            active_method_instances=(
+                _instance(semantic_revision=4),
+                _instance(instance_id="mi-2", semantic_revision=1, content_hash=HASH_A),
+            )
+        ),
+    )
+    assert _codes(feedback) == ["METHOD_RETIRED"]
+
+
+# --- P1-11 / P1-12: every binding revision component speaks ------------------------
+
+def test_a_moved_requirements_revision_is_request_binding_stale() -> None:
+    feedback = _reject(_valid_envelope("refine"), _context(requirements_revision=12))
+    assert _codes(feedback) == ["REQUEST_BINDING_STALE"]
+    assert feedback.problems[0].field_path == "/requirements_revision"
+
+
+def test_a_moved_scope_epoch_is_request_binding_stale() -> None:
+    feedback = _reject(_valid_envelope("refine"), _context(scope_epoch_digest=HASH_A))
+    assert _codes(feedback) == ["REQUEST_BINDING_STALE"]
+    assert feedback.problems[0].field_path == "/scope_epoch_digest"
+
+
+def test_every_binding_revision_component_is_compared() -> None:
+    # One row per §34 component: the request record's value drifting from the
+    # world's makes the reply late, and the pointer names which one drifted.
+    rows = (
+        ({"plan_revision": 8}, "/request_binding/plan"),
+        ({"requirements_revision": 12}, "/requirements_revision"),
+        ({"scope_epoch_digest": HASH_C}, "/scope_epoch_digest"),
+    )
+    for overrides, pointer in rows:
+        feedback = _reject(_valid_envelope("refine"), _context(**overrides))
+        assert _codes(feedback) == ["REQUEST_BINDING_STALE"], overrides
+        assert feedback.problems[0].field_path == pointer
