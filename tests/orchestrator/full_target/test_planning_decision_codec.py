@@ -39,6 +39,7 @@ from agent_orchestrator.planning.decision_codec import (
     METHOD_BLOCK_TAG,
     PLANNING_DECISION_CODEC_V1,
     PLANNING_DECISION_TAG,
+    SYSTEM_FIELD_KEYS,
     PlanningDecisionCodecError,
     allocate_decision_id,
     canonical_decision_json,
@@ -50,6 +51,7 @@ from agent_orchestrator.planning.decision_codec import (
 from agent_orchestrator.planning.htn.registry import MethodProposal
 from agent_orchestrator.planning.htn.seed_methods.loader import fill_content_hashes
 from agent_orchestrator.planning.planner import parse_plan_proposal
+from agent_orchestrator.runtime.output_blocks import BlockError
 
 HASH_A = "a" * 64
 HASH_B = "b" * 64
@@ -57,6 +59,36 @@ HASH_B = "b" * 64
 REJECTION = PlanningDecisionRejectionCode
 PROPOSAL_FIXTURE = (
     Path(__file__).resolve().parent / "fixtures" / "htn" / "proposals" / "valid.json"
+)
+
+#: V2 §32, transcribed as a literal.  The codec's ``SYSTEM_FIELD_KEYS`` must equal
+#: exactly this set, and every one of these keys must be refused at each of the
+#: three structural scan positions — a missing key would otherwise slip through to
+#: a plain UNKNOWN_FIELD (or, worse, a successful decode).
+SECTION_32_SYSTEM_FIELDS = (
+    "mission_id",
+    "tenant_id",
+    "principal",
+    "principal_id",
+    "scope",
+    "scope_id",
+    "manager_epoch",
+    "budget_account",
+    "budget_grant_revision",
+    "registry_status",
+    "opened_by",
+    "authorization_ref",
+    "grant_ref",
+    "provenance",
+    "authored_by",
+    "dispatch_generation",
+    "plan_revision",
+    "expected_plan_revision",
+    "operation_id",
+    "acceptance_id",
+    "approval_id",
+    "decision_id",
+    "request_id",
 )
 
 
@@ -197,6 +229,37 @@ def test_a_non_object_block_is_malformed() -> None:
     assert _code_of(text) == REJECTION.MALFORMED_DECISION
 
 
+def test_the_block_error_table_covers_the_closed_reason_set() -> None:
+    # `extract_block` (H1-C does not modify it) can only raise these five reasons,
+    # and every one of them must be named in the codec's mapping table — otherwise
+    # a real refusal would silently ride the fallback code.
+    from agent_orchestrator.planning import decision_codec
+
+    assert set(decision_codec._BLOCK_ERROR_CODES) == {
+        "empty_output",
+        "block_missing",
+        "block_ambiguous",
+        "invalid_json",
+        "not_an_object",
+    }
+
+
+def test_an_unmapped_block_error_falls_back_to_malformed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # C.1 lists the mappings `extract_block` can produce; the `.get(..., MALFORMED)`
+    # fallback is the guard for any reason it grows later.  Pin it directly: a
+    # fallback that became MULTIPLE_DECISIONS (or any other code) is a wrong repair
+    # hint for an unclassifiable block, so it must be MALFORMED_DECISION.
+    from agent_orchestrator.planning import decision_codec
+
+    def boom(text: str, tag: str) -> dict:
+        raise BlockError("a_reason_extract_block_might_grow_later", "synthetic")
+
+    monkeypatch.setattr(decision_codec, "extract_block", boom)
+    with pytest.raises(PlanningDecisionCodecError) as caught:
+        parse_planning_decision("anything")
+    assert caught.value.code == REJECTION.MALFORMED_DECISION
+
+
 # --------------------------------------------------------------------------------------
 # C-N6, C-N7, C-N8: unknown keys and the structural system-field guard.
 # --------------------------------------------------------------------------------------
@@ -207,26 +270,47 @@ def test_an_unknown_top_level_key_is_unknown_field() -> None:
     assert _code_of(_block(_envelope(model_says_approved=True))) == REJECTION.UNKNOWN_FIELD
 
 
-@pytest.mark.parametrize("key", ["mission_id", "plan_revision", "decision_id"])
+def test_the_system_field_keys_are_exactly_section_32() -> None:
+    # §32's 23 keys, pinned as a literal so deleting one (e.g. `request_id`) is red
+    # rather than a set that quietly shrinks to 22.
+    assert set(SYSTEM_FIELD_KEYS) == set(SECTION_32_SYSTEM_FIELDS)
+    assert len(SYSTEM_FIELD_KEYS) == 23
+
+
+@pytest.mark.parametrize("key", SECTION_32_SYSTEM_FIELDS)
 def test_a_top_level_system_field_is_model_set_system_field(key: str) -> None:
-    # C-N7: the model wrote a field the system binds (V2 §32).
+    # C-N7: every §32 key written at the envelope top level is refused as a system
+    # claim, never silently downgraded to a plain UNKNOWN_FIELD.
     text = _block(_envelope(**{key: "model-chose-this"}))
     assert _code_of(text) == REJECTION.MODEL_SET_SYSTEM_FIELD
 
 
-def test_a_payload_structural_system_field_is_model_set_system_field() -> None:
-    # C-N7: the scan also covers the payload object's own keys.
+@pytest.mark.parametrize("key", SECTION_32_SYSTEM_FIELDS)
+def test_a_payload_structural_system_field_is_model_set_system_field(key: str) -> None:
+    # C-N7: the scan also covers the payload object's own keys (all 23 keys).
     payload = _refine_payload()
-    payload["plan_revision"] = 7
+    payload[key] = "model-chose-this"
     text = _block(_envelope(payload=payload))
     assert _code_of(text) == REJECTION.MODEL_SET_SYSTEM_FIELD
 
 
-def test_a_system_field_inside_a_reason_ref_is_model_set_system_field() -> None:
+@pytest.mark.parametrize("key", SECTION_32_SYSTEM_FIELDS)
+def test_a_system_field_inside_a_reason_ref_is_model_set_system_field(key: str) -> None:
     # C-N7: the third structural scan position is each reason_refs[] entry.
     ref = _ref("task", "t-1")
-    ref["plan_revision"] = 4
+    ref[key] = "model-chose-this"
     text = _block(_envelope(reason_refs=[ref]))
+    assert _code_of(text) == REJECTION.MODEL_SET_SYSTEM_FIELD
+
+
+def test_a_system_field_in_a_later_reason_ref_is_still_refused() -> None:
+    # C-N7: every entry of reason_refs[] is scanned, not just the first one.
+    # ref[0] is clean, so a scan that stops at index 0 would let ref[1]'s
+    # `plan_revision` through to the contract layer and mislabel the refusal.
+    clean = _ref("task", "t-1", 1, HASH_A)
+    tainted = _ref("obligation", "o-1", 1, HASH_B)
+    tainted["plan_revision"] = 4
+    text = _block(_envelope(reason_refs=[clean, tainted]))
     assert _code_of(text) == REJECTION.MODEL_SET_SYSTEM_FIELD
 
 
