@@ -136,3 +136,27 @@ SKIPPED [1] tests/orchestrator/full_target/test_real_provider_hierarchical_smoke
 
 3651 passed, 5 skipped in 131.52s (0:02:11)
 ```
+
+## 8. 第二轮核验缺口收口与变异清单
+
+第二轮核验指出：若把 `DECLARE_BLOCKED` 的 durable 结果伪装成 `NO_CHANGE`，原测试仍
+可能通过。本轮新增断言，要求 durable 结果的 `decision_type`、`reason`、`wait_for`、
+`blockers`、`resumable_if` 分别与决定载荷及对应类型的空集合逐项相等；因此声明受阻会
+保留受阻项、受阻原因和恢复条件，不会退化成不改计划。
+
+本轮先提交测试强化：
+
+```text
+[h1-g-decision-adapter de6d1a0] test(h1-g): distinguish blocked and no-change durable signals
+```
+
+已执行并杀死的临时变异（均未提交，随后恢复原实现）：
+
+| 变异 | 结果 |
+|---|---|
+| `DECLARE_BLOCKED` 的 `decision_type` 改为 `NO_CHANGE` | `1 failed, 7 passed in 0.30s` |
+| `WAIT` 的 `wait_for` 改为空元组 | `1 failed, 7 passed in 0.25s` |
+| `DECLARE_BLOCKED` 的 `blockers` 改为空元组 | `1 failed, 7 passed in 0.25s` |
+
+`DurableOnly.canonical_hash`、WAIT 的等待引用、NO_CHANGE 的空字段、BLOCKED 的阻塞项与
+恢复条件均有定向断言。恢复后定向套件为 8 passed，变更文件 ruff 为 `All checks passed!`。
