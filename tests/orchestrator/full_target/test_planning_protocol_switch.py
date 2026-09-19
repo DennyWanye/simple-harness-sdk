@@ -451,3 +451,54 @@ def test_the_durable_binding_ignores_the_ambient_environment(tmp_path, monkeypat
     assert planning_protocol_for_mission(store, enabled.id)["protocol_version"] == (
         PLANNING_DECISION_V1
     )
+
+
+# ---------------------------------------------------------------------------------------
+# Reachability inside the slice's own allowlist (§8.1 "the charter names the wire").
+# ---------------------------------------------------------------------------------------
+
+
+def test_the_protocol_switch_is_reachable_without_editing_the_request_parser() -> None:
+    """The switch must be reachable from the files this slice is allowed to touch.
+
+    ``api/missions.py`` is not on the allowlist, so the request parser must stay byte
+    for byte as it was.  That is only acceptable if the parser is not the *only* way to
+    name the wire: the field is part of ``MissionSpec``, so any caller that builds a
+    spec — the ``__main__`` CLI, the evaluation runners, the Host's own record reader —
+    can name it, and the parser simply leaves the dataclass default in place.
+
+    This pins the negative half too: the parser must keep *dropping* the key, because
+    reaching in there is what the allowlist forbids.
+    """
+
+    from agent_orchestrator.api.missions import spec_from_request
+
+    assert spec_from_request("tenant", {"planning_protocol_version": PLANNING_DECISION_V1}).to_json() == (
+        _spec("x").to_json() | {"idempotency_key": "x"}
+    )
+    named = MissionSpec(
+        goal="g",
+        success_criteria=("ok",),
+        tenant_id="tenant",
+        idempotency_key="named",
+        budget=Budget(max_tokens=1000, max_attempts=1),
+        planning_protocol_version=PLANNING_DECISION_V1,
+    )
+    assert named.planning_protocol_version == PLANNING_DECISION_V1
+    assert named.to_json()["planning_protocol_version"] == PLANNING_DECISION_V1
+
+
+def test_the_slice_touches_no_file_outside_its_allowlist() -> None:
+    """Guard against the repair silently re-adding the out-of-allowlist mapping.
+
+    The gate fails the whole slice on a single out-of-allowlist file, so the mapping in
+    ``api/missions.py`` cannot come back.  Reading the file we are not allowed to change
+    is enough to prove it: the parser must not mention the field at all.
+    """
+
+    import inspect
+
+    from agent_orchestrator.api.missions import spec_from_request
+
+    source = inspect.getsource(spec_from_request)
+    assert "planning_protocol_version" not in source
