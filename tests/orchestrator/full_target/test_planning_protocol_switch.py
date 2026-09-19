@@ -60,6 +60,18 @@ def _spec(key: str, **kwargs: object) -> MissionSpec:
     )
 
 
+def binding_rows(store: Store, mission_id: str) -> int:
+    """How many ``mission_planning_protocols`` rows this Mission owns.
+
+    Scoped to the mission id on purpose: a table-wide count is trivially satisfied in a
+    test that only ever creates legacy Missions (P2-5 of the independent review).
+    """
+
+    return store.connection.execute(
+        "SELECT count(*) FROM mission_planning_protocols WHERE mission_id = ?", (mission_id,)
+    ).fetchone()[0]
+
+
 def test_default_spec_json_bytes_and_hash_are_unchanged() -> None:
     spec = _spec("bytes")
     expected = {
@@ -220,10 +232,17 @@ def test_legacy_mission_cannot_be_replayed_as_new_protocol(tmp_path) -> None:
     now, replayed = service.create_mission(explicit)
     assert now == mission and replayed is False
     assert planning_protocol_for_mission(store, mission.id) is None
-    assert (
-        store.connection.execute("SELECT count(*) FROM mission_planning_protocols").fetchone()[0]
-        == 0
+    # The replayed Mission is the one already in the library, and *its* row is what must
+    # be absent.  A bare ``count(*) == 0`` here would be vacuous — this test only ever
+    # creates legacy Missions, so the table is empty whatever the binding code does.
+    # Ask about this mission id explicitly, and put a new-protocol Mission in the same
+    # library first so the count is not trivially zero.
+    assert not binding_rows(store, mission.id)
+    other, _ = service.create_mission(
+        _spec("legacy-first-other", planning_protocol_version=PLANNING_DECISION_V1)
     )
+    assert binding_rows(store, other.id) == 1
+    assert not binding_rows(store, mission.id)
 
 
 def test_policy_snapshot_digest_does_not_include_planning_protocol(tmp_path) -> None:

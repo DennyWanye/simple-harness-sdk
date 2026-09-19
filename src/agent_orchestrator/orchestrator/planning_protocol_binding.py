@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-from collections.abc import Mapping
 from hashlib import sha256
 from typing import Any
 
@@ -24,8 +22,11 @@ from ..runtime.role_templates import (
 from ..storage.planning_decision_store import PlanningDecisionStore
 from ..storage.store import Store
 
+#: The package/prompt pair every binding shares (the frozen v4 package, the v8 planner
+#: prompt).  The protocol *name* is not part of this constant: it is the argument of
+#: :func:`binding_document`, so there is exactly one place that assembles the three-field
+#: document and no value here can be silently shadowed by an override.
 PLANNING_PROTOCOL_BINDING = {
-    "protocol_version": PLANNING_DECISION_V1,
     "package_version": PLANNING_DECISION_PACKAGE_VERSION,
     "prompt_version": PLANNER_HIERARCHICAL_V8_VERSION,
 }
@@ -51,10 +52,26 @@ def checked_planning_protocol(protocol_version: object) -> str:
     return protocol_version
 
 
+def binding_document(protocol_version: str) -> dict[str, Any]:
+    """Return the exact three-field binding document for a checked protocol name.
+
+    The single assembly point: the digest, the storage write and the replay comparison all
+    describe the same document, so a package or prompt bump cannot update one and miss the
+    others.  The protocol name is always taken from the argument — never from a constant —
+    or two different wires could digest to the same ``binding_hash`` while the row's
+    ``protocol_version`` column says otherwise.
+    """
+
+    return {
+        "protocol_version": checked_planning_protocol(protocol_version),
+        **PLANNING_PROTOCOL_BINDING,
+    }
+
+
 def planning_protocol_binding_hash(protocol_version: str) -> str:
     """Return the digest of the exact three-field binding document."""
 
-    document = {**PLANNING_PROTOCOL_BINDING, "protocol_version": protocol_version}
+    document = binding_document(protocol_version)
     return sha256(canonical_json(document).encode("utf-8")).hexdigest()
 
 
@@ -70,29 +87,17 @@ def bind_planning_protocol(store: Store, mission_id: str, protocol_version: str)
     )
 
 
-def planning_protocol_for_mission(
-    conn_or_store: Store | sqlite3.Connection, mission_id: str
-) -> dict[str, Any] | None:
-    """Read a Mission's persisted binding; an absent row means legacy."""
+def planning_protocol_for_mission(store: Store, mission_id: str) -> dict[str, Any] | None:
+    """Read a Mission's persisted binding; an absent row means legacy.
 
-    connection = conn_or_store.connection if isinstance(conn_or_store, Store) else conn_or_store
-    row = connection.execute(
-        "SELECT mission_id, protocol_version, package_version, prompt_version, "
-        "binding_hash, created_at FROM mission_planning_protocols WHERE mission_id = ?",
-        (mission_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    if isinstance(row, Mapping):
-        return dict(row)
-    return {
-        "mission_id": row[0],
-        "protocol_version": row[1],
-        "package_version": row[2],
-        "prompt_version": row[3],
-        "binding_hash": row[4],
-        "created_at": row[5],
-    }
+    The read goes through the storage module's own reader, which is the documented gate
+    for ``mission_planning_protocols``: this function stays a thin, side-effect-free
+    adapter, so the table keeps exactly one reader and one writer (P2-3 of the
+    independent review).  Recovery callers reconstruct a ``Store`` with ``Store.open``
+    (or hold one already), so no raw-connection shim is offered.
+    """
+
+    return PlanningDecisionStore(store).get_mission_protocol(mission_id)
 
 
 def planning_protocol_replay_conflict(
@@ -109,11 +114,7 @@ def planning_protocol_replay_conflict(
 
     checked = checked_planning_protocol(protocol_version)
     stored = planning_protocol_for_mission(store, mission_id)
-    expected = {
-        "protocol_version": checked,
-        "package_version": PLANNING_PROTOCOL_BINDING["package_version"],
-        "prompt_version": PLANNING_PROTOCOL_BINDING["prompt_version"],
-    }
+    expected = binding_document(checked)
     if stored is None:  # absent means legacy: nobody may bind it after the fact
         if checked == LEGACY_PLANNING_PROTOCOL:
             return None
@@ -130,6 +131,7 @@ def planning_protocol_replay_conflict(
 __all__ = (
     "PLANNING_PROTOCOL_BINDING",
     "PLANNING_PROTOCOLS",
+    "binding_document",
     "bind_planning_protocol",
     "checked_planning_protocol",
     "planning_protocol_binding_hash",

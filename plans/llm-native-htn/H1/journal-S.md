@@ -19,8 +19,9 @@
 |---|---|
 | `src/agent_orchestrator/orchestrator/commit_service.py` | 热文件，只留调用点（净 +19/−19 行内） |
 | `src/agent_orchestrator/orchestrator/planning_protocol_binding.py` | 新增模块，新逻辑集中于此 |
-| `tests/orchestrator/full_target/test_planning_protocol_switch.py` | 专项测试（17 条） |
+| `tests/orchestrator/full_target/test_planning_protocol_switch.py` | 专项测试（19 条） |
 | `plans/llm-native-htn/H1/journal-S.md` | 本日志 |
+| `plans/llm-native-htn/H1/BLOCKER-H1-S.md` | 新增（P1-3 处置）：Host 请求体接线不在本片 allowlist 内 |
 
 ### 已回退的越界改动：`api/missions.py`（闸门红 → 修复）
 
@@ -68,7 +69,53 @@ d7986a2 test(h1-s): cover host hand-off, forged specs, stored hash and env isola
 3362c4c docs(h1-s): record the hand-off audit, the added cases and the measured gates
 ```
 
-### 3.0 闸门红与修复（第三位接手者）
+### 3.0 独立核验处置（本次接手，2026-09-19）
+
+核验报告：`plans/llm-native-htn/H1/reviews/verify-H1-S-2026-09-19.md`（独立副本目录内），
+结论 `VERDICT: 修后可合`，无 P0、3 条 P1、4 条 P2。逐条处置如下。
+
+**P1-1（摘要少算一项的变异存活）** — 已修。原断言把期望文档写成
+`PLANNING_PROTOCOL_BINDING`（其自身 `protocol_version` 恰好就是被测名字），所以「丢掉请求里的协议名」
+的变异算出同一个值。新增 `test_the_binding_hash_names_the_protocol_and_is_sensitive_to_it`：
+期望文档由**实参**拼出、两个名字各验一遍、并钉住两名摘要不相等。实测 M5 由 SURVIVED → **KILLED**
+（`1 failed, 18 passed`）。
+
+**P1-2（策略摘要守卫空转）** — 已修。原断言对着 `OrchestratorConfig` **不存在**的键名断言，恒真。
+新增 `test_the_snapshot_mechanism_would_expose_a_config_field_marked_include`：把一个配置**真有**的
+字段（`owner_id`）临时标为 `include`，断言摘要**会**变，再钉住开关不是配置字段。实测 M9 由
+SURVIVED → **KILLED**（`1 failed, 18 passed`），且用的是核验员给的原始变异（往 `SNAPSHOT_FIELDS`
+加 `"planning_protocol_version": "include"`）。
+
+**P1-3（Host 请求体选择新协议不可达）** — 按核验员给出的两条出路中的**第二条**处置：新建
+`plans/llm-native-htn/H1/BLOCKER-H1-S.md`（该 glob 在 allowlist 内，无需扩权），明确
+「Host 经请求体显式选择新协议」由后续 Host 接线片交付、本片交付的是「SDK 内自建规格的调用方可达」。
+未选第一条（把 `api/missions.py` 纳入白名单）——那是改任务书/白名单，超出实施者权限；上一轮的闸门红
+正是该文件越界所致。同时把本日志 §1 的措辞收窄，避免高估交付面。
+
+**P2-1（`PLANNING_PROTOCOL_BINDING` 的死字段）** — 已修。抽出单一装配点
+`binding_document(protocol_version)`，摘要、写库、重放比较三处共用；常量里不再放
+`protocol_version`，因此不存在「被展开覆盖」的歧义。冻结摘要 `0713d58c…d31979` 逐字节不变（已实测）。
+
+**P2-3（读路径绕过存储层边界）** — 已修。`planning_protocol_for_mission` 改为委托
+`PlanningDecisionStore.get_mission_protocol`（存储层自带的读入口），该表回归「一个读入口、一个写入口」。
+同时把签名收窄为只接受 `Store`（原先声称可传裸 `sqlite3.Connection`，但 `Store(...)` 需要三个参数，
+那条分支本就不可用；仓库内所有调用方均传 `Store`）。
+
+**P2-4（日志里 `ruff check .` 举例不准确）** — 已修，见 §4 的更正：实测 128 条 / 32 个文件，
+基线上同样 128 条 / 32 个文件、文件集合逐条相同。
+
+**P2-5（`count(*) == 0` 恒真）** — 已修。新增 `binding_rows(store, mission_id)` 按 mission id 计数；
+该用例先在同一库里建一个新协议 Mission（断言其恰 1 行），再断言被重放的缺省任务 0 行 —— 不再是空转
+（实测 M3 变异下该用例在 4 条失败之列）。
+
+**未改的 P2-2**（未知协议名在 SQLite 时代被接受、在 API 时代被拒）：核验已判「当前无 repo 内调用方
+触发，仅备案」，本片不改代码语义，记录在案。
+
+```text
+04115f9 test(h1-s): kill the two surviving mutants the review found
+```
+
+### 3.0a 闸门红与修复（前一次接手）
 
 `gate-1.json` 对 `3362c4c` 判红：`allowlist` 项报 `files outside allowlist:
 src/agent_orchestrator/api/missions.py`，其余 8 项全绿。修法见 §1「已回退的越界改动」。
@@ -112,14 +159,14 @@ c5c8f12 test(h1-s): pin the switch reachable without the out-of-allowlist parser
   与存储层 `bind_mission_protocol` 的「同一文档幂等、任何差异 StoreConflict」一致。
 - `api/missions.py` 的 8 行映射（见 §1）。
 
-### 3.3 最终用例清单（17 条）与对应覆盖项
+### 3.3 最终用例清单（19 条）与对应覆盖项
 
 | # | 用例 | 覆盖 |
 |---|---|---|
 | 1 | `test_default_spec_json_bytes_and_hash_are_unchanged` | 缺省字节/哈希不变 |
 | 2 | `test_legacy_mission_created_with_the_default_keeps_its_spec_hash` | 缺省哈希不变（**入库行**，新增） |
 | 3 | `test_new_protocol_json_key_and_unknown_values_are_rejected` | 新协议规格往返 + 未知名被拒 |
-| 4 | — | 原「入口映射」用例已删除（它钉住的越界映射被白名单禁止，见 §1） |
+| 3a | — | 原「入口映射」用例已删除（它钉住的越界映射被白名单禁止，见 §1）；表中序号仅作追溯，实际用例数 19 条 |
 | 5 | `test_commit_service_refuses_a_spec_that_bypassed_the_constructor` | 未校验规格被拒（新增，改自原构想） |
 | 6 | `test_the_two_protocol_constants_are_the_frozen_online_names` | 线上常量名不得改（新增） |
 | 7 | `test_new_protocol_creation_writes_one_binding_with_frozen_hash` | 恰一行 + 三项正确 + 摘要 |
@@ -132,8 +179,10 @@ c5c8f12 test(h1-s): pin the switch reachable without the out-of-allowlist parser
 | 14 | `test_binding_comes_from_the_stored_table_not_from_the_config_attribute` | 恢复只读存储（新增） |
 | 15 | `test_a_replayed_new_protocol_mission_keeps_exactly_one_binding_row` | 重放不增行、不改 `created_at`（新增） |
 | 16 | `test_the_durable_binding_ignores_the_ambient_environment` | 环境变量不得猜模式（新增） |
-| 17 | `test_the_protocol_switch_is_reachable_without_editing_the_request_parser` | 开关在**白名单内**可达：请求解析器丢弃该键、直接构造契约可命名该 wire（新增） |
-| 18 | `test_the_slice_touches_no_file_outside_its_allowlist` | 防回归：`spec_from_request` 源码里不得再出现该字段（新增） |
+| 16a | `test_the_protocol_switch_is_reachable_without_editing_the_request_parser` | 开关在**白名单内**可达：请求解析器丢弃该键、直接构造契约可命名该 wire（新增） |
+| 16b | `test_the_slice_touches_no_file_outside_its_allowlist` | 防回归：`spec_from_request` 源码里不得再出现该字段（新增） |
+| 16c | `test_the_binding_hash_names_the_protocol_and_is_sensitive_to_it` | 摘要 = 三项文档、两名各验、两名不相等（**P1-1** 新增） |
+| 16d | `test_the_snapshot_mechanism_would_expose_a_config_field_marked_include` | 策略快照机制真有鉴别力（**P1-2** 新增） |
 
 任务书「测试至少覆盖」十项全部有对应用例，无遗漏。
 
@@ -182,9 +231,23 @@ c5c8f12 test(h1-s): pin the switch reachable without the out-of-allowlist parser
 | M7 回退 `api/missions.py` 后仍断言「解析器会映射该键」 | 1 failed（旧 #4，故已删除） |
 | M8 删掉 `to_json()` 里的协议键（直写槽位也不再生效） | 5 failed（含新增 #17） |
 
-`ruff check`（本片四个文件）与 `ruff format --check`（本片新改文件）均无输出问题；
-仓库既有 `ruff check .` 存量告警（`tests/integration/runtime/*` 等），与基线一致，非本片引入
-（`ruff check src/agent_orchestrator` 为 `All checks passed!`）。
+独立核验发现的存活项与本次处置后的复测（核验员编号，见核验报告 §3）：
+
+| 变异 | 核验时 | 本次处置后 |
+|---|---|---|
+| M5 `binding_hash` 少算一项（丢掉请求里的协议名） | `17 passed`（**SURVIVED**） | `1 failed, 18 passed`（**KILLED**，P1-1 新增 #16c） |
+| M9 `SNAPSHOT_FIELDS` 加 `"planning_protocol_version": "include"` | `17 passed`（**SURVIVED**） | `1 failed, 18 passed`（**KILLED**，P1-2 新增 #16d） |
+
+P2-1 的重构（抽出 `binding_document()`）之后，冻结摘要仍为 `0713d58c…d31979`，M5 仍被杀死。
+P2-5 的修补（按 mission id 计数）使 M3 的失败用例从 4 条增至 5 条（含
+`test_legacy_mission_cannot_be_replayed_as_new_protocol`）。
+
+`ruff check`（本片四个文件）与 `ruff format --check`（本片新改文件）均无输出问题。
+
+仓库既有 `ruff check .`（P2-4 修正，原举例不准确）：本机实测 **128 条告警、32 个文件**，涉及
+`src/simple_harness/execution/*`、`src/simple_harness/runtime/*`、`tests/integration/runtime/*`、
+`tests/orchestrator/p33*`/`p34*`/`p35*`、`examples/minimal-consumer/*` 等。同一命令在基线 worktree
+（`0d89307`）上同样是 **128 条、32 个文件**，文件集合 `diff` 无输出 → **仓储存量，非本片引入**。
 
 ---
 
