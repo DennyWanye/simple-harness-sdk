@@ -25,11 +25,28 @@ from agent_orchestrator.orchestrator.commit_service import (
     CommitService,
     MissionConflict,
     MissionSpec,
+    sha256_hex,
 )
 from agent_orchestrator.orchestrator.planning_protocol_binding import (
     planning_protocol_for_mission,
+    planning_protocol_replay_conflict,
 )
 from agent_orchestrator.storage.store import Store
+
+
+def _spec_with_field_set_behind_the_constructor(key: str, protocol_version: str) -> MissionSpec:
+    """A spec whose ``planning_protocol_version`` slot was assigned directly (§8.1).
+
+    ``object.__setattr__`` writes the frozen field without ``__post_init__`` — the same
+    escape hatch a deserialiser, a hand-built record or ``dataclasses.replace`` on a
+    non-slots class has.  ``to_json()`` still derives the key from that slot, so the
+    document (and therefore ``spec_hash``) is the one the *forged* name produces; the door
+    must refuse the value regardless, before the document is digested or stored.
+    """
+
+    spec = _spec(key)
+    object.__setattr__(spec, "planning_protocol_version", protocol_version)
+    return spec
 
 
 def _spec(key: str, **kwargs: object) -> MissionSpec:
@@ -98,12 +115,18 @@ def test_new_protocol_creation_writes_one_binding_with_frozen_hash(tmp_path) -> 
         "package_version": 4,
         "prompt_version": "planner-hierarchical-v8",
     }
-    assert binding["binding_hash"] == hashlib.sha256(
-        json.dumps(expected, separators=(",", ":"), sort_keys=True).encode()
-    ).hexdigest()
-    assert store.connection.execute(
-        "SELECT count(*) FROM mission_planning_protocols WHERE mission_id = ?", (mission.id,)
-    ).fetchone()[0] == 1
+    assert (
+        binding["binding_hash"]
+        == hashlib.sha256(
+            json.dumps(expected, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+    )
+    assert (
+        store.connection.execute(
+            "SELECT count(*) FROM mission_planning_protocols WHERE mission_id = ?", (mission.id,)
+        ).fetchone()[0]
+        == 1
+    )
 
 
 def test_legacy_creation_has_no_binding(tmp_path) -> None:
@@ -147,17 +170,60 @@ def test_replay_is_idempotent_and_protocol_cannot_change(tmp_path) -> None:
     mission, created = service.create_mission(spec)
     again, replayed = service.create_mission(spec)
     assert again == mission and not replayed
-    with pytest.raises(MissionConflict):
+    with pytest.raises(MissionConflict, match="different specification"):
         service.create_mission(replace(spec, planning_protocol_version=LEGACY_PLANNING_PROTOCOL))
+    # The legacy name produces a *different* document, so the spec hash already refuses it;
+    # the binding is asked independently (below) because that is the check that survives a
+    # Host which only compares charter bytes.
+    with pytest.raises(MissionConflict):
+        service.create_mission(
+            _spec_with_field_set_behind_the_constructor("idem", LEGACY_PLANNING_PROTOCOL)
+        )
+    assert planning_protocol_replay_conflict(store, mission.id, LEGACY_PLANNING_PROTOCOL) == (
+        f"mission {mission.id} is durably bound to protocol {PLANNING_DECISION_V1!r}/package 4,"
+        f" not {LEGACY_PLANNING_PROTOCOL!r}/package 4"
+    )
+    assert planning_protocol_replay_conflict(store, mission.id, PLANNING_DECISION_V1) is None
+    assert store.find_mission("tenant", "idem")[1] == sha256_hex(spec.to_json())
+    assert (
+        store.connection.execute(
+            "SELECT protocol_version FROM mission_planning_protocols WHERE mission_id = ?",
+            (mission.id,),
+        ).fetchone()[0]
+        == PLANNING_DECISION_V1
+    )
 
 
 def test_legacy_mission_cannot_be_replayed_as_new_protocol(tmp_path) -> None:
     store = Store.open(tmp_path / "orchestrator.db")
     service = CommitService(store)
     spec = _spec("legacy-first")
-    service.create_mission(spec)
-    with pytest.raises(MissionConflict):
+    mission, _ = service.create_mission(spec)
+    with pytest.raises(MissionConflict, match="different specification"):
         service.create_mission(replace(spec, planning_protocol_version=PLANNING_DECISION_V1))
+    # The new protocol under an existing key is refused whichever door it comes through:
+    # as a spec (the document changed, so the spec hash disagrees) and as the same wire
+    # name re-sent, which must stay the same Mission.
+    with pytest.raises(MissionConflict, match="different specification"):
+        service.create_mission(
+            _spec_with_field_set_behind_the_constructor("legacy-first", PLANNING_DECISION_V1)
+        )
+    stored_hash = store.find_mission("tenant", "legacy-first")[1]
+    assert stored_hash == sha256_hex(spec.to_json())
+    # The legacy name written out explicitly is the *same* document (``to_json`` omits the
+    # default), so this is the case where the spec hash agrees and only the stored binding
+    # decides: it must agree too, or every Host that names the default would start getting
+    # conflicts after an upgrade.
+    explicit = replace(spec, planning_protocol_version=LEGACY_PLANNING_PROTOCOL)
+    assert explicit.to_json() == spec.to_json()
+    assert sha256_hex(explicit.to_json()) == stored_hash
+    now, replayed = service.create_mission(explicit)
+    assert now == mission and replayed is False
+    assert planning_protocol_for_mission(store, mission.id) is None
+    assert (
+        store.connection.execute("SELECT count(*) FROM mission_planning_protocols").fetchone()[0]
+        == 0
+    )
 
 
 def test_policy_snapshot_digest_does_not_include_planning_protocol(tmp_path) -> None:
@@ -222,12 +288,15 @@ def test_the_spec_carries_the_protocol_to_the_mission_spec_factory() -> None:
 
     from agent_orchestrator.api.missions import spec_from_request
 
-    assert spec_from_request("tenant", {"idempotency_key": "omitted"}).planning_protocol_version == (
-        LEGACY_PLANNING_PROTOCOL
+    omitted = spec_from_request("tenant", {"idempotency_key": "omitted"})
+    assert omitted.planning_protocol_version == LEGACY_PLANNING_PROTOCOL
+    assert (
+        spec_from_request(
+            "tenant",
+            {"idempotency_key": "asked", "planning_protocol_version": PLANNING_DECISION_V1},
+        ).planning_protocol_version
+        == PLANNING_DECISION_V1
     )
-    assert spec_from_request(
-        "tenant", {"idempotency_key": "asked", "planning_protocol_version": PLANNING_DECISION_V1}
-    ).planning_protocol_version == PLANNING_DECISION_V1
     with pytest.raises(Exception, match="planning protocol"):
         spec_from_request(
             "tenant", {"idempotency_key": "unknown", "planning_protocol_version": "v99"}
@@ -235,18 +304,33 @@ def test_the_spec_carries_the_protocol_to_the_mission_spec_factory() -> None:
 
 
 def test_commit_service_refuses_a_spec_that_bypassed_the_constructor(tmp_path) -> None:
-    """``dataclasses.replace`` skips ``__post_init__``; the door must still refuse (§8.1).
+    """A spec whose field was set behind the constructor's back is still refused (§8.1).
 
-    Without the guard in ``create_mission`` an unknown protocol from an unvalidated spec
-    would be written straight into ``spec_hash`` and the library.
+    ``dataclasses.replace`` does re-run ``__post_init__`` (it calls the constructor), so
+    that path already raises; ``object.__setattr__`` does not, and that is the door the
+    service itself must close.  Without the guard the unknown name would be digested into
+    ``spec_hash`` and written to the library.
     """
 
     store = Store.open(tmp_path / "orchestrator.db")
-    forged = replace(_spec("forged"), planning_protocol_version="planning-decision-v99")
-    assert forged.planning_protocol_version == "planning-decision-v99"  # replace skipped the check
+    forged = _spec_with_field_set_behind_the_constructor("forged", "planning-decision-v99")
+    assert forged.planning_protocol_version == "planning-decision-v99"
+    assert forged.to_json()["planning_protocol_version"] == "planning-decision-v99"
     with pytest.raises(CommitRejected, match="planning protocol"):
         CommitService(store).create_mission(forged)
     assert store.find_mission("tenant", "forged") is None
+
+
+def test_the_two_protocol_constants_are_the_frozen_online_names() -> None:
+    """§8.1 renames nothing: the wire names are identical on both sides of the imports."""
+
+    from agent_orchestrator.orchestrator.planning_protocol_binding import PLANNING_PROTOCOLS
+
+    assert PLANNING_DECISION_V1 == "planning-decision-v1"
+    assert LEGACY_PLANNING_PROTOCOL == "legacy-plan-proposal-v1"
+    assert PLANNING_PROTOCOLS == frozenset({"planning-decision-v1", "legacy-plan-proposal-v1"})
+    assert PLANNING_DECISION_V1 == CONTRACT_PLANNING_DECISION_V1
+    assert LEGACY_PLANNING_PROTOCOL == CONTRACT_LEGACY_PLANNING_PROTOCOL
 
 
 def test_legacy_mission_created_with_the_default_keeps_its_spec_hash(tmp_path) -> None:
@@ -292,23 +376,47 @@ def test_legacy_mission_created_with_the_default_keeps_its_spec_hash(tmp_path) -
 
 
 def test_binding_comes_from_the_stored_table_not_from_the_config_attribute(tmp_path) -> None:
-    """Recovery reads the library, never a constructor argument (§8.2).
+    """Recovery reads the library, never the running configuration (§8.2).
 
-    A second ``CommitService`` built with an explicit protocol must not move a legacy
-    Mission: if the read consulted anything but ``mission_planning_protocols`` this would
-    bind the old Mission behind its back.
+    Two Missions share one store here.  Both are the same frozen policy generation (the
+    same ``params_hash``, the same document that carries the Planner prompt version), yet
+    the legacy Mission has no row and the second Mission does: a read that consulted
+    anything but ``mission_planning_protocols`` — an environment variable, a config
+    attribute, another Mission's binding, the policy a recovery already has in hand — would
+    answer the same for both.
     """
 
-    store = Store.open(tmp_path / "orchestrator.db")
-    mission, _ = CommitService(store).create_mission(_spec("recovery"))
-    CommitService(store, planning_protocol_version=PLANNING_DECISION_V1)
-    assert planning_protocol_for_mission(store, mission.id) is None
-    assert (
-        store.connection.execute(
-            "SELECT count(*) FROM mission_planning_protocols WHERE mission_id = ?", (mission.id,)
-        ).fetchone()[0]
-        == 0
+    path = tmp_path / "orchestrator.db"
+    store = Store.open(path)
+    service = CommitService(store)
+    legacy, _ = service.create_mission(_spec("recovery-legacy"))
+    enabled, _ = service.create_mission(
+        _spec("recovery-enabled", planning_protocol_version=PLANNING_DECISION_V1)
     )
+    legacy_policy = store.get_policy_version(str(store.get_mission_policy(legacy.id)["version_id"]))
+    enabled_policy = store.get_policy_version(
+        str(store.get_mission_policy(enabled.id)["version_id"])
+    )
+    assert legacy_policy is not None and enabled_policy is not None
+    assert legacy_policy["params_hash"] == enabled_policy["params_hash"]
+    assert (
+        legacy_policy["params"]["prompt_versions"]["planner"]
+        == (enabled_policy["params"]["prompt_versions"]["planner"])
+    )
+    assert "planning-decision-v1" not in json.dumps(legacy_policy)
+    assert "planning-decision-v1" not in json.dumps(enabled_policy)
+    assert planning_protocol_for_mission(store, legacy.id) is None
+    store.close()
+
+    reopened = Store.open(path)
+    assert planning_protocol_for_mission(reopened, legacy.id) is None
+    binding = planning_protocol_for_mission(reopened, enabled.id)
+    assert binding is not None and binding["protocol_version"] == PLANNING_DECISION_V1
+    assert (
+        reopened.connection.execute("SELECT count(*) FROM mission_planning_protocols").fetchone()[0]
+        == 1
+    )
+    reopened.close()
 
 
 def test_a_replayed_new_protocol_mission_keeps_exactly_one_binding_row(tmp_path) -> None:

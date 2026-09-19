@@ -128,6 +128,7 @@ from .plan_commits import (
 )
 from .planning_protocol_binding import (
     bind_planning_protocol,
+    checked_planning_protocol,
     planning_protocol_replay_conflict,
 )
 from .policy_commits import PolicyCommitsMixin
@@ -195,9 +196,6 @@ SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
 ACTOR_SYSTEM = "system"
 ORCHESTRATOR_ID = "orchestrator"
 
-_PLANNING_PROTOCOLS = frozenset({LEGACY_PLANNING_PROTOCOL, PLANNING_DECISION_V1})
-
-
 class CommitRejected(StoreError):
     """The proposal violates a contract, a budget or the state machine; nothing was written."""
 
@@ -244,12 +242,7 @@ class MissionSpec:
     planning_protocol_version: str = LEGACY_PLANNING_PROTOCOL
 
     def __post_init__(self) -> None:
-        if not isinstance(self.planning_protocol_version, str) or (
-            self.planning_protocol_version not in _PLANNING_PROTOCOLS
-        ):
-            raise ContractError(
-                f"unknown planning protocol version {self.planning_protocol_version!r}"
-            )
+        checked_planning_protocol(self.planning_protocol_version)
 
     def to_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -729,10 +722,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             semantics_version = normalise_semantics(spec.orchestration_semantics_version)
         except ContractError as error:
             raise CommitRejected(str(error)) from error
-        if spec.planning_protocol_version not in _PLANNING_PROTOCOLS:
-            raise CommitRejected(
-                f"unknown planning protocol version {spec.planning_protocol_version!r}"
-            )
+        try:  # §8.1: a spec that skipped ``__post_init__`` is refused before any write
+            checked_planning_protocol(spec.planning_protocol_version)
+        except ContractError as error:
+            raise CommitRejected(str(error)) from error
         spec_hash = sha256_hex(spec.to_json())
         try:  # P3.3 (D1): an unknown domain is refused before anything is written
             domain = resolve_domain(spec.domain)

@@ -12,6 +12,7 @@ from typing import Any
 
 from simple_harness.contracts import canonical_json
 
+from ..contracts.models import ContractError
 from ..contracts.planning_decisions import (
     LEGACY_PLANNING_PROTOCOL,
     PLANNING_DECISION_V1,
@@ -28,6 +29,26 @@ PLANNING_PROTOCOL_BINDING = {
     "package_version": PLANNING_DECISION_PACKAGE_VERSION,
     "prompt_version": PLANNER_HIERARCHICAL_V8_VERSION,
 }
+
+
+#: The two wire names a Mission charter may name (§8.1).  Nothing else is accepted:
+#: the switch is part of the frozen charter, so a typo must fail at the door rather
+#: than silently leave a Mission on the legacy protocol.
+PLANNING_PROTOCOLS = frozenset({LEGACY_PLANNING_PROTOCOL, PLANNING_DECISION_V1})
+
+
+def checked_planning_protocol(protocol_version: object) -> str:
+    """Return a known protocol name, or raise the contract error the door reports.
+
+    ``MissionSpec.__post_init__`` runs this once, but a spec can also be built through
+    ``dataclasses.replace`` (which skips ``__post_init__``) or by writing the dataclass
+    fields directly.  ``create_mission`` runs it again so an unvalidated spec is refused
+    before it reaches ``spec_hash`` or the library.
+    """
+
+    if not isinstance(protocol_version, str) or protocol_version not in PLANNING_PROTOCOLS:
+        raise ContractError(f"unknown planning protocol version {protocol_version!r}")
+    return protocol_version
 
 
 def planning_protocol_binding_hash(protocol_version: str) -> str:
@@ -77,25 +98,40 @@ def planning_protocol_for_mission(
 def planning_protocol_replay_conflict(
     store: Store, mission_id: str, protocol_version: str
 ) -> str | None:
-    """Return a replay conflict, keeping protocol invariants out of the hot file."""
+    """Return a replay conflict, keeping protocol invariants out of the hot file.
 
+    A Mission replays idempotently only when the wire it asks for is the wire that is
+    durably bound: no row means legacy, and a row means that exact binding document is
+    the Mission's identity (§8.2).  The comparison is made against the request's
+    ``binding_hash`` so a Mission bound to a different package or prompt of the same
+    protocol name is a conflict too, not just a Mission bound to another name.
+    """
+
+    checked = checked_planning_protocol(protocol_version)
     stored = planning_protocol_for_mission(store, mission_id)
-    if protocol_version == PLANNING_DECISION_V1:
-        expected = {
-            "protocol_version": PLANNING_DECISION_V1,
-            "package_version": PLANNING_PROTOCOL_BINDING["package_version"],
-            "prompt_version": PLANNING_PROTOCOL_BINDING["prompt_version"],
-        }
-        if stored is None or any(stored.get(key) != value for key, value in expected.items()):
-            return f"mission {mission_id} has no matching durable planning protocol binding"
-    elif protocol_version == LEGACY_PLANNING_PROTOCOL and stored is not None:
-        return f"mission {mission_id} cannot switch planning protocol"
+    expected = {
+        "protocol_version": checked,
+        "package_version": PLANNING_PROTOCOL_BINDING["package_version"],
+        "prompt_version": PLANNING_PROTOCOL_BINDING["prompt_version"],
+    }
+    if stored is None:  # absent means legacy: nobody may bind it after the fact
+        if checked == LEGACY_PLANNING_PROTOCOL:
+            return None
+        return f"mission {mission_id} has no durable planning protocol binding"
+    if any(stored.get(field) != value for field, value in expected.items()):
+        return (
+            f"mission {mission_id} is durably bound to protocol"
+            f" {stored['protocol_version']!r}/package {stored['package_version']}, not"
+            f" {checked!r}/package {expected['package_version']}"
+        )
     return None
 
 
 __all__ = (
     "PLANNING_PROTOCOL_BINDING",
+    "PLANNING_PROTOCOLS",
     "bind_planning_protocol",
+    "checked_planning_protocol",
     "planning_protocol_binding_hash",
     "planning_protocol_for_mission",
     "planning_protocol_replay_conflict",
