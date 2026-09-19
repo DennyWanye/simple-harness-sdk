@@ -220,3 +220,45 @@ $ uv run --offline ruff check src/agent_orchestrator/contracts/schemas/__init__.
 All checks passed!
 ```
 
+## 十、第 3 轮处置（核验“修后可合”，2026-09-19）
+
+核验报告：`plans/llm-native-htn/H1/reviews/核验-H1-A2b-2026-09-19.md` 的「复核 3」。结论：上轮 P1-D/P1-E 已修复（9 个 `type` 存活全 KILLED、全量 `type` 盲扫 0/71）；本轮新发现 **P1-F**——9 个非载荷子形状 `$defs` 的 `required` / `properties` 未被任何用例钉死。无 P0，仍判“修后可合”。本轮**只改测试与日志，Schema/codec 零改动**。
+
+### P1-F：对象 `$defs` 的 `required` / `properties` 未被钉死（已修）
+
+- 现象（核验方脚本）：把 `planningRef / versionedTypeRef / assumption / uncertainty / alternative / replanTrigger / blockedItem / evidenceQuestion / humanOption` 任一 `required` 清空，或往其 `properties` 加一个未知字段，`tests/orchestrator/full_target` **全量仍绿**（当时 3214 passed, 2 skipped）；且被改坏的 Schema 会接受 codec 明确拒绝的 wire 对象（真漂移，非等价改写）。
+- 根因：现有镜像只钉住**顶层信封**（`test_schema_identity_and_envelope_shape`）与 **10 个载荷**（`test_payload_defs_are_complete_and_match_the_codec_required_fields`），对 9 个“引用/摘要/条目”子形状从未把 `required`/`properties` 与 codec 的 `fields_of(required=…, optional=…)` 对表；反向用例只证“Schema 接受 codec 合法对象”，无法发现“Schema 也接受 codec 非法对象”。
+- 修复（只补测试，不动 Schema）：
+  1. 新增 `test_every_object_def_required_and_properties_match_the_codec`：**用脚本遍历 `$defs` 里所有 `type=="object"` 的条目（当前 19 个，不手抄名单）**；对每个形状在 codec 合法样例池中自动寻找“键集合覆盖全部 `properties`”的 seed 与其 JSON 指针，再以 **codec 自身**判定必填——从 seed 删某键若被 codec 拒绝则该键必填，所得集合必须等于 Schema 的 `required`。
+  2. 新增 `test_every_object_def_rejects_missing_required_and_unknown_fields`（对 19 个对象 `$defs` 参数化）：对每个形状，逐个删除必填字段断言 `from_json` 拒绝，并加一个未知字段断言拒绝——全部经 Python 解码路径。
+  3. 两个新用例的 `$defs` 名单、seed、必填集合、断言字段**全部由脚本从 Schema + codec 推导**，后续重命名/增删字段无需改名单。
+
+### 变异复验（P1-F 两类存活点全部转 KILLED）
+
+| 变异（Schema） | 范围 | 结果 |
+|---|---|---|
+| `required -> []` | 全部 19 个对象 `$defs` | **KILLED 19/19（SURVIVED 0）** |
+| `properties += __unknown__` | 全部 19 个对象 `$defs` | **KILLED 19/19（SURVIVED 0）** |
+
+其中核验方点名的 9 个非载荷子形状，两类变异各由新增用例命中（每条 2 failed）。所有变异均“备份 `/tmp` → 变异 → 跑测试 → 副本恢复”，恢复后 Schema 与 HEAD 逐字节一致、工作树干净。
+
+### 本轮测试（尾行原文）
+
+```
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py -q -p no:cacheprovider
+123 passed in 0.22s
+
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target/test_planning_decision_json_schema.py tests/orchestrator/full_target/test_planning_decision_contract.py tests/orchestrator/full_target/test_planning_decision_envelope.py -q -p no:cacheprovider
+275 passed in 0.25s
+
+$ PYTHONPATH=src uv run --offline pytest tests/orchestrator/full_target -q -p no:cacheprovider
+3283 passed, 2 skipped in 124.37s (0:02:04)
+
+$ uv run --offline ruff check src/agent_orchestrator/contracts/schemas/__init__.py tests/orchestrator/full_target/test_planning_decision_json_schema.py
+All checks passed!
+```
+
+### P2 处置
+
+- **P2-1（全量 `type` 盲扫口径）：** 已注意，后续脚本同时枚举字符串型与列表型 `type`。
+- **P2-2（`method_proposal` 开放对象）、P2-3（REUSE 缺 `src/**/*.json`）、P2-4（`const: 1` 与 `1.0` 等价）：** 维持前两轮判断，不处理（已记录）。

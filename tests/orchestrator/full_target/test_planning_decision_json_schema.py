@@ -569,6 +569,139 @@ def test_payload_defs_are_complete_and_match_the_codec_required_fields() -> None
         assert sorted(defs[name]["properties"]) == sorted(required), name
 
 
+def _object_def_names(schema: dict[str, Any]) -> list[str]:
+    """Every ``$defs`` entry that is a closed object shape (script-derived, no list)."""
+
+    return sorted(
+        name
+        for name, node in schema["$defs"].items()
+        if isinstance(node, dict) and node.get("type") == "object"
+    )
+
+
+def _codec_legal_shapes() -> dict[str, dict[str, Any]]:
+    """The codec-legal envelopes used to exercise every object shape."""
+
+    shapes: dict[str, dict[str, Any]] = {}
+    for path in _valid_paths():
+        shapes[path.stem] = _read(path)
+    shapes.update(_codec_canonical_variants())
+    return shapes
+
+
+def _locate_pointer(root: Any, pointer: str) -> Any:
+    node = root
+    for step in pointer.removeprefix("#/").split("/") if pointer != "#" else []:
+        node = node[int(step)] if step.isdigit() else node[step]
+    return node
+
+
+def _accepts(root: dict[str, Any]) -> bool:
+    """True when the Python codec accepts ``root`` (the runtime authority)."""
+
+    try:
+        PlanningDecisionEnvelopeV1.from_json(root)
+    except ContractError:
+        return False
+    return True
+
+
+def _fresh_seed(root_name: str) -> dict[str, Any]:
+    """A fresh, mutable copy of one codec-legal seed envelope."""
+
+    return json.loads(json.dumps(_codec_legal_shapes()[root_name]))
+
+
+def _coverage_seeds() -> dict[str, tuple[str, str]]:
+    """Map every object ``$defs`` name to ``(root_name, json_pointer)``.
+
+    The seed is the first value the Schema accepts for that ``$defs`` whose keys
+    cover the declared ``properties`` exactly, found by walking the codec-legal
+    envelopes.  Everything is derived from the Schema, so renaming a ``$defs``
+    entry or adding a field never needs a hand-edited name list here.
+    """
+
+    schema = _load_schema()
+    pool = _codec_legal_shapes()
+    seeds: dict[str, tuple[str, str]] = {}
+    for name in _object_def_names(schema):
+        properties = set(schema["$defs"][name].get("properties", {}))
+        ref = {"$ref": f"#/$defs/{name}"}
+        for root_name in sorted(pool):
+            for pointer, value in _walk(pool[root_name]):
+                if pointer == "#" or not isinstance(value, dict):
+                    continue
+                if set(value) != properties:
+                    continue
+                if _validate(schema, ref, value):
+                    continue
+                seeds[name] = (root_name, pointer)
+                break
+            if name in seeds:
+                break
+    return seeds
+
+
+#: The object ``$defs`` names, resolved once at import for parametrisation.
+_OBJECT_DEF_NAMES = _object_def_names(_load_schema())
+
+
+def test_every_object_def_required_and_properties_match_the_codec() -> None:
+    """Coverage lifted to *every* object ``$defs`` (script-enumerated, no list).
+
+    For each object shape the codec's own acceptance path decides which keys are
+    mandatory: deleting a key from the seed is required exactly when the codec
+    rejects the result.  That derived set must equal the Schema ``required`` list,
+    and every declared ``property`` must be covered by the seed (so no extra
+    property can hide in the Schema unnoticed).
+    """
+
+    schema = _load_schema()
+    seeds = _coverage_seeds()
+    assert set(seeds) == set(_OBJECT_DEF_NAMES), "no full-coverage codec seed for some $defs"
+
+    for name in _OBJECT_DEF_NAMES:
+        root_name, pointer = seeds[name]
+        node = schema["$defs"][name]
+        properties = set(node["properties"])
+        required = set(node.get("required", []))
+        assert required <= properties, name
+        derived: set[str] = set()
+        for field in properties:
+            root = _fresh_seed(root_name)
+            del _locate_pointer(root, pointer)[field]
+            if not _accepts(root):
+                derived.add(field)
+        assert derived == required, (name, sorted(required), sorted(derived))
+
+
+@pytest.mark.parametrize("def_name", _OBJECT_DEF_NAMES)
+def test_every_object_def_rejects_missing_required_and_unknown_fields(
+    def_name: str,
+) -> None:
+    """Strictness pin (P1-F): each object shape must reject a missing required
+    field and an unknown field, exercised through the Python decode path.
+
+    Built from the coverage seeds, so it reaches exactly the object shapes whose
+    ``required``/``properties`` a silent Schema edit would otherwise loosen.
+    """
+
+    schema = _load_schema()
+    seeds = _coverage_seeds()
+    root_name, pointer = seeds[def_name]
+    required = list(schema["$defs"][def_name].get("required", []))
+    assert required, def_name  # every object shape has at least one mandatory key
+
+    for field in required:
+        root = _fresh_seed(root_name)
+        del _locate_pointer(root, pointer)[field]
+        assert not _accepts(root), (def_name, field)
+
+    root = _fresh_seed(root_name)
+    _locate_pointer(root, pointer)["__unknown_field__"] = "x"
+    assert not _accepts(root), def_name
+
+
 def test_repair_payload_defs_are_discriminated_per_repair_kind() -> None:
     defs = _load_schema()["$defs"]
     assert defs["repairKind"]["enum"] == [member.value for member in RepairKind]
