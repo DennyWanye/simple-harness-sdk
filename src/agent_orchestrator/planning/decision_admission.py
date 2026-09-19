@@ -790,11 +790,14 @@ def _check_phase_enablement(
 
     key = _enablement_key(decision)
     if key not in context.enabled_decision_types:
+        # An empty phase has nothing to list, and §40 lets ``expected`` be absent:
+        # a blank string is not a value the problem model accepts.
+        enabled = ", ".join(sorted(context.enabled_decision_types)) or None
         stage.refuse(
             REJECTION.DECISION_NOT_ENABLED_IN_PHASE,
             f"{key} is not enabled in this phase",
             field_path="/decision_type",
-            expected=", ".join(sorted(context.enabled_decision_types)),
+            expected=enabled,
             observed=key,
         )
 
@@ -1002,8 +1005,11 @@ def _check_one_method(
             f"the cited {method_ref.id!r} is not the library's current definition",
             field_path=pointer,
             subject_ref=method_ref,
-            expected=str(view.version),
-            observed=str(method_ref.semantic_revision),
+            # §24 identity is the version *and* the hash.  Report the pair, so a
+            # reply that cites the right version with a moved hash still learns
+            # which half is wrong.
+            expected=f"{view.version}@{view.content_hash}",
+            observed=f"{method_ref.semantic_revision}@{method_ref.content_hash}",
         )
         return None
     refused = _METHOD_STATUS_CODES.get(view.status)
@@ -1028,13 +1034,16 @@ def _check_one_method(
     if bindings is not None:
         missing = sorted(name for name in view.required_parameters if name not in bindings)
         if missing:
+            # The reply bound nothing at all in the empty case; ``observed`` stays
+            # absent rather than blank, which the problem model rejects.
+            supplied = ", ".join(sorted(str(key) for key in bindings)) or None
             stage.refuse(
                 REJECTION.PARAMETER_INVALID,
                 f"the bindings do not fill the method's parameters: {', '.join(missing)}",
                 field_path="/payload/bindings",
                 subject_ref=method_ref,
                 expected=", ".join(sorted(view.required_parameters)),
-                observed=", ".join(sorted(str(key) for key in bindings)),
+                observed=supplied,
             )
             return None
     unregistered = sorted(name for name in view.predicate_keys if name not in context.predicates)

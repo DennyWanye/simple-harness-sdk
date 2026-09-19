@@ -48,6 +48,7 @@ from agent_orchestrator.contracts.planning_decisions import (
     PlanningDecisionStatus,
     PlanningDecisionType,
     PlanningFeedbackV1,
+    PlanningProblemDetailV1,
     PlanningRefV1,
     PlanningRequestBinding,
     PlanningRetryBudgetView,
@@ -797,8 +798,10 @@ def test_a_method_behind_the_library_revision_is_refused() -> None:
     decision = PlanningDecisionEnvelopeV1.from_json(raw)
     feedback = _reject(decision, _context_for("METHOD_STALE", raw))
     assert _codes(feedback) == ["METHOD_STALE"]
-    assert feedback.problems[0].expected == "2"
-    assert feedback.problems[0].observed == "1"
+    # §24 identity is the version *and* the hash: the feedback names both halves so
+    # a reply that got the version right but the hash wrong can see which moved.
+    assert feedback.problems[0].expected == f"2@{HASH_A}"
+    assert feedback.problems[0].observed == f"1@{HASH_A}"
 
 
 def test_a_retired_method_is_refused() -> None:
@@ -1127,10 +1130,20 @@ def test_a_non_envelope_decision_is_an_internal_contract_error() -> None:
 def test_a_caller_that_passes_no_usable_context_raises_rather_than_half_returns() -> None:
     # Without a context there are no §39 budgets to report, so the calling error is
     # raised instead of returned as feedback.  With a context it becomes the code.
-    with pytest.raises(ContractError):
+    with pytest.raises(ContractError) as caught:
         admit_planning_decision(  # type: ignore[arg-type]
             _valid_envelope("refine"), context="not-a-context"
         )
+    # The raised message is the same one the returned problem would have carried:
+    # the code is the module's internal-invariant one, not a planner mistake.
+    problem = PlanningProblemDetailV1(
+        code=REJECTION.INTERNAL_CONTRACT_ERROR,
+        subject_ref=None,
+        field_path=None,
+        detail=str(caught.value),
+    )
+    assert problem.code is REJECTION.INTERNAL_CONTRACT_ERROR
+    assert caught.value.args[0].startswith("admission requires a decoded")
 
 
 # --------------------------------------------------------------------------------------
