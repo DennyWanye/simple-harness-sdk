@@ -639,6 +639,7 @@ sealed 文本不含 `authoritative_refs` / `visible_refs_omitted`；§5.1 生产
 
 ## 13. 第 6 轮处置（核验结论：修后可合）
 
+**处置提交：** `b32c9c5`（test(h1-d): discriminate binding-vs-plan revision and numeric revision ordering）。
 **核验来源：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 6」小节（同一核验员续做；
 上一轮核验副本 HEAD `75be3df`，本轮验 `a5acea1`）。P0 无；P1 两条（P1-9 / P1-10，均为「测试输入退化
 使断言失去鉴别力」的缺口，实现本身已正确）；P2-14 记录三条等价变异。
