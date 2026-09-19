@@ -349,28 +349,28 @@ INCONSISTENT             : False
 | P2-7 | `acceptance_ref` / `resolution_ref` 同时存在时优先级无断言（N9 SURVIVED） | 补两条：两者并存取 acceptance；无 acceptance 时取 resolution |
 | P2-8 | 新增模型可见顶层字段 `authoritative_refs` 不在 §38「只加五项」清单内 | **见 §9.3：规格未覆盖点，按纪律记录并请计划作者裁定（本片不擅自改名或收敛）** |
 
-### 9.3 P2-8 规格未覆盖点（BLOCKER 备案，请计划作者裁定）
+### 9.3 P2-8 规格未覆盖点（**已裁定，2026-09-19 06:30**）
 
-- **事实：** §38 明写「在当前 package 上只加：`planning_protocol` / `planning_subjects` /
-  `visible_refs` / `previous_feedback` / `decision_limits`」，本片额外新增了第 6 个**模型可见**顶层
-  字段 `authoritative_refs`；`_seal` 会把它渲染进模型文本（实测 `"## authoritative_refs" in
-  sealed.text == True`）。
-- **为何仍需要它：** §5.1 要求 `task` 取 `task_semantics.content_hash`、`obligation` 取对象规范 JSON
-  摘要，而合并前旧包的 `open_compound_goals[]` 只带 `contract_revision`、不带哈希，`facts[]`/`methods[]`
-  也不含这两个摘要——**包内没有物理载体**。第 1 轮核验的修复方向亦给出两条路：把权威摘要「随包带入
-  一个仅供新协议读取的旁路」或「给收集器加可选的 network/binding 取值入口」；本片选了前者，因为它让
-  `visible_refs` 成为**包内内容的纯函数**（H1-F 可重算比对）。
-- **替代方案与代价：**
-  1. 改为「收集器可选参数」而非包内字段（不新增线上字段名）——代价：`visible_refs_from_hierarchical_
-     package(已存包)` 无法仅凭包体复现 task/obligation 引用，H1-F 只能以请求存储的 `visible_refs`
-     为准，而不能再重算。
-  2. 「留在包内数据但不渲染给模型」——本片**不可为**：渲染在 `context/context_builder.py::_seal`
-     （不在本片白名单），`_render` 遍历全部顶层键、无跳过机制。
-- **本片处置：** 按「规格未覆盖 → 记录并停在裁定点」的纪律，保留该字段（加性、不改旧路径、不破坏
-  §5.1 权威哈希语义），并在此**显式备案为待裁定线上字段**。请计划作者二选一：(a) 追认
-  `authoritative_refs` 为 §38 的第六个允许字段（并同步 §38 文本与 §14 JSON Schema）；或 (b) 指示
-  改用「收集器可选参数」方案，届时本片按新方案收敛。**在裁定前，本字段只影响显式开启新协议的包，
-  旧协议字节与既有测试均不受影响。**
+**裁定（计划作者，补遗文件末尾「追加裁定 2026-09-19 06:30」）：不追认 `authoritative_refs`。**
+请求包在新协议下只加 V2 第 38 节的五项；任务/责任的权威哈希改由**收集器（构包函数）的可选入参**
+在构包时传入，不写进包体、不渲染给模型。
+
+**改法（本轮）。**
+
+- **收集器签名**：`visible_refs_from_hierarchical_package(package, *, authoritative_refs=())` 与
+  `visible_refs_omitted(package, *, authoritative_refs=())` 新增可选关键字入参；`_collect_refs` /
+  `_sorted_unique_refs` / `_authority_index` 全程以参数传递，**不再从包体读任何 `authoritative_refs`**。
+- **构建函数**：`hierarchical_planner_package(..., authoritative_refs=...)` 仍接受该可选入参（默认 `()`），
+  由它算出 `visible_refs`；**返回值只含 §38 的五项新增字段**。原先落在包里的
+  `authoritative_refs` 与 `visible_refs_omitted` 两个键**一并移除**：前者改当入参，后者由调用方用
+  `visible_refs_omitted(pkg, authoritative_refs=...)` 现算（H1-F 仍可从同一输入重算）。
+- **结果**：新协议包的顶层键集合 = 旧键集合 + **恰好五项**；`_seal` 渲染的模型文本里不再出现
+  `authoritative_refs` / `visible_refs_omitted`（实测 `"## authoritative_refs" in sealed.text == False`）。
+- **旧协议字节不变**：黄金 `a9aa2e7e…`（fixture 世界）与 `801b8e39…`（stub 世界）仍逐位相等。
+
+> 上一轮 §9.3 的「待裁定线上字段」备案**随之关闭**；本片实际采用的是当日核验报告给出的方案 (b)
+> （收集器可选参数）。`visible_refs_omitted` 一并离开包体，是因为裁定要求「只加第 38 节的五项」，
+> 而 §38 列的五项不含它。
 
 ### 9.4 本轮验收门
 
@@ -414,3 +414,66 @@ F2  权威表只保留第一个 binding   -> 2 failed, 64 passed
 `test_the_built_sidecar_is_order_independent` 钉死。
 
 变异均以 `/tmp` 副本注入并恢复（`diff -q` 校验恢复后与备份一致），未使用任何 git 写命令。
+
+---
+
+## 10. 第 3 轮处置（裁定落实 + 复核 3 意见，核验结论：修后可合）
+
+**裁定来源：** `LLM-native-HTN计划V2-裁定补遗-2026-09-18.zh-CN.md` 末尾「追加裁定 2026-09-19 06:30」。
+**核验来源：** `plans/llm-native-htn/H1/reviews/核验-H1-D-2026-09-19.md`「复核 3」小节。
+
+### 10.1 裁定落实：请求包只加 §38 五项（关闭 §9.3 备案）
+
+- `authoritative_refs` 不再写进包体：改为**收集器可选入参**
+  `visible_refs_from_hierarchical_package(pkg, *, authoritative_refs=...)`（构包函数同名入参，默认 `()`）。
+- `visible_refs_omitted` 同样离开包体（§38 五项不含它）：调用方用
+  `visible_refs_omitted(pkg, *, authoritative_refs=...)` 现算，与 `visible_refs` **同源**。
+- 实测：新协议包顶层键 = 旧键集合 + **恰好五项**（`planning_protocol` / `planning_subjects` /
+  `visible_refs` / `previous_feedback` / `decision_limits`）；`_seal` 文本不含
+  `authoritative_refs` / `visible_refs_omitted`；旧协议黄金哈希 `a9aa2e7e…` / `801b8e39…` 不变。
+
+### 10.2 P1-3：`visible_refs_omitted` 只计唯一引用的口径
+
+**问题（复核 3）。** 若把计数口径写成原始收集数（`len(_collect_refs(...)) − 128`），同一引用同时
+出现在 `method_library` 与 `applicability`（生产路径确实如此）时会把重复算作「被截断丢弃」，从而
+**多报**。该口径此前无测试钉死（变异 I SURVIVED）。
+
+**修复/钉死。** 计数一律基于**去重后的唯一引用**（`_sorted_unique_refs`）。新增两条断言：
+
+- 唯一引用 2 条、其中 1 条重复、总量远低于上限 → `visible_refs_omitted == 0`；
+- 唯一引用 `128+7`、每条再重复一次（原始收集 `2×135`、唯一 `135`）→
+  `visible_refs_omitted == 135 − 128 == 7`，且**不等于** `2×135 − 128 == 142`。
+
+### 10.3 P2：排序键分量与畸形入参兜底
+
+| 编号 | 问题 | 处置 |
+|---|---|---|
+| P2-9 | `_ref_sort_key` 的 hash / kind 分量可弱化而不被发现（D / E / N8b 存活） | 补两条：`(kind,id,revision)` 相同、仅 hash 不同时按 hash 升序；task/obligation 共享 id 时按 kind 先序 |
+| P2-10 | 畸形入参行的兜底分支无断言（F 存活） | 补两条：收集器层 `["not-a-row", {"kind":...无 id}, {"id":...无 kind}, None, 真行]` 不崩且只出真 ref；**构建器层**（排序列真正执行处）同样不崩 |
+| P2-8 | 见 §9.3 / §10.1，**已裁定并落实** | — |
+| P2-4 | `method_instance` 缺枚举成员时降级，归属 H1-A | 不改 |
+
+### 10.4 本轮变异（复核 3 的 I/D/E/F 与前三轮）
+
+复核 3 报 4 个存活点，本轮逐条重做，**全部 KILLED**：
+
+```text
+I  计数改用原始收集数（非唯一）  -> 1 failed, 71 passed
+D  排序键丢 hash 分量             -> 1 failed, 71 passed
+E  排序键只留 hash（丢 kind/id）  -> 3 failed, 69 passed
+F  畸形入参行直接 raise           -> 1 failed, 72 passed
+```
+
+变异均以 `/tmp` 副本注入并恢复（`diff -q` 校验恢复后与备份一致），未使用任何 git 写命令。
+
+### 10.5 本轮验收门
+
+| 完成标准 | 证据 | 结果 |
+|---|---|---|
+| 本片测试文件全绿 | `73 passed in 0.58s` | ✅ |
+| 相关四文件全绿 | `346 passed in 9.27s` | ✅ |
+| full_target 全绿 | `3085 passed, 2 skipped in 123.82s (0:02:03)` | ✅ |
+| 旧协议字节不变（黄金测试未改） | 黄金 `a9aa2e7e…` / `801b8e39…` 逐位相等 | ✅ |
+| 包顶层键 = 旧 + 恰好五项 | 见 §10.1 | ✅ |
+| sealed 文本不含 `authoritative_refs` | 见 §10.1 | ✅ |
+| ruff 无告警 | `ruff check <两文件>`：`All checks passed!` | ✅ |

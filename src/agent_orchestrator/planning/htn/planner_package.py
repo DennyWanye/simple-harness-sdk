@@ -581,21 +581,28 @@ def _method_ref(value: Any) -> dict[str, Any] | None:
     return _one_ref(PlanningRefKind.METHOD.value, method_id, version, data.get("content_hash"))
 
 
-def _authority_index(package: Mapping[str, Any]) -> Mapping[tuple[str, str], Mapping[str, Any]]:
-    """The authoritative digest per ``(kind, id)`` the package was built with (§5.1).
+def _authority_index(
+    authorities: object,
+) -> Mapping[tuple[str, str], Mapping[str, Any]]:
+    """The authoritative digest per ``(kind, id)`` the *caller* supplied (§5.1).
 
-    ``visible_refs`` has to carry the *object's* digest, and the old sections do not
-    have one for a task or an obligation: ``open_compound_goals`` quotes a
+    ``visible_refs`` has to carry the *object's* digest, and the request package does
+    not have one for a task or an obligation: ``open_compound_goals`` quotes a
     ``contract_revision`` but never a hash, and nothing in the package reaches the
     obligation ledger.  Rather than derive a digest from the ref (which describes the
-    ref, not the object), the builder hands the collector this side table — one
-    quadruple per referenced object, taken from ``task_semantics.content_hash`` and
-    from the obligation's canonical JSON.  A ``(kind, id)`` that is not in the table
-    has no authoritative digest, so its ref is simply not emitted.
+    ref, not the object), the caller passes the collector one quadruple per referenced
+    object — read from ``task_semantics.content_hash`` / the obligation's canonical
+    JSON — as a plain argument.  It is **not** a package field: the ruling of
+    2026-09-19 06:30 keeps the decision package at V2 §38's five additions, so the
+    authoritative digests never reach the model.
+
+    A ``(kind, id)`` that is not in the table has no authoritative digest, so its ref
+    is simply not emitted; a malformed row is skipped here rather than raising.
     """
 
     index: dict[tuple[str, str], Mapping[str, Any]] = {}
-    for entry in package.get("authoritative_refs", ()):
+    rows = authorities if isinstance(authorities, Sequence) else ()
+    for entry in rows:
         if not isinstance(entry, Mapping):
             continue
         kind = entry.get("kind")
@@ -712,20 +719,29 @@ def _accepted_ref(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _collect_refs(package: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Every reference the package's *own* sections already show, in §17 shape."""
+def _collect_refs(
+    package: Mapping[str, Any], authorities: object = ()
+) -> list[dict[str, Any]]:
+    """Every reference the package's own sections show, in §17 shape.
+
+    ``authorities`` carries the §5.1 digests for the kinds whose sections quote only
+    an id and a revision (tasks, obligations).  It is an *input*, never read out of
+    ``package``: the ruling forbids a sixth package field, so this argument is how the
+    caller lets ``visible_refs`` carry a task's ``task_semantics.content_hash`` without
+    a fabricated one.
+    """
 
     collected: list[dict[str, Any]] = []
 
-    authorities = _authority_index(package)
+    authority_by_key = _authority_index(authorities)
     plan = package.get("plan")
     plan = plan if isinstance(plan, Mapping) else {}
     for entry in plan.get("open_compound_goals", ()):  # type: ignore[union-attr]
         if isinstance(entry, Mapping):
-            collected.extend(_task_ref(entry, "goal_id", authorities))
+            collected.extend(_task_ref(entry, "goal_id", authority_by_key))
     for entry in plan.get("committed_primitives", ()):  # type: ignore[union-attr]
         if isinstance(entry, Mapping):
-            collected.extend(_task_ref(entry, "task_id", authorities))
+            collected.extend(_task_ref(entry, "task_id", authority_by_key))
 
     for entry in package.get("method_library", ()):
         if not isinstance(entry, Mapping):
@@ -791,10 +807,12 @@ def _authority_sort_key(row: Any) -> tuple[str, str, int, str]:
     )
 
 
-def _sorted_unique_refs(package: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _sorted_unique_refs(
+    package: Mapping[str, Any], authorities: object = ()
+) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, int, str]] = set()
     unique: list[dict[str, Any]] = []
-    for ref in _collect_refs(package):
+    for ref in _collect_refs(package, authorities):
         key = _ref_sort_key(ref)
         if key in seen:
             continue
@@ -805,25 +823,33 @@ def _sorted_unique_refs(package: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def visible_refs_from_hierarchical_package(
-    package: Mapping[str, Any],
+    package: Mapping[str, Any], *, authoritative_refs: object = ()
 ) -> tuple[dict[str, Any], ...]:
     """The §18 reference quadruples a package exposes to the model.
 
-    A pure function of what the package *already* carries — method library,
-    applicability, open goals, committed primitives, recorded facts, rejected
-    refinements and (from H2) accepted results.  Deduped on the §17 quadruple and
-    sorted by ``(kind, id, semantic_revision, content_hash)``, then capped at
+    A pure function of the package's own sections — method library, applicability,
+    open goals, committed primitives, recorded facts, rejected refinements and (from
+    H2) accepted results — plus the caller-supplied ``authoritative_refs`` for the
+    kinds those sections quote without a digest (§5.1).  Deduped on the §17 quadruple
+    and sorted by ``(kind, id, semantic_revision, content_hash)``, then capped at
     :data:`MAX_VISIBLE_REFS`; the count dropped by the cap is reported separately by
     :func:`visible_refs_omitted` so the request binding can pin both.
     """
 
-    return tuple(_sorted_unique_refs(package)[:MAX_VISIBLE_REFS])
+    return tuple(_sorted_unique_refs(package, authoritative_refs)[:MAX_VISIBLE_REFS])
 
 
-def visible_refs_omitted(package: Mapping[str, Any]) -> int:
-    """How many references the :data:`MAX_VISIBLE_REFS` cap dropped (§38 truncation)."""
+def visible_refs_omitted(package: Mapping[str, Any], *, authoritative_refs: object = ()) -> int:
+    """How many references the :data:`MAX_VISIBLE_REFS` cap dropped (§38 truncation).
 
-    return max(0, len(_sorted_unique_refs(package)) - MAX_VISIBLE_REFS)
+    The count is over *unique* references — the same set ``visible_refs`` is drawn
+    from — so a ref that two sections both quote is one ref, never a dropped one.
+    """
+
+    return max(
+        0,
+        len(_sorted_unique_refs(package, authoritative_refs)) - MAX_VISIBLE_REFS,
+    )
 
 
 def planning_subjects(network: TaskNetworkSnapshot) -> tuple[dict[str, Any], ...]:
@@ -942,37 +968,32 @@ def _decision_fields(
 ) -> dict[str, Any]:
     """The §38 decision-protocol fields, added on top of the legacy package.
 
-    ``authoritative_refs`` is a *side table*, not a tenth thing the model reasons
-    about: it carries the object digests §5.1 names for the kinds whose old sections
-    quote only an id and a revision (tasks, obligations), so the collector can emit a
-    byte-matchable quadruple instead of a fabricated digest.  It travels inside the
-    decision package and nowhere else — the legacy package never grows it — which is
-    also what lets a later reader re-run the collector on the stored request.
+    Ruling 2026-09-19 06:30: the decision package adds **only** V2 §38's five fields —
+    ``planning_protocol`` / ``planning_subjects`` / ``visible_refs`` /
+    ``previous_feedback`` / ``decision_limits``.  The §5.1 authoritative digests that
+    ``visible_refs`` needs for tasks and obligations are therefore a *collector
+    argument*, not a package key: they resolve the refs but never render to the model.
     """
 
-    # The side table is an input *set*: its row order is not semantic, and letting it
-    # through would move ``visible_refs`` (and the whole package hash the request
+    # The authority list is an input *set*: its row order is not semantic, and letting
+    # it through would move ``visible_refs`` (and the whole package hash the request
     # binding is computed over) for two callers that handed in the same facts.  Sort
     # by the §5.1 quadruple, exactly as the refs it feeds are sorted.  The key is
-    # tolerant because a row the caller malformed is *skipped* downstream, not a
-    # crash mid-package: ordering must not be the thing that validates it.
+    # tolerant because a row the caller malformed is *skipped* downstream, not a crash
+    # mid-package: ordering must not be the thing that validates it.
     authority_rows = sorted(_as_json_refs(authorities), key=_authority_sort_key)
-    scoped = {**package, "authoritative_refs": authority_rows}
-    # Both quantities come from **one** input — the scoped package — or the count
-    # describes a different request than the list it is reported beside: the side
-    # table contributes task/obligation refs, so measuring the cap on the un-scoped
-    # package would under-report exactly the refs this round added (§48).
-    refs = visible_refs_from_hierarchical_package(scoped)
-    omitted = len(_sorted_unique_refs(scoped)) - len(refs)
+    refs = visible_refs_from_hierarchical_package(package, authoritative_refs=authority_rows)
+    # Exactly §38's five fields.  The caller reads the dropped count from
+    # ``visible_refs_omitted(package, authoritative_refs=...)``, which is computed from
+    # the same input as the list above; it is not a package key, because the ruling of
+    # 2026-09-19 06:30 refuses a sixth model-visible field.
     return {
         "planning_protocol": {
             "protocol": PLANNING_DECISION_V1,
             "enabled_decision_types": _enabled_decision_types(),
         },
         "planning_subjects": [dict(item) for item in planning_subjects(network)],
-        "authoritative_refs": authority_rows,
         "visible_refs": [dict(item) for item in refs],
-        "visible_refs_omitted": omitted,
         "previous_feedback": _feedback_json(previous_feedback),
         "decision_limits": dict(DECISION_LIMITS),
     }
