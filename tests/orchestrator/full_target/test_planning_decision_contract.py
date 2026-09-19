@@ -227,8 +227,8 @@ def test_h1_decision_enablement_matches_section_12() -> None:
     assert dict(H1_DECISION_ENABLEMENT) == {
         "REFINE": executable,
         "REPAIR/REPLACE_METHOD": executable,
-        "REPAIR/PROPOSE_SUCCESSOR": executable,
-        "BIND_EXISTING_GOAL": executable,
+        "REPAIR/PROPOSE_SUCCESSOR": decode_only,
+        "BIND_EXISTING_GOAL": decode_only,
         "DECLARE_BLOCKED": executable,
         "WAIT": executable,
         "NO_CHANGE": executable,

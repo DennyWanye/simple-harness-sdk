@@ -60,6 +60,9 @@ REJECTION = PlanningDecisionRejectionCode
 PROPOSAL_FIXTURE = (
     Path(__file__).resolve().parent / "fixtures" / "htn" / "proposals" / "valid.json"
 )
+PLANNING_DECISION_FIXTURE_ROOT = (
+    Path(__file__).resolve().parent / "fixtures" / "planning_decision_v1" / "valid"
+)
 
 #: V2 §32, transcribed as a literal.  The codec's ``SYSTEM_FIELD_KEYS`` must equal
 #: exactly this set, and every one of these keys must be refused at each of the
@@ -184,6 +187,22 @@ def test_a_fenced_json_block_is_accepted() -> None:
     text = f"<{PLANNING_DECISION_TAG}>\n{body}\n</{PLANNING_DECISION_TAG}>"
 
     assert parse_planning_decision(text).to_json() == _envelope()
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ("repair-propose-successor", "bind-existing-goal-reuse", "bind-existing-goal-share"),
+)
+def test_demoted_operations_still_decode_and_round_trip(
+    fixture_name: str,
+) -> None:
+    raw = json.loads(
+        (PLANNING_DECISION_FIXTURE_ROOT / f"{fixture_name}.json").read_text(encoding="utf-8")
+    )
+    decision = parse_planning_decision(_block(raw))
+
+    assert decision.to_json() == raw
+    assert parse_planning_decision(serialize_planning_decision(decision)) == decision
 
 
 # --------------------------------------------------------------------------------------
@@ -401,7 +420,7 @@ def test_every_other_contract_error_falls_back_to_malformed(raw_mutation: Any) -
 
 
 # --------------------------------------------------------------------------------------
-# The three decode-only types: parse must succeed and must NOT raise
+# Decode-only types: parse must succeed and must NOT raise
 # DECISION_NOT_ENABLED_IN_PHASE (that decision belongs to admission / H1-F).
 # --------------------------------------------------------------------------------------
 

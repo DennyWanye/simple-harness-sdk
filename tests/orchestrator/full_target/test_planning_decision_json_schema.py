@@ -183,6 +183,11 @@ CONTRACT_LAYER_CODES = frozenset(
         "STRUCTURE_INVALID",
     }
 )
+# These payload-stage codes remain covered by admission unit tests, but their H1-F
+# fixture expectations now stop at the earlier phase-enable gate.
+ADMISSION_CODES_WITHOUT_H1F_FIXTURE = frozenset(
+    {"OBLIGATION_NOT_OPEN", "REFINEMENT_CYCLE", "REUSE_NOT_ALLOWED"}
+)
 
 
 def _walk(node: Any, path: tuple[str, ...] = ()) -> Iterator[tuple[str, Any]]:
@@ -870,7 +875,9 @@ def test_every_expectation_file_belongs_to_a_fixture() -> None:
 
 def test_every_rejection_code_has_at_least_one_invalid_fixture() -> None:
     covered = {_read(expect)["expected_code"] for _, expect in _invalid_cases()}
-    assert covered == {member.value for member in PlanningDecisionRejectionCode}
+    assert covered | ADMISSION_CODES_WITHOUT_H1F_FIXTURE == {
+        member.value for member in PlanningDecisionRejectionCode
+    }
 
 
 def test_contract_layer_fixtures_are_checked_in_now() -> None:
@@ -890,8 +897,10 @@ def test_admission_layer_fixtures_are_deferred_to_h1_f() -> None:
         for _, expect in _invalid_cases()
         if _read(expect)["checked_in"] == "H1-F"
     }
-    assert deferred == {member.value for member in PlanningDecisionRejectionCode} - (
-        CONTRACT_LAYER_CODES
+    assert deferred == (
+        {member.value for member in PlanningDecisionRejectionCode}
+        - CONTRACT_LAYER_CODES
+        - ADMISSION_CODES_WITHOUT_H1F_FIXTURE
     )
 
 

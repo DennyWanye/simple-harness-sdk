@@ -5,8 +5,8 @@
 - 权威规格：《SimpleHarness LLM-Native HTN Core 代码级执行计划 V2》§9、§41、§13、§24–§30；《LLM-native HTN 计划 V2 裁定补遗》§七、§八
 - 提示词版本：`planner-hierarchical-v8`
 - 配对：`planner-hierarchical-v8 <-> package 4 <-> planning-decision-v1`
-- sha256（`instructions` 的 UTF-8 字节）：`dba73c4f583256ff36147d59a936aef48f3d1392797cebeba468142417e85ada`
-- 长度：`2587` 字符
+- sha256（`instructions` 的 UTF-8 字节）：`90c8b9f0551b98e299f1c11f90930f2b77b46e83397caaaa0f99617381c93e1c`
+- 长度：`2459` 字符
 
 > 下方「提示词全文」由一个脚本从 `src/agent_orchestrator/runtime/role_templates.py` 里的
 > `PLANNER_HIERARCHICAL_V8.instructions` 直接导出，因此与代码中的文本逐字一致。
@@ -27,7 +27,6 @@
 可用决定与用法（只列 H1 阶段 enabled_decision_types 里可能出现的几种）：
   - REFINE：为一个 open 的 compound 目标采用一个已注册方法。payload 形如 {"method_ref":四元组,"bindings":{参数名:值}}，method_ref 必须能在 visible_refs 里找到同一条。
   - REPAIR：payload.repair_kind = REPLACE_METHOD 时表示「退掉一个被拒的方法实例、采用一个替代方法」。若输入里 rejected_refinements 非空，说明根评审拒绝了该目标当前采用的方法实例：用一个 REPAIR 决定表达修复，payload.repair_kind = "REPLACE_METHOD"，rejected_method_instance 与 replacement_method_ref 都从 visible_refs 照抄——不要拆成两个顶层决定，也不要用别的 repair_kind 代替。
-  - BIND_EXISTING_GOAL：把一个已有目标共享/复用到某个方法槽位（不重做同一件事）时用这个类型，payload 里给出 mode 与被复用的 goal_ref / resolution_ref，引用同样照抄 visible_refs。
   - DECLARE_BLOCKED：当你找不到任何可用方法、也证明不了目标能推进时用这个类型，在 payload.blockers 里写清 code 与 detail；系统据此决定是否进入方法合成轮，你不需要也不能自己合成方法，也不要直接宣布 Mission 失败。
   - WAIT：当已有工作在推进、你只是等它返回时用这个类型，只在 payload.wait_for 里列出要等的引用。
   - NO_CHANGE：当当前采用的方法仍然有效、不需要改动计划时用这个类型，payload 只写一句 reason，不要夹带任何状态修改。
@@ -40,10 +39,10 @@
 摘要核对：
 
 ```text
-sha256(instructions) = dba73c4f583256ff36147d59a936aef48f3d1392797cebeba468142417e85ada
+sha256(instructions) = 90c8b9f0551b98e299f1c11f90930f2b77b46e83397caaaa0f99617381c93e1c
 ```
 
-## 二、逐段设计说明（对应 §41 的十二个要点）
+## 二、逐段设计说明（对应裁定后仍适用的 §41 十一个要点）
 
 第 1 段（`[role:planner]` + 开头两句）
 : 说明这是层次模式下的 Planner，运行在 `planning-decision-v1` 协议上，一轮只提出**一个**
@@ -73,12 +72,11 @@ sha256(instructions) = dba73c4f583256ff36147d59a936aef48f3d1392797cebeba46814241
   等，出现即整块拒绝。这里列名满足「列出这些字段名」的要求。
 
 「可用决定与用法」段
-: 逐个给出 H1 阶段可能出现的决定类型及其 payload 形态，覆盖 §24–§30：
+: 逐个给出 H1 阶段仍可提出的决定类型及其 payload 形态，覆盖 §24–§30 中本阶段启用的类型：
 
   - `REFINE`：§24，payload `{"method_ref":四元组,"bindings":{…}}`。
   - `REPAIR`：§25，被拒的展开用一个 `REPAIR`（`payload.repair_kind = "REPLACE_METHOD"`），
     `rejected_refinements` 非空时即用此形态（§41 点 8）；明确不得拆成两个顶层决定。
-  - `BIND_EXISTING_GOAL`：§27，共享/复用已有目标用此类型（§41 点 9）。
   - `DECLARE_BLOCKED`：§28，无可用方法或证明不了推进时使用，交由系统决定是否进入方法
     合成轮，模型不自行合成、也不直接宣告 Mission 失败（§41 点 10）。
   - `WAIT`：§29，已有工作在推进时只列出 `wait_for`。

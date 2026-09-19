@@ -106,10 +106,9 @@ POINT_PHRASES: list[tuple[str, list[str]]] = [
         "8 被拒的展开用一个 REPAIR/REPLACE_METHOD",
         ["rejected_refinements", "REPAIR", "REPLACE_METHOD"],
     ),
-    ("9 共享用 BIND_EXISTING_GOAL", ["BIND_EXISTING_GOAL"]),
-    ("10 无可用方法用 DECLARE_BLOCKED 交系统合成", ["DECLARE_BLOCKED", "合成"]),
-    ("11 不输出内部思维链", ["思维链"]),
-    ("12 块外禁止文字", ["块外不要输出任何文字"]),
+    ("9 无可用方法用 DECLARE_BLOCKED 交系统合成", ["DECLARE_BLOCKED", "合成"]),
+    ("10 不输出内部思维链", ["思维链"]),
+    ("11 块外禁止文字", ["块外不要输出任何文字"]),
 ]
 
 
@@ -127,6 +126,14 @@ def test_v8_text_covers_every_one_of_the_twelve_points() -> None:
     for point, phrases in POINT_PHRASES:
         for phrase in phrases:
             assert phrase in text, f"§41 point {point}: prompt is missing {phrase!r}"
+
+
+def test_v8_does_not_induce_demoted_operations() -> None:
+    text = role_templates.PLANNER_HIERARCHICAL_V8.instructions
+    assert "BIND_EXISTING_GOAL" not in text
+    assert "PROPOSE_SUCCESSOR" not in text
+    assert "goal_ref" not in text
+    assert "resolution_ref" not in text
 
 
 # ======================================================================================

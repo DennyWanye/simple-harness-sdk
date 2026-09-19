@@ -100,7 +100,7 @@ CODEC_LAYER_CODES = frozenset(
 )
 
 #: §12 H1: the decision kinds the package advertises as executable.  The phase
-#: gate reads this set, so a decode-only kind (REQUEST_HUMAN, ...) is refused.
+#: gate reads this set, so every decode-only kind is refused.
 H1_ENABLED = frozenset(
     name for name, enablement in H1_DECISION_ENABLEMENT.items() if enablement.executable
 )
@@ -575,15 +575,19 @@ def test_every_admission_rejection_code_has_a_case() -> None:
 EXECUTABLE_VALID = (
     "refine",
     "repair-replace-method",
-    "repair-propose-successor",
-    "bind-existing-goal-reuse",
-    "bind-existing-goal-share",
     "declare-blocked",
     "no-change",
     "wait",
 )
 
-DECODE_ONLY_VALID = ("request-evidence", "request-human", "propose-method")
+DECODE_ONLY_VALID = (
+    "repair-propose-successor",
+    "bind-existing-goal-reuse",
+    "bind-existing-goal-share",
+    "request-evidence",
+    "request-human",
+    "propose-method",
+)
 
 
 @pytest.mark.parametrize("name", EXECUTABLE_VALID)
@@ -688,7 +692,11 @@ def test_a_repair_payload_error_outranks_the_method_library() -> None:
     # refused for the obligation, never for a method it does not name.
     feedback = _reject(
         _valid_envelope("repair-propose-successor"),
-        _context(open_obligations=(), methods=()),
+        _context(
+            open_obligations=(),
+            methods=(),
+            enabled_decision_types=H1_ENABLED | {"REPAIR/PROPOSE_SUCCESSOR"},
+        ),
     )
     assert _codes(feedback) == ["OBLIGATION_NOT_OPEN"]
 
@@ -1052,7 +1060,13 @@ def test_an_instance_belonging_to_another_subject_is_refused() -> None:
 
 
 def test_a_successor_on_a_closed_obligation_is_refused() -> None:
-    feedback = _reject(_valid_envelope("repair-propose-successor"), _context(open_obligations=()))
+    feedback = _reject(
+        _valid_envelope("repair-propose-successor"),
+        _context(
+            open_obligations=(),
+            enabled_decision_types=H1_ENABLED | {"REPAIR/PROPOSE_SUCCESSOR"},
+        ),
+    )
     assert _codes(feedback) == ["OBLIGATION_NOT_OPEN"]
     assert feedback.problems[0].field_path == "/payload/obligation_ref"
 
@@ -1060,7 +1074,10 @@ def test_a_successor_on_a_closed_obligation_is_refused() -> None:
 def test_a_successor_that_would_refine_itself_is_refused() -> None:
     feedback = _reject(
         _valid_envelope("repair-propose-successor"),
-        _context(plan_shape=PlanShapeView(refinement_cycle=("t-1 is an ancestor of goal.type",))),
+        _context(
+            plan_shape=PlanShapeView(refinement_cycle=("t-1 is an ancestor of goal.type",)),
+            enabled_decision_types=H1_ENABLED | {"REPAIR/PROPOSE_SUCCESSOR"},
+        ),
     )
     assert _codes(feedback) == ["REFINEMENT_CYCLE"]
 
@@ -1096,14 +1113,24 @@ def test_a_refinement_that_leaves_an_obligation_uncovered_is_refused() -> None:
 
 def test_a_resolution_that_is_not_current_cannot_be_reused() -> None:
     feedback = _reject(
-        _valid_envelope("bind-existing-goal-reuse"), _context(current_resolutions=())
+        _valid_envelope("bind-existing-goal-reuse"),
+        _context(
+            current_resolutions=(),
+            enabled_decision_types=H1_ENABLED | {"BIND_EXISTING_GOAL"},
+        ),
     )
     assert _codes(feedback) == ["REUSE_NOT_ALLOWED"]
     assert feedback.problems[0].field_path == "/payload/resolution_ref"
 
 
 def test_a_goal_that_is_no_longer_demanded_cannot_be_shared() -> None:
-    feedback = _reject(_valid_envelope("bind-existing-goal-share"), _context(shareable_goals=()))
+    feedback = _reject(
+        _valid_envelope("bind-existing-goal-share"),
+        _context(
+            shareable_goals=(),
+            enabled_decision_types=H1_ENABLED | {"BIND_EXISTING_GOAL"},
+        ),
+    )
     assert _codes(feedback) == ["REUSE_NOT_ALLOWED"]
     assert feedback.problems[0].field_path == "/payload/goal_ref"
 
@@ -1207,16 +1234,18 @@ SECTION_32_SYSTEM_FIELDS = frozenset(
 )
 
 
-@pytest.mark.parametrize("code", sorted(ADMISSION_CODE_CASES))
-def test_a_refusal_never_mentions_a_system_field_or_an_internal_id(code: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "raw", "expect"), _h1f_cases(), ids=_h1f_ids()
+)
+def test_a_refusal_never_mentions_a_system_field_or_an_internal_id(
+    name: str, raw: Any, expect: dict[str, Any]
+) -> None:
     # §39: the feedback goes straight to the model.  A §32 name (or an internal
     # operation / approval / mission id) in it would either teach the model to
     # write a system field or leak the system's private vocabulary.
-    cases = {name: (raw, expect) for name, raw, expect in _h1f_cases()}
-    name = next(
-        key for key, (_, expect) in cases.items() if expect["expected_code"] == code
-    )
-    raw = cases[name][0]
+    code = expect["expected_code"]
+    if code in TEXT_LEVEL_CODES:
+        pytest.skip("codec-level refusal is covered by the codec test")
     feedback = _reject(_decision_for(raw, code), _context_for(code, raw))
     # §39 fixes the *key names* (including ``previous_decision_id``), so the scan is
     # over the human-facing values: what the model reads as prose, not the shape.
