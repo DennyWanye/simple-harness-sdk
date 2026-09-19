@@ -1,0 +1,58 @@
+{
+  "sdk": "/Users/taiwan/PROJECTS/SimplaHarness/simple-harness-sdk",
+  "base": "d9efd17",
+  "head": "3554e60528201c8d59a2be7fedeceb745ceb3248",
+  "ok": true,
+  "items": [
+    {
+      "name": "clean",
+      "ok": true,
+      "detail": "working tree clean"
+    },
+    {
+      "name": "allowlist",
+      "ok": true,
+      "detail": "skipped: no --allow given"
+    },
+    {
+      "name": "contracts_frozen",
+      "ok": true,
+      "detail": "no change to contracts files that existed at v0.12.2"
+    },
+    {
+      "name": "no_secrets",
+      "ok": true,
+      "detail": "no secret-like added lines"
+    },
+    {
+      "name": "ruff",
+      "ok": true,
+      "detail": "ruff check passed on changed .py files"
+    },
+    {
+      "name": "import_origin",
+      "ok": true,
+      "detail": "imports from /Users/taiwan/PROJECTS/SimplaHarness/simple-harness-sdk/src/agent_orchestrator/__init__.py"
+    },
+    {
+      "name": "targeted",
+      "ok": true,
+      "detail": "passed=8 failed=0 errors=0; tail: 8 passed in 0.31s"
+    },
+    {
+      "name": "full_target",
+      "ok": true,
+      "detail": "passed=3651 (baseline=2960) failed=0 errors=0; log: /private/tmp/claude-501/-Users-taiwan-PROJECTS-SimplaHarness/8c0d961a-9d09-4be3-ba68-31fc6bea5e70/scratchpad/full_target.log"
+    },
+    {
+      "name": "legacy",
+      "ok": true,
+      "detail": "passed=560 (baseline=560) failed=0 errors=0; log: /private/tmp/claude-501/-Users-taiwan-PROJECTS-SimplaHarness/8c0d961a-9d09-4be3-ba68-31fc6bea5e70/scratchpad/legacy.log"
+    },
+    {
+      "name": "sentinel",
+      "ok": true,
+      "detail": "sentinel count=26 (max=26)"
+    }
+  ]
+}
