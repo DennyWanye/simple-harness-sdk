@@ -12,6 +12,10 @@ from typing import Any
 
 from simple_harness.contracts import canonical_json
 
+from ..contracts.planning_decisions import (
+    LEGACY_PLANNING_PROTOCOL,
+    PLANNING_DECISION_V1,
+)
 from ..runtime.role_templates import (
     PLANNER_HIERARCHICAL_V8_VERSION,
     PLANNING_DECISION_PACKAGE_VERSION,
@@ -20,7 +24,7 @@ from ..storage.planning_decision_store import PlanningDecisionStore
 from ..storage.store import Store
 
 PLANNING_PROTOCOL_BINDING = {
-    "protocol_version": "planning-decision-v1",
+    "protocol_version": PLANNING_DECISION_V1,
     "package_version": PLANNING_DECISION_PACKAGE_VERSION,
     "prompt_version": PLANNER_HIERARCHICAL_V8_VERSION,
 }
@@ -70,9 +74,29 @@ def planning_protocol_for_mission(
     }
 
 
+def planning_protocol_replay_conflict(
+    store: Store, mission_id: str, protocol_version: str
+) -> str | None:
+    """Return a replay conflict, keeping protocol invariants out of the hot file."""
+
+    stored = planning_protocol_for_mission(store, mission_id)
+    if protocol_version == PLANNING_DECISION_V1:
+        expected = {
+            "protocol_version": PLANNING_DECISION_V1,
+            "package_version": PLANNING_PROTOCOL_BINDING["package_version"],
+            "prompt_version": PLANNING_PROTOCOL_BINDING["prompt_version"],
+        }
+        if stored is None or any(stored.get(key) != value for key, value in expected.items()):
+            return f"mission {mission_id} has no matching durable planning protocol binding"
+    elif protocol_version == LEGACY_PLANNING_PROTOCOL and stored is not None:
+        return f"mission {mission_id} cannot switch planning protocol"
+    return None
+
+
 __all__ = (
     "PLANNING_PROTOCOL_BINDING",
     "bind_planning_protocol",
     "planning_protocol_binding_hash",
     "planning_protocol_for_mission",
+    "planning_protocol_replay_conflict",
 )

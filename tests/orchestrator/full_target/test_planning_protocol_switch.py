@@ -14,6 +14,8 @@ import pytest
 from agent_orchestrator.contracts import Budget, ContractError
 from agent_orchestrator.contracts.planning_decisions import (
     LEGACY_PLANNING_PROTOCOL as CONTRACT_LEGACY_PLANNING_PROTOCOL,
+)
+from agent_orchestrator.contracts.planning_decisions import (
     PLANNING_DECISION_V1 as CONTRACT_PLANNING_DECISION_V1,
 )
 from agent_orchestrator.orchestrator.commit_service import (

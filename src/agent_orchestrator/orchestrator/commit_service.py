@@ -52,6 +52,7 @@ from ..contracts.models import (
     jsonable,
     sha256_hex,
 )
+from ..contracts.planning_decisions import LEGACY_PLANNING_PROTOCOL, PLANNING_DECISION_V1
 from ..governance.budgets import AccountSnapshot, BudgetError, BudgetLedger, UsageFact
 from ..governance.domains import (
     CODE_DOMAIN,
@@ -126,9 +127,8 @@ from .plan_commits import (
     semantics_of,
 )
 from .planning_protocol_binding import (
-    PLANNING_PROTOCOL_BINDING,
     bind_planning_protocol,
-    planning_protocol_for_mission,
+    planning_protocol_replay_conflict,
 )
 from .policy_commits import PolicyCommitsMixin
 from .protected_tail_commits import ProtectedTailCommitsMixin
@@ -195,8 +195,6 @@ SUBMITTED_STATES = frozenset({AttemptStatus.SUBMITTED, AttemptStatus.VERIFYING})
 ACTOR_SYSTEM = "system"
 ORCHESTRATOR_ID = "orchestrator"
 
-LEGACY_PLANNING_PROTOCOL = "legacy-plan-proposal-v1"
-PLANNING_DECISION_V1 = "planning-decision-v1"
 _PLANNING_PROTOCOLS = frozenset({LEGACY_PLANNING_PROTOCOL, PLANNING_DECISION_V1})
 
 
@@ -246,7 +244,9 @@ class MissionSpec:
     planning_protocol_version: str = LEGACY_PLANNING_PROTOCOL
 
     def __post_init__(self) -> None:
-        if self.planning_protocol_version not in _PLANNING_PROTOCOLS:
+        if not isinstance(self.planning_protocol_version, str) or (
+            self.planning_protocol_version not in _PLANNING_PROTOCOLS
+        ):
             raise ContractError(
                 f"unknown planning protocol version {self.planning_protocol_version!r}"
             )
@@ -285,32 +285,6 @@ class MissionSpec:
         if self.planning_protocol_version != LEGACY_PLANNING_PROTOCOL:
             data["planning_protocol_version"] = self.planning_protocol_version
         return data
-
-    @classmethod
-    def from_json(cls, value: object) -> MissionSpec:
-        if not isinstance(value, Mapping):
-            raise ContractError("mission spec must be an object")
-        return cls(
-            goal=str(value["goal"]),
-            success_criteria=tuple(value["success_criteria"]),
-            tenant_id=str(value["tenant_id"]),
-            idempotency_key=str(value["idempotency_key"]),
-            stop_conditions=tuple(value.get("stop_conditions", ("verification_passed", "budget_exhausted"))),
-            allowed_tools=tuple(value.get("allowed_tools", ())),
-            risk_level=str(value.get("risk_level", "sandbox")),
-            budget=Budget.from_json(value.get("budget", {})),
-            task_kind=str(value.get("task_kind", "code")),
-            workspace_seed=dict(value.get("workspace_seed", {})),
-            untrusted_sources=tuple(value.get("untrusted_sources", ())),
-            synthesis=value.get("synthesis"),
-            conflict_reserve_tokens=int(value.get("conflict_reserve_tokens", 0)),
-            domain=str(value.get("domain", CODE_DOMAIN)),
-            search_policy_version_id=value.get("search_policy_version_id"),
-            runtime_profile_id=value.get("runtime_profile_id"),
-            orchestration_semantics_version=str(value.get(SEMANTICS_KEY, LEGACY_SEMANTICS)),
-            planning_protocol_version=str(value.get("planning_protocol_version", LEGACY_PLANNING_PROTOCOL)),
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class TaskProposal:
@@ -771,23 +745,11 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     raise MissionConflict(
                         f"mission {mission.id} already exists with a different specification"
                     )
-                stored_binding = planning_protocol_for_mission(self._store, mission.id)
-                if spec.planning_protocol_version == PLANNING_DECISION_V1:
-                    expected_binding = {
-                        "protocol_version": PLANNING_DECISION_V1,
-                        **{
-                            key: PLANNING_PROTOCOL_BINDING[key]
-                            for key in ("package_version", "prompt_version")
-                        },
-                    }
-                    if stored_binding is None or any(
-                        stored_binding.get(key) != value for key, value in expected_binding.items()
-                    ):
-                        raise MissionConflict(
-                            f"mission {mission.id} has no matching durable planning protocol binding"
-                        )
-                elif stored_binding is not None:
-                    raise MissionConflict(f"mission {mission.id} cannot switch planning protocol")
+                conflict = planning_protocol_replay_conflict(
+                    self._store, mission.id, spec.planning_protocol_version
+                )
+                if conflict is not None:
+                    raise MissionConflict(conflict)
                 return mission, False
             mission_id = ids.mission_id(spec.tenant_id, spec.idempotency_key)
             # review fix: with a Global Budget the Mission's unnamed dimensions are inherited, and
