@@ -661,6 +661,56 @@ def test_a_phase_refusal_outranks_a_payload_error() -> None:
     assert _codes(feedback) == ["DECISION_NOT_ENABLED_IN_PHASE"]
 
 
+def test_a_package_mismatch_outranks_a_stale_binding() -> None:
+    decision = _valid_envelope("refine")
+    feedback = _reject(decision, _context(plan_revision=8, package_hash=HASH_C))
+    assert _codes(feedback) == ["PACKAGE_HASH_MISMATCH"]
+
+
+def test_the_binding_revision_outranks_the_phase_gate() -> None:
+    decision = _valid_envelope("request-human")
+    feedback = _reject(decision, _context(plan_revision=8))
+    assert _codes(feedback) == ["REQUEST_BINDING_STALE"]
+
+
+def test_a_repair_payload_error_outranks_the_method_library() -> None:
+    # OBLIGATION_NOT_OPEN is a payload check (§26); METHOD_NOT_FOUND belongs to the
+    # method stage that follows it.  A successor whose obligation is closed is
+    # refused for the obligation, never for a method it does not name.
+    feedback = _reject(
+        _valid_envelope("repair-propose-successor"),
+        _context(open_obligations=(), methods=()),
+    )
+    assert _codes(feedback) == ["OBLIGATION_NOT_OPEN"]
+
+
+def test_a_payload_error_outranks_an_unresolved_operation() -> None:
+    feedback = _reject(
+        _valid_envelope("repair-replace-method"),
+        _context(
+            active_method_instances=(),
+            operations=OperationStateView(unresolved_operations=("op-1",)),
+        ),
+    )
+    assert _codes(feedback) == ["METHOD_RETIRED"]
+
+
+def test_a_one_stage_refusal_reports_one_problem_per_finding() -> None:
+    feedback = _reject(
+        _valid_envelope("refine"),
+        _context(plan_shape=PlanShapeView(order_cycle=("a", "b", "c"))),
+    )
+    assert _codes(feedback) == ["ORDER_CYCLE"]
+    assert [problem.detail for problem in feedback.problems] == ["a", "b", "c"]
+    assert all(problem.code is REJECTION.ORDER_CYCLE for problem in feedback.problems)
+
+
+def test_a_refusal_never_marks_a_reference_as_changed() -> None:
+    feedback = _reject(_valid_envelope("refine"), _context(plan_revision=8))
+    assert feedback.changed_refs == ()
+    assert PlanningFeedbackV1.from_json(feedback.to_json()).changed_refs == ()
+
+
 def test_the_same_input_yields_the_same_rejection_twice() -> None:
     decision = _valid_envelope("refine")
     context = _context(operations=OperationStateView(unresolved_operations=("op-1",)))
@@ -880,6 +930,20 @@ def test_exhausted_budget_is_refused() -> None:
         _context(
             budget=BudgetView(
                 planning_rounds_remaining=0, bound_remaining=4, budget_available=False
+            )
+        ),
+    )
+    assert _codes(feedback) == ["BUDGET_INSUFFICIENT"]
+
+
+def test_a_budget_account_that_is_not_available_is_refused_even_with_rounds_left() -> None:
+    # The round counter and the budget account are two different facts: a mission
+    # with a round left but an exhausted account must still not start new work.
+    feedback = _reject(
+        _valid_envelope("refine"),
+        _context(
+            budget=BudgetView(
+                planning_rounds_remaining=2, bound_remaining=8, budget_available=False
             )
         ),
     )
