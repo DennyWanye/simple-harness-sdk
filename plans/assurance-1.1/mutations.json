@@ -1,0 +1,235 @@
+[
+ {
+  "id": "AM01",
+  "file": "assurance/checks.py",
+  "before": "acceptable = reply.verdict == \"ACCEPT\" and result is Grade.PASS",
+  "after": "acceptable = result is Grade.PASS",
+  "why": "非 ACCEPT 判决不得可接受",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_any_branch_not_mandatory"
+  ]
+ },
+ {
+  "id": "AM02",
+  "file": "assurance/checks.py",
+  "before": "result = tri_all((result, *(grades[name] for name in mandatory)))",
+  "after": "result = result",
+  "why": "强制准则必须 AND 在公式之上",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_formula_truth_tables"
+  ]
+ },
+ {
+  "id": "AM03",
+  "file": "assurance/checks.py",
+  "before": "raise AssuranceError(\"CHECK_RESULT_IDENTITY\")",
+  "after": "pass",
+  "why": "他 spec 的回执不得冒充",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_check_receipt_scope"
+  ]
+ },
+ {
+  "id": "AM04",
+  "file": "assurance/checks.py",
+  "before": "if self.source_valid and self.execution_state == \"SUCCEEDED\"",
+  "after": "if self.execution_state == \"SUCCEEDED\"",
+  "why": "来源无效的检查结果不是 PASS",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_check_receipt_scope"
+  ]
+ },
+ {
+  "id": "AM05",
+  "file": "assurance/checks.py",
+  "before": "for value, witness in evaluated:\n                if value is Grade.PASS:",
+  "after": "for value, witness in reversed(evaluated):\n                if value is Grade.PASS:",
+  "why": "ANY 取冻结公式顺序的首个 PASS，不是模型排序",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_any_branch_not_mandatory"
+  ]
+ },
+ {
+  "id": "AM06",
+  "file": "assurance/reviews.py",
+  "before": "raise AssuranceError(\"REVIEW_RAW_HASH_MISMATCH\")",
+  "after": "pass",
+  "why": "原始输出字节必须与钉住的 hash 一致",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_strict_boundary"
+  ]
+ },
+ {
+  "id": "AM07",
+  "file": "assurance/reviews.py",
+  "before": "integer(row[\"invocation_ordinal\"], minimum=1, maximum=2)",
+  "after": "integer(row[\"invocation_ordinal\"], minimum=1, maximum=3)",
+  "why": "调用序号只允许 1（原始）/2（格式修复）",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_strict_boundary"
+  ]
+ },
+ {
+  "id": "AM08",
+  "file": "orchestrator/assurance_review_import.py",
+  "before": "raise AssuranceError(\"REVIEW_INDEPENDENCE_REQUIRED\")",
+  "after": "pass",
+  "why": "评审者不得是作者",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_reviewer_independence"
+  ]
+ },
+ {
+  "id": "AM09",
+  "file": "orchestrator/assurance_review_import.py",
+  "before": "return attempt is None or attempt.status in TERMINAL_ATTEMPT",
+  "after": "return False",
+  "why": "Attempt 终态后 TASK_CONTENT 评审主题已停止",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_scope_pinned_not_latest"
+  ]
+ },
+ {
+  "id": "AM10",
+  "file": "orchestrator/resolution_commits.py",
+  "before": "or candidate.identity.consumer_id != command.acceptance_id",
+  "after": "or False",
+  "why": "使用证书必须绑定本次接受身份",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_direct_final_commit_guard"
+  ]
+ },
+ {
+  "id": "AM11",
+  "why": "profile 不得替用户降级里程碑",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_profile_does_not_choose_milestone"
+  ],
+  "note": "profile 与物化输入两处守卫互为冗余（单独变异任一处都等价，2026-09-23 实测）；本条同时去掉两处。",
+  "edits": [
+   {
+    "file": "runtime/operation_profiles.py",
+    "before": "if sources.effect.required_milestone not in self.supported_milestones:",
+    "after": "if False:"
+   },
+   {
+    "file": "orchestrator/operation_materialization_inputs.py",
+    "before": "if sources.effect.required_milestone not in profile.supported_milestones:",
+    "after": "if False:"
+   }
+  ]
+ },
+ {
+  "id": "AM12",
+  "file": "orchestrator/operation_completion.py",
+  "before": "raise OperationCompletionError(\"OP_EFFECT_SCOPE_STALE\", \"requirements have changed\")",
+  "after": "pass",
+  "why": "需求已变时旧作用域不得继续接受",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_scope_pinned_not_latest"
+  ]
+ },
+ {
+  "id": "AM13",
+  "file": "orchestrator/completion_status.py",
+  "before": "complete=content_ready and effects_ready,",
+  "after": "complete=content_ready,",
+  "why": "内容准备就绪不等于完成",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_preparation_does_not_complete"
+  ]
+ },
+ {
+  "id": "AM14",
+  "file": "assurance/certificates.py",
+  "before": "if certificate.decision != \"USABLE\":\n        raise AssuranceError(\"CERTIFICATE_NOT_USABLE\")",
+  "after": "if False:\n        raise AssuranceError(\"CERTIFICATE_NOT_USABLE\")",
+  "why": "非 USABLE 证书不得通过绑定检查",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_authority_and_expiry",
+   "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_read_certificate_context"
+  ]
+ },
+ {
+  "id": "AM15",
+  "file": "knowledge/assurance_sources.py",
+  "before": "or len(checks) > 256:",
+  "after": "or len(checks) > 100_000:",
+  "why": "检查锚点上限 256 必须生效",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_bounded_restartable_evaluation"
+  ]
+ },
+ {
+  "id": "AM16",
+  "file": "storage/assurance_work.py",
+  "before": "raise StoreConflict(\"assurance cursor changed\")",
+  "after": "pass",
+  "why": "游标版本过期的摄取必须冲突",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_bounded_restartable_replay",
+   "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_two_connection_concurrency"
+  ]
+ },
+ {
+  "id": "AM17",
+  "file": "storage/assurance_reads.py",
+  "before": "raise AssuranceError(\"RECHECK_REQUIRED\")",
+  "after": "pass",
+  "why": "纪元移动后必须重查",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_two_connection_concurrency",
+   "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_invalidation_racing_cache"
+  ]
+ },
+ {
+  "id": "AM18",
+  "file": "storage/assurance_store.py",
+  "before": "raise AssuranceError(\"IMMUTABLE_IDENTITY_CONFLICT\", table)",
+  "after": "pass",
+  "why": "不可变行的不同内容重放必须冲突",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_two_connection_concurrency"
+  ]
+ },
+ {
+  "id": "AM19",
+  "file": "api/assurance.py",
+  "before": "_fail(\"SNAPSHOT_CHANGED\", \"snapshot changed since the first page; read again from the start\", retryable=True)",
+  "after": "pass",
+  "why": "分页快照变化必须让 Host 重来",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_c07_host_api.py::test_snapshot_review_use_check_contracts_and_errors"
+  ]
+ },
+ {
+  "id": "AM20",
+  "file": "storage/assurance_source_inventory.py",
+  "before": "    \"observations\",\n",
+  "after": "",
+  "why": "观察表插入必须推动有效性纪元并发事件",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_insert_counterevidence_barrier"
+  ]
+ },
+ {
+  "id": "AM21",
+  "file": "assurance/certificates.py",
+  "before": "raise AssuranceError(\"CERTIFICATE_EXPIRED\")",
+  "after": "pass",
+  "why": "过期证书不得通过",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_authority_and_expiry"
+  ]
+ },
+ {
+  "id": "AM22",
+  "file": "knowledge/justifications.py",
+  "before": "return AnchorRejection.NOT_CURRENT, False",
+  "after": "pass",
+  "why": "非 CURRENT 候选不得成为锚点",
+  "tests": [
+   "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_bounded_restartable_evaluation"
+  ]
+ }
+]

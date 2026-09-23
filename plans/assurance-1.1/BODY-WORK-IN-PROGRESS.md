@@ -1217,3 +1217,25 @@ da43a274ceee  test_c_integration.py（新）                        6e86774cceb4
 
 下一段：§14 顺序继续——变异（16+ 定点）→ stateful → legacy/全量 H1（含 Host `tests/orchestration` 26 个既有失败的处置）→
 隔离原生 Host 点击 → 真实模型 12 局（日卡）→ 独立 opus 审阅 → 默认 ON + 出厂回归 → 文档。
+
+## 第十段（三）：定点变异 22 条全部被杀 + stateful 随机序列（2026-09-23）
+
+**本段做了什么（代码存在 + 本机实际执行）**
+- 新增 `plans/assurance-1.1/mutations.json`（22 条定点变异：审阅判决/强制准则/检查身份/来源有效性/ANY 顺序/原始 hash/调用序号/评审者独立/
+  主题终态/使用证书身份/里程碑能力（profile 与物化输入两处冗余守卫需同时去掉）/需求变更作用域/准备≠完成/证书 USABLE/检查锚点上限/
+  游标版本冲突/纪元重查/不可变行冲突/分页快照变化/观察表屏障/证书过期/非 CURRENT 锚点）与 runner
+  `plans/assurance-1.1/tools/run_assurance_mutations.py`（原地改一处守卫→跑指定用例必须失败→finally 恢复→`git diff` 复核）。
+  结果 **22/22 KILLED**，源码恢复干净；报告 `.local-test-evidence/2026-09-23/assurance-1.1-verify/mutations-final/report.json`
+  （首轮 20/22：AM11 单处变异等价、AM22 目标用例选错，已改成复合变异/改目标后重跑，过程留在 `mutations/`、`mutations-retarget*/`）。
+- 新增 `test_stateful_assurance.py`：6 个种子 × 14 步随机操作序列（durable tick / critic 入口 / router 层 / 用量导入 / 接受写入口 /
+  固定 caller snapshot，含乱序与重复），每步后从 Store 重读不变量（官方记录 ≤1、调用序号 ≤1、模型调用恰 1、接受与 ACCEPT 证书 0/1 同步、
+  不重开 Worker、读与空 tick 不写行、纪元单调、Mission ACTIVE、无 rejected）。实测写入口前置条件：官方记录 + 原执行器已关闭（用量导入），
+  router 层注记不是许可（缺记录 → `REVIEW_NOT_OFFICIAL`，缺用量 → `BudgetError` 预留未释放）。6 passed，证据 `sdk-stateful.*`。
+- 本机 venv 无 hypothesis，且计划禁止为验收装运行时依赖：stateful 用 `random.Random(seed)` 生成序列，不是 property-based 收缩。
+
+**改动文件 sha256（前 12 位）**
+```
+46db48d743e8  plans/assurance-1.1/mutations.json（新）   6955ffbac643  tools/run_assurance_mutations.py（新）   81866f2fbc6b  tests/…/test_stateful_assurance.py（新）
+```
+
+下一段：legacy/全量 H1（SDK 全量 + Host `tests/orchestration` 26 个既有失败处置）→ 隔离原生 Host 点击 → 真实模型 12 局 → 独立审阅 → 默认 ON → 文档。
