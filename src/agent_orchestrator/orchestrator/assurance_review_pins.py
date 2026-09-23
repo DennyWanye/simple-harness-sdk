@@ -196,3 +196,50 @@ def release_failed_preparation(commit: Any, binding: AssuranceReviewBinding) -> 
             raise AssuranceError("REVIEW_PIN_SCOPE_INVALID")
         for row in rows:
             _transition(commit, row, package_id=body["package_ref"]["id"], state="RELEASED")
+
+
+def release_orphan_preparations(
+    commit: Any, *, mission_id: str, now_ms: int
+) -> dict[str, list[str]]:
+    """Startup reconciliation (handoff item 8): release abandoned PREPARING pins.
+
+    A pin is PREPARING between the original builder's acquisition and the
+    package/binding transaction that binds it. At startup nothing is mid
+    preparation, so a PREPARING pin whose ``review_key`` has no
+    ``assurance_review_bindings`` row is a preparation the crashed process
+    abandoned: it moves to RELEASED through the same receipted transition the
+    in-process failure path uses. CAS bytes are never deleted (no GC exists),
+    BOUND pins are retained, and a PREPARING pin that *does* have a binding is
+    reported, not repaired — deciding it here would be a blind write.
+
+    A rolled-back clock never backdates a release: a pin created after ``now_ms``
+    is deferred (reported) until the wall clock is past its creation again. At
+    most 1024 rows are handled per startup; the rest wait for the next one.
+    """
+    store = commit.store
+    released: list[str] = []
+    anomalies: list[str] = []
+    deferred: list[str] = []
+    with atomic(store):
+        rows = store.connection.execute(
+            "SELECT * FROM assurance_blob_pins WHERE mission_id=? AND state='PREPARING' "
+            "ORDER BY created_at_ms,pin_id LIMIT 1024",
+            (mission_id,),
+        ).fetchall()
+        for row in rows:
+            if int(row["created_at_ms"]) > int(now_ms):
+                deferred.append(row["pin_id"])
+                continue
+            bound = store.connection.execute(
+                "SELECT 1 FROM assurance_review_bindings WHERE mission_id=? AND review_key=?",
+                (mission_id, row["review_key"]),
+            ).fetchone()
+            if bound is not None:
+                anomalies.append(row["pin_id"])
+                continue
+            prepared = store.get_receipt("prepare:" + row["pin_id"])
+            if prepared is None or prepared.get("pin_id") != row["pin_id"]:
+                raise AssuranceError("PIN_RECEIPT_MISMATCH", row["pin_id"])
+            _transition(commit, row, package_id=prepared["package_id"], state="RELEASED")
+            released.append(row["pin_id"])
+    return {"released": released, "preparing_with_binding": anomalies, "deferred": deferred}

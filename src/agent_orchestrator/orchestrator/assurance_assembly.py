@@ -41,6 +41,7 @@ from ..contracts.resolution import (
 from ..governance.permissions import Principal
 from ..storage.assurance_store import AssuranceStore
 from ..storage.assurance_work import CONSUMERS, AssuranceWorkStore, WorkTarget
+from .assurance_clock import observe_assurance_clock
 from .assurance_consumers import (
     NOTIFICATION_EVENT,
     AssuranceCloseoutConsumer,
@@ -51,6 +52,7 @@ from .assurance_factory import AssuranceMissionFactory, default_assurance_profil
 from .assurance_final_writer import finalize_assured_mission
 from .assurance_local_checks import AssuranceLocalChecks
 from .assurance_review_consumer import AssuranceReviewConsumer
+from .assurance_review_pins import release_orphan_preparations
 from .assurance_review_runtime import AssuranceReviewRuntime
 from .assurance_tick import AssuranceTick
 from .assurance_validity import AssuranceValidity
@@ -251,11 +253,21 @@ def reconcile_startup(orchestrator: Any, *, tenant_id: str, root_incarnation_id:
     by stable work keys); expired USABLE certificates get their due events now
     rather than on the first business event (spec §8.4). No pending budget is
     reset and no work is invented.
+
+    Handoff item 8: the clock is observed *before* any claim (a rollback while
+    the process was down is recorded as one TimeDiscontinuity per Mission and
+    the tick claims nothing until the clock is past its high-water mark again);
+    abandoned PREPARING pins are released through their receipted transition;
+    RUNNING claims a dead owner left behind are reported only — ``claim_due``
+    reclaims coordination when the lease elapses, and the original service
+    intent stays with its owner (owner retention).
     """
     store = orchestrator.store
+    commit = orchestrator.commit
     work = AssuranceWorkStore(store)
     expiry = AssuranceExpiry(store)
     now_ms = int(store.now * 1000)
+    clock = observe_assurance_clock(commit, now_ms=now_ms)
     missions = [
         row[0]
         for row in store.connection.execute(
@@ -266,9 +278,16 @@ def reconcile_startup(orchestrator: Any, *, tenant_id: str, root_incarnation_id:
         ).fetchall()
     ]
     rebuilt, due = [], 0
+    pins_released: list[str] = []
+    pins_with_binding: list[str] = []
+    pins_deferred: list[str] = []
     for mission_id in missions:
         if AssuranceStore(store).lane(mission_id) != "ASSURANCE_1_1":
             raise AssuranceError("ASSURANCE_CREATION_LANE_MISMATCH", mission_id)
+        orphans = release_orphan_preparations(commit, mission_id=mission_id, now_ms=now_ms)
+        pins_released.extend(orphans["released"])
+        pins_with_binding.extend(orphans["preparing_with_binding"])
+        pins_deferred.extend(orphans["deferred"])
         present = {
             row[0]
             for row in store.connection.execute(
@@ -290,11 +309,26 @@ def reconcile_startup(orchestrator: Any, *, tenant_id: str, root_incarnation_id:
             (tenant_id,),
         ).fetchall()
     }
+    running = [
+        f"{row[0]}:{row[1]}:{row[2]}"
+        for row in store.connection.execute(
+            "SELECT w.mission_id,w.consumer,w.work_key FROM assurance_pending_work w "
+            "JOIN missions m USING(mission_id) WHERE m.tenant_id=? AND w.state='RUNNING' "
+            "ORDER BY w.mission_id,w.consumer,w.work_key LIMIT 257",
+            (tenant_id,),
+        ).fetchall()
+    ]
     return {
         "missions": len(missions),
         "cursors_rebuilt": rebuilt,
         "expiry_events_emitted": due,
         "pending_work": pending,
+        "clock_state": clock.state,
+        "clock_generation": clock.generation,
+        "pins_released": pins_released,
+        "pins_preparing_with_binding": pins_with_binding,
+        "pins_release_deferred": pins_deferred,
+        "running_claims": running,
     }
 
 

@@ -1033,3 +1033,70 @@ fbb14565c303  orchestrator/commit_service.py
 
 下一段：handoff §4 第 8 项（恢复/pin：startup orphan PREPARING 对账、owner retention、lease recovery、无事件 expiry/
 clock rollback、restore 新 quarantine root）起；第 9、10 项前停下汇报。
+
+## 2026-09-23 第八段：恢复 / pin 对账（handoff §4 第 8 项）
+
+**第七段独立审阅（opus，只看阻断级）**：无阻断级缺陷；提及两点非阻断：判决里的 `judged_at_version` 未被 closeout/终态写口比对
+（closeout 每次按当前网络重核根决议，未构造出误判完成的场景）；已判决 assured Mission 若 closeout 长期 NOT_READY 会保持
+ACTIVE 空转（是能否收尾的问题，不在阻断类）。本段未改这两点。
+
+**做了什么（代码存在，单点接缝验证）**
+- `orchestrator/assurance_review_pins.py`：新增 `release_orphan_preparations(commit, mission_id=)`——启动对账：`PREPARING`
+  且其 review_key 没有 `assurance_review_bindings` 行的 pin（崩溃在获取 pin 之后、package/binding UoW 之前）走原 receipted
+  `_transition` 转 RELEASED；有 binding 的 PREPARING 只上报不处置；CAS 字节不删（没有 GC）；BOUND 保留。
+- `orchestrator/assurance_assembly.py::reconcile_startup`：先 `observe_assurance_clock`（进程停机期间的回拨在任何 claim 之前
+  记成一次 TimeDiscontinuity/Mission，tick 在回拨期间只 ingest 不 claim）；每个 assured Mission 释放孤儿准备；上报 RUNNING claim
+  （dead owner 的 claim 由 `claim_due` 在 lease 到期后回收协调权，原 service intent 仍归原 owner——owner retention）；摘要新增
+  `clock_state/clock_generation/pins_released/pins_preparing_with_binding/running_claims`。
+- **接缝暴露并修复一处既有缺陷**（工作日志早前"pin release/reacquire 的完整反例"未验证项）：`assurance_blob_pins` 表级
+  `UNIQUE(mission_id,review_key,blob_hash)` 使得同一 review 对象在 RELEASED 之后永远无法再准备（`ensure_review_blob_pins`
+  设计上会取新身份 `<base>:<n>` 并保留历史行，但插入撞 UNIQUE → `IMMUTABLE_IDENTITY_CONFLICT`，该审阅永久失败）。改为
+  部分唯一索引 `assurance_blob_pin_live_uq … WHERE state<>'RELEASED'`（同对象只允许一个 live pin），`no_replace` 触发器与
+  `AssuranceStore.acquire_pin` 的碰撞检查同样只看 live 行；RELEASED 仍不可重开、不可删。migration 26 是未发布 WIP
+  （tag v0.12.2 无 assurance schema），原地修改，未新增编号。
+- `four-consumer-seam` 的 startup 摘要断言改为只比对原四个键。
+
+**证据（本机 ignored，不入库）**
+- `recovery-seam-20260923T112042322027.json`（`f0865f1a32ee…`）：
+  A 段：同一 evidence root 上两次真实 `Orchestrator` + `install_assurance`（重启）；第二次启动时钟落后持久高水位 1 小时 →
+  `reconcile_startup` 报 ROLLBACK、代次 +1、一条 `TimeDiscontinuity`；回拨期间 `cancel_mission`（原终态写口）产生的
+  CLOSEOUT/NOTIFY 工作被 ingest 但不 claim（PENDING、无发送）；时钟回到高水位之上 → 一条 `AssuranceClockStable`、代次不再变、
+  两项工作 DONE、NOTIFY 送达一次。
+  B 段（夹具 Mission、真实 AssuranceTick）：TASK_CONTENT 准备在取到 CAS pin 后被 `KeyboardInterrupt` 模拟崩溃（PREPARING、无
+  binding、Provider 0 次调用）→ `reconcile_startup` 释放该孤儿（RELEASED v2、`AssurancePinReleased` 回执、CAS 字节仍在、再跑
+  幂等）→ 真实 critic 取新身份 `<base>:2` 并 BOUND → official → accept；MISSION_FINAL 审阅收集后，REVIEW 工作先被
+  `crashed-runner` 以 1s lease 领走 → tick 不能抢（RUNNING、无 official）→ lease 过期后 tick 回收并完成（tries=2、
+  official ACCEPT、invocation 仍只有 ordinal 1、Provider 调用数不变）→ 时钟前推 61s 后 `reconcile_startup` 重建到期事件
+  （≥1）→ VALIDITY EXPIRED 观察，再跑为 0 → 记 delivery receipt 后时钟回拨 → 一条 TimeDiscontinuity、ROLLBACK、高水位不变、
+  CLOSEOUT 工作保持 PENDING 无 owner → 恢复 → `AssuranceClockStable`、工作 DONE、无遗留。
+- `root-gate-seam-20260923T112109292614.json`（`e34292ea9e50…`，与本段前重跑 `…T111523409337` 字节相同）：恢复根六项全部
+  True（managed backup/restore 新根身份不继承 live grant、启动隔离+回执后补文件、精确 artifact 只读不续跑、固定 caller/租户/
+  部分库拒绝、当前 ACL/策略到期与持久时钟回拨拒绝）——第 8 项"restore 新 quarantine root、备份不是最新 ACL"由该既有接缝覆盖。
+- schema 改动后十个接缝全部重跑 PASS（four-consumer、final-writer、purpose-builders、validity-accept、review-runtime、
+  tick-factory、check-use、evidence-tools、executor-check、root-gate）；定向既有测试 577 passed、1 基线既有失败
+  （`test_migration_seventeen…` 断言 SCHEMA_VERSION==24）。ruff：改动文件告警数不高于基线（assembly 0）。
+
+**第八段独立审阅（opus，只看阻断级）与修正**：审阅确认一处阻断——停机期间时钟回拨时，启动对账释放孤儿 pin 会写出
+`released_at_ms < created_at_ms`，撞 CHECK 使 `install_assurance` 抛 IntegrityError（半装状态）；另一处疑似——单 Mission 超过
+1024 个 PREPARING 行在启动路径 raise。修正：`release_orphan_preparations(now_ms=)` 对创建时间晚于当前时钟的 pin 只上报
+`deferred`、不回填时间（回拨不延长/不倒填），每次启动最多处理 1024 行不 raise；摘要新增 `pins_release_deferred`。接缝加入
+“回拨状态下启动 → 孤儿 deferred、仍 PREPARING；时钟恢复后释放”一步，重跑 PASS：`recovery-seam-20260923T112502990920.json`
+（其余项同前）。其它检查（live pin 唯一/RELEASED 不重开、不删 CAS、不碰 BOUND、读者查询）审阅结论无阻断。
+
+**明确没有证明 / 边界**
+- 原 `recover()` / `_bind_startup_tools` 对**已提交的 assured 审阅 turn** 跨进程重启的重绑未跑（需要真实 Orchestrator 上
+  一个 SUBMITTED 的 assured review intent 存活到第二次启动）；本段的重启只覆盖 cursor/expiry/clock/pin/claim 对账。
+- 有 binding 的 PREPARING pin 只上报不处置；MANUAL_REQUIRED 的等待仍需真实新条件；无 CAS GC。
+- 真实模型未跑；Host 未接（第 9 项）；默认仍 OFF（第 10 项）。
+
+**改动文件 sha256（前 12 位）**
+```
+8e1e21c2ce7e  orchestrator/assurance_assembly.py
+4498cfdca5bf  orchestrator/assurance_review_pins.py
+d8c6420599ab  storage/assurance_store.py
+eca9b297cba8  storage/assurance_schema.sql
+7e2e5dc8fa4c  scripts/assurance_seams/recovery-seam.py（新）
+3e6e750fc013  scripts/assurance_seams/four-consumer-seam.py
+```
+
+下一段：按 handoff 指示在第 9 项（Host/UI）与第 10 项（集中真实验收/默认开启）前停下汇报。

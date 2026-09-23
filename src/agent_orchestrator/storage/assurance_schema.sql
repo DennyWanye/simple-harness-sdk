@@ -226,11 +226,14 @@ CREATE TABLE assurance_blob_pins (
  released_at_ms INTEGER,
  source_receipt_id TEXT NOT NULL REFERENCES commit_receipts(commit_id) DEFERRABLE INITIALLY DEFERRED,
  last_receipt_id TEXT NOT NULL REFERENCES commit_receipts(commit_id) DEFERRABLE INITIALLY DEFERRED,
- UNIQUE(mission_id,review_key,blob_hash),
  CHECK((state='RELEASED' AND released_at_ms IS NOT NULL AND released_at_ms>=created_at_ms)
    OR (state<>'RELEASED' AND released_at_ms IS NULL))
 ) STRICT;
 CREATE INDEX assurance_blob_live_idx ON assurance_blob_pins(blob_hash,state);
+-- One live (PREPARING/BOUND) pin per review object; RELEASED rows are immutable
+-- history and a later preparation of the same object takes a new pin identity.
+CREATE UNIQUE INDEX assurance_blob_pin_live_uq ON assurance_blob_pins(mission_id,review_key,blob_hash)
+ WHERE state<>'RELEASED';
 CREATE TRIGGER assurance_blob_pin_transition BEFORE UPDATE ON assurance_blob_pins
 BEGIN
  SELECT CASE WHEN NEW.pin_id<>OLD.pin_id OR NEW.mission_id<>OLD.mission_id
@@ -406,7 +409,7 @@ WHEN EXISTS(SELECT 1 FROM assurance_closeouts WHERE mission_id=NEW.mission_id)
 BEGIN SELECT RAISE(ABORT,'duplicate identity; use original receipt'); END;
 
 CREATE TRIGGER assurance_blob_pins_no_replace BEFORE INSERT ON assurance_blob_pins
-WHEN EXISTS(SELECT 1 FROM assurance_blob_pins WHERE pin_id=NEW.pin_id OR (mission_id=NEW.mission_id AND review_key=NEW.review_key AND blob_hash=NEW.blob_hash))
+WHEN EXISTS(SELECT 1 FROM assurance_blob_pins WHERE pin_id=NEW.pin_id OR (mission_id=NEW.mission_id AND review_key=NEW.review_key AND blob_hash=NEW.blob_hash AND state<>'RELEASED'))
 BEGIN SELECT RAISE(ABORT,'duplicate identity; use original receipt'); END;
 
 CREATE TRIGGER assurance_mission_bindings_no_replace BEFORE INSERT ON assurance_mission_bindings

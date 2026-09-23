@@ -103,7 +103,8 @@ async def production_install(report):
             assert orch._assurance_local_checks is inst.local_checks and orch._assurance_reviews is inst.review_runtime
             assert commit._assurance_read_authority == inst.authority.read and commit._assurance_validity is inst.validity
             assert set(inst.consumers) == {'REVIEW', 'VALIDITY', 'CLOSEOUT', 'NOTIFY'}
-            assert inst.startup == {'missions': 0, 'cursors_rebuilt': [], 'expiry_events_emitted': 0, 'pending_work': {}}, inst.startup
+            assert {k: inst.startup[k] for k in ('missions', 'cursors_rebuilt', 'expiry_events_emitted', 'pending_work')} == \
+                {'missions': 0, 'cursors_rebuilt': [], 'expiry_events_emitted': 0, 'pending_work': {}}, inst.startup
             assert refused(lambda: install_assurance(orch, ports()), {'ASSURANCE_ALREADY_INSTALLED'})
             spec = MissionSpec(goal='assured fixture', success_criteria=('the answer file is written', 'it names the fixture'),
                                tenant_id='tenant', idempotency_key='assured-1', orchestration_semantics_version='hierarchical',

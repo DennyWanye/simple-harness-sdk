@@ -602,11 +602,17 @@ class AssuranceStore:
                 if any(old[key] != row[key] for key in stable):
                     raise AssuranceError("IMMUTABLE_IDENTITY_CONFLICT", pin_id)
                 return False
+            # One live pin per review object. A RELEASED row is immutable history
+            # (never reopened); the new preparation takes its own pin identity.
+            live = connection.execute(
+                "SELECT pin_id FROM assurance_blob_pins WHERE mission_id=? AND review_key=? "
+                "AND blob_hash=? AND state<>'RELEASED'",
+                (row["mission_id"], row["review_key"], row["blob_hash"]),
+            ).fetchone()
+            if live is not None:
+                raise AssuranceError("IMMUTABLE_IDENTITY_CONFLICT", pin_id)
             return self._insert(
-                connection,
-                "assurance_blob_pins",
-                row,
-                identities=(("pin_id",), ("mission_id", "review_key", "blob_hash")),
+                connection, "assurance_blob_pins", row, identities=(("pin_id",),)
             )
 
     def transition_pin(
