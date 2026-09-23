@@ -38,7 +38,7 @@ from .assurance_review_import import read_official_review_binding_locked
 # react_max_tool_calls_exceeded → TURN_FAILED.
 from ..verification.reviewer_evidence_tools import MAX_EVIDENCE_TOOL_CALLS
 
-REVIEW_MODEL_CALLS = 8
+REVIEW_MODEL_CALLS = 10
 REVIEW_TOOL_CALLS = MAX_EVIDENCE_TOOL_CALLS
 
 

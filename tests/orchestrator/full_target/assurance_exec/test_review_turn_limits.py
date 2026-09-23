@@ -16,5 +16,7 @@ from agent_orchestrator.verification.reviewer_evidence_tools import MAX_EVIDENCE
 def test_turn_tool_cap_matches_gateway_cap_and_covers_the_observed_reviewer():
     assert REVIEW_TOOL_CALLS == MAX_EVIDENCE_TOOL_CALLS
     assert REVIEW_TOOL_CALLS >= 3 + 2 + 5
+    # run 18: the MISSION_FINAL reviewer over the root catalogue
+    assert REVIEW_TOOL_CALLS >= 3 + 6 + 4 + 5
     # observed: three tool rounds, then one answering call
-    assert REVIEW_MODEL_CALLS >= 3 + 1
+    assert REVIEW_MODEL_CALLS >= 4 + 1

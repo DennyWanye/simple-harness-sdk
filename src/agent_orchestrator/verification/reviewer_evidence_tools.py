@@ -36,7 +36,9 @@ from ..storage.assurance_work import atomic
 
 # Bounds of one tool call. They are transport budgets of this reader, not a
 # claim that every artifact fits; a larger blob is refused with its size.
-MAX_EVIDENCE_TOOL_CALLS = 16
+# Host real model run 18 (2026-09-23): a MISSION_FINAL reviewer over the whole
+# root catalogue made 3+6+4+5 = 18 read-only evidence calls; 16 ended the turn.
+MAX_EVIDENCE_TOOL_CALLS = 32
 MAX_READ_BYTES = 256 * 1024
 DEFAULT_PAGE_CHARS = 4096
 MAX_PAGE_CHARS = 8192
