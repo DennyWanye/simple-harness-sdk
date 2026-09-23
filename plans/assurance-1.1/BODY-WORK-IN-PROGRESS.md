@@ -1284,7 +1284,7 @@ da43a274ceee  test_c_integration.py（新）                        6e86774cceb4
 | run-3 / run-5 | 同上 | 首轮模型调用 | 中转 404 → `method_synthesis_refused`，提供方故障非代码 |
 | run-4 | 同上 | 模型轮次失败后 | 缺陷 3 |
 | run-6 | Grok Build 通道 | 首轮模型调用 | 回显 `grok-4.6-build` ≠ 请求 `grok-4.6` → SDK `model_echo_mismatch`；代理拒绝直接请求带 -build 的名字 |
-| run-7 | Grok Build 通道 + 驱动脚本级回显映射（同 HTN runner 做法，SDK 不动） | 见（七） | 见（七） |
+| run-7～run-20 | 见下方（七）～（十五） | | |
 
 **改动文件 sha256（前 16 位，assurance.4 时点）**
 ```
@@ -1301,3 +1301,62 @@ b5aee871731171d2  backend/deskpet/orchestration/service.py  eea8c54567bd31c0  ba
 - SDK 全量回归在 89% 处挂死（p33 两个已派发 Attempt 的多进程用例），单跑通过，已杀；改跑定向集
   `sdk-targeted-after-fixes.*`：1192 passed / 13 failed，13 个全是环境或既有（tiktoken 缺 ×6、judge recovery ×4、Python 3.14 AST 用例、
   其余 2 个 schema 8/9 已在（六）修好）。
+
+
+## 第十段（七）～（十五）：真实模型逐局推进，主流程逐段打通（2026-09-23 夜～09-24 凌晨）
+
+**提供方**：DeepSeek 日卡本机闸门 → 卖家上游今晚对所有请求返回空的 `ttft-warmup` 占位回复（非流式、流式、带不带工具都一样；闸门日志 200），
+luna 中转 404，DeepSeek 官方 401（本机 `.env` 这把密钥是日卡密钥）。唯一可用的是 Grok Build 订阅通道（`grok-4.6`）。
+该通道回显模型名 `grok-4.6-build`、又拒绝直接请求带 -build 的名字，按 HTN runner 做法在**驱动脚本**里子类化 Provider 做回显映射，SDK 不动。
+驱动脚本在会话 scratchpad（`host_real_run.py`，环境变量 `REAL_PROVIDER_JSON`/`REAL_MODEL_ECHO_MAP`），会把提供方文件复制进
+`run-N/userdata/`，每局后已删除副本（run-6～10 已清理；之后各局收尾统一清理）。另加两个仅诊断用的钩子：审阅准备报错的完整堆栈、编排器进度备注导出。
+
+**逐局缺陷与修复（每条都有回归用例；SDK 版本 assurance.5→.13，Host 每次同步钉版）**
+| 局 | 走到哪 | 缺陷（大白话） | 修法 | 提交 |
+|---|---|---|---|---|
+| run-7 | 叶子审阅 | 检查策略写得太晚：计划冻结范围与审阅在同一轮循环里完成，循环后才投影 | 部署端口 `check_policy_projector`，审阅准备前先投影 | 692fbebb |
+| run-8/9 | 叶子审阅准备 | 生产读授权的 ACCESS 见证按（调用者、Mission、用途）出键、按来源出指纹，读两个以上来源就自相冲突（夹具按来源出键，故接缝未暴露） | 键也带来源 | 72e80be2 |
+| run-10 | 审阅准备提交 | 四处最终复核把读权限连同"有效期截止"整份比较，生产授权的截止时间按当前时刻重算，永远不等 | 只比访问与策略，原权限有效期单独强制（`_require_same_permission`） | 8ac8f9c1 |
+| run-12 | 审阅模型调用登记 | 首次审阅预算保护只认"执行尝试:critic:序号"编号，保证通道编号不含执行尝试，循环每轮重抛 | 普通规则不变；保证编号只在同事务审阅绑定证明其结果属于同一执行尝试时放行 | c690d26f |
+| run-13 | 叶子审阅轮次 | 审阅者 3+2+5=10 次证据调用超过轮次上限 8 | 轮次工具上限与网关上限对齐 | 4dd2684f |
+| run-14 | 审阅导入 | 披露批次按排序存消息编号、送达事件按请求顺序写，比对不一致 → EXPOSURE_UNAVAILABLE | 写事件前先排序 | 8a0c3596 |
+| run-15/16 | **叶子全链首次走通**（审阅通过→正式记录→验收→使用证书）；根审阅准备 | 根任务最终审阅的检查策略域是"根范围+用途"，没人批准；报错被吞成无进展 → 停摆 | 无损推导支持 MISSION_FINAL；`mission_final_scope_id`；对外批准接口可选 `purpose`；Host 为根范围批准；根审阅前也调投影端口 | bb84e9b7 |
+| run-17 | **根审阅通过、根决议 + 根决议使用证书生成** | 根节点完成判断读旧格式审阅记录（保证通道把语义通过写成 UNKNOWN/NOT_RUN，真实等级在绑定清单）→ ROOT_SCOPE_UNMET | 保证通道下读根决议自身判据（只在当前根决议证书下写入） | a889478a |
+| run-18 | 根审阅轮次 | 根审阅者对整棵根目录做了 3+6+4+5=18 次证据调用，超过 16 | 证据调用上限 32、模型调用上限 10 | debbccd5 |
+| run-19 | 叶子审阅 | **非代码缺陷**：模型两次输出的 JSON 括号不配对且只评一条判据，格式修复一次后用尽，按设计判失败 | — | — |
+| run-20 | 叶子+根审阅、根决议全部通过，首次进入整体判定 | 整体判定对文字判据另请独立评判，保证通道评审入口按设计拒绝绕过保证链的评判 → 无人评判 → mission_criteria_unmet | 保证通道下整体判定按判据原文复述已采纳根决议上的认证等级（取不到如实记未评判） | 1903fbaf |
+| **run-21** | **主流程跑通** | — | — | assurance.14 / Host ed8e8cda |
+
+同期观察（未改，记入后续）：①每张使用证书签发后一轮即被有效性消费者判为 `SOURCE_CHANGED`（STALE），原因是证书读集里的全 Mission 查询集
+随后续写入变化；run-17 的收尾原因里没有它，但它会让快照视图长期显示"已过期"，需要单独评估读集粒度。②规划器修复阶段 Grok 多次给出
+不合格式的决定（`decision_type` 越界），属 HTN 规划协议对模型输出的要求，与保证机制无关。
+
+**回归事实**
+- Host `tests/orchestration` 修复后全量：47 failed / 335 passed。多出的 21 个是全量运行中途我重钉 SDK 版本，Host 启动身份校验报
+  "实际导入的 SDK 与钉版不一致"所致；这 21 个所在 6 个文件单独重跑 36 passed / 3 failed，3 个都在原有 26 个既有失败里。
+  证据 `host-orchestration-after-fixes.*`、`host-orchestration-rerun-21.*`。
+- SDK 保证机制目录 `tests/orchestrator/full_target/assurance_exec` 77 passed；完成状态相关 173 passed；预算尾部相关 10 个既有失败改动前后相同；
+  接缝脚本 `content-review-seam` / `review-import-seam` 改动前后都失败（早期接缝与后续协议漂移，既有）。
+
+
+## 第十段（十六）：主流程在 Host + 真实模型 + 默认开启下跑通（run-21，2026-09-24 01:12）
+
+**条件**：Host 生产装配（`OrchestrationService` + `OrchestrationSettings()`，保证机制默认 on，未显式传任何开关）；SDK
+`0.13.0.dev20260923+assurance.14`（源提交 1903fbaf，Host 钉版 ed8e8cda）；提供方 Grok Build 订阅通道 `grok-4.6`（驱动脚本级回显映射）；
+题目"写一份 NOTES.md，用中文列出桌面工作台「任务编排」视图的三个要点"，判据 `file:NOTES.md` + "NOTES.md 是中文，恰好列出三个要点"。
+
+**走过的完整链（事件顺序，mission-2986b2111084fe28）**：创建 → 保证档案激活 → 完成 Spec 批准 → 规划授权 → 方法合成与采纳 →
+叶子执行 → 格式/规则/代码测试层 PASS → 检查策略投影（内容 ×2 + 根最终审阅 ×1，Host caller）→ 叶子内容审阅（审阅者经只读证据工具读候选）
+→ READY_FOR_CURRENT_REVIEW → 正式审阅记录 → 验收 + ACCEPTANCE 使用证书 → 根审阅切包 → 根最终审阅 → 正式记录 → ROOT_RESOLUTION 使用证书
+→ GoalResolutionCommitted → MissionSuccessJudged（复述认证等级）→ 唯一终态写口 MissionCompleted（verification_passed）→
+AssuranceMissionFinalized → 收尾 FINALIZED。Host 快照：CLOSEOUT = FINALIZED / USABLE。用量 120982 tokens、1 次执行尝试。
+产出 NOTES.md 为中文、恰好三条编号要点（见证据目录工作区副本）。
+
+**证据**：`.local-test-evidence/2026-09-23/assurance-1.1-verify/host-real-model/run-21/`（`summary.json`、`events.json`、`driver.log`、
+`orchestrator-progress.log`、`userdata/` 数据库与工作区；提供方文件副本已删除，按密钥值计数扫描证据目录 0 命中）。
+
+**这一局不等于什么**：只是 1 局、1 个题目、1 个提供方；run-19 显示同一版本下模型 JSON 不合格会按设计失败，run-20 之前的各局失败都已修；
+没有跑 12 局真实模型、没有独立审阅、没有桌面端界面真机点击。进度备注里"root resolution not formed: ROOT_REVIEW_RECORD_MISSING"
+在根审阅进行期间每轮重复出现（run-21 共 565 次），是等待根审阅时的正常重试备注，可后续降噪。
+
+- 2026-09-24 默认开启后最终 Host `tests/orchestration` 全目录回归（`.local-test-evidence/2026-09-23/assurance-1.1-verify/host-orchestration-final.*`）：26 failed / 357 passed / 20 skipped（1229s）；26 个失败与第九段既有失败清单逐条相同（`comm` 比对无差异），默认开启未新增失败。
