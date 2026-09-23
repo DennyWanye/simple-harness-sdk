@@ -13956,7 +13956,14 @@ class Orchestrator:
             except Exception as error:  # noqa: BLE001
                 test_runs[criterion] = {"passed": False, "error": str(error), "stdout": ""}
         judge_ablated = "critic" in self._config.ablations  # step 8 (D8-7'): no judge Critic
-        needs_critic = not judge_ablated and any(
+        # Assured lane: the free-text criteria were judged by the official
+        # MISSION_FINAL review and restated, certified, on the adopted root
+        # resolution. A second, uncertified judge Critic is not run (the assured
+        # _run_critic refuses it); the judgment restates the certified grades
+        # (Host real model run 20, 2026-09-23: judge unavailable → criteria unmet).
+        assured_grades = self._assured_root_grades(mission, new_mode)
+        assured = assured_grades is not None or self._is_assured(mission.id)
+        needs_critic = not assured and not judge_ablated and any(
             not c.startswith(("pytest:", "file:", ACTION_PREFIX))
             and (document_coverage is None or c.startswith("arbitration:"))
             for c in mission.success_criteria
@@ -14033,6 +14040,20 @@ class Orchestrator:
                         ),
                     }
                 )
+            elif assured:
+                grade = None if assured_grades is None else assured_grades.get(criterion)
+                judgments.append(
+                    {
+                        "criterion": criterion,
+                        "met": grade == "PASS",
+                        "judge": "assurance_review",
+                        "source": "certified_root_resolution" if grade is not None else "unavailable",
+                        "reason": "official MISSION_FINAL review, current root-resolution certificate: "
+                        + str(grade)
+                        if grade is not None
+                        else "no certified root resolution judged this criterion",
+                    }
+                )
             else:
                 found: Mapping[str, Any] | None = None
                 if critic is not None:
@@ -14058,6 +14079,38 @@ class Orchestrator:
                     }
                 )
         return judgments, summary
+
+    def _is_assured(self, mission_id: str) -> bool:
+        from ..storage.assurance_store import AssuranceStore
+
+        return AssuranceStore(self.store).lane(mission_id) == "ASSURANCE_1_1"
+
+    def _assured_root_grades(self, mission: Mission, new_mode: Any) -> dict[str, str] | None:
+        """Criterion statement → certified grade from the adopted root resolutions
+        of an assured hierarchical Mission; None when not assured or not formed."""
+        if new_mode is None or not self._is_assured(mission.id):
+            return None
+        from ..storage.htn_store import HtnStore
+
+        htn = HtnStore(self.store)
+        network = new_mode.network(mission.id)
+        duties = tuple(dict.fromkeys(str(d) for d in network.required_obligations))
+        resolutions = [htn.adopted_goal_resolution(mission.id, duty) for duty in duties]
+        if not resolutions or any(item is None for item in resolutions):
+            return None
+        grades: dict[str, str] = {}
+        for resolution in resolutions:
+            if str(resolution.validity) != "CURRENT" or str(resolution.verdict) != "ACCEPT":
+                return None
+            requirements = htn.get_requirements_revision(
+                mission.id, int(resolution.requirements_version)
+            )
+            statements = {c.criterion_id: c.statement for c in requirements.criteria}
+            for item in resolution.criteria:
+                statement = statements.get(item.criterion_id)
+                if statement is not None:
+                    grades[statement] = str(item.verdict)
+        return grades
 
     async def _decide_actions(self, mission: Mission, tasks: Sequence[Task]) -> bool:
         """D7-7' / D7-5': judgment in two stages.  ① The non-action criteria are judged once
