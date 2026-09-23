@@ -686,7 +686,8 @@ class AgentRuntime:
         agents = []
         for index, config in enumerate(configs):
             agents.append(
-                await self.create(config, creation_key=f"{batch_key}:{index}", caller=caller)
+                # ``caller`` only travels when given (legacy consumers wrap ``create`` without it).
+                await self.create(config, creation_key=f"{batch_key}:{index}", **({} if caller is None else {"caller": caller}))
             )
         self.uow.commit_agent_batch(
             batch_id=record.batch_id,
