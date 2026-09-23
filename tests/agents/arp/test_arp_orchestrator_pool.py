@@ -92,3 +92,60 @@ def test_allow_all_authorization_is_refused_for_a_native_pool(tmp_path) -> None:
     with pytest.raises(ArpError) as refused:
         assemble_orchestrator_runtime(OrchestratorConfig(evidence_root=tmp_path / "root"), profiles=profiles, default_profile="native")
     assert refused.value.code == "AUTHORITY_SOURCE_MISSING"
+
+
+# ---- prior reserve reader (RP-E3b) ------------------------------------------------------------
+
+
+def _invocation(invocation_id: str, state: str, output: int | None) -> SimpleNamespace:
+    usage = None if output is None else {"usage": {"input_tokens": 3, "output_tokens": output}}
+    return SimpleNamespace(invocation_id=invocation_id, state=state, usage_json=usage)
+
+
+class _FakeUow:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.rows = rows
+
+    def list_provider_invocations(self, run_id):  # type: ignore[no-untyped-def]
+        assert run_id.value == "run-1"
+        return tuple(self.rows)
+
+    def read_effective_provider_invocation(self, invocation_id):  # type: ignore[no-untyped-def]
+        return next(r for r in self.rows if r.invocation_id == invocation_id)
+
+
+def test_the_prior_reserve_is_the_recorded_output_of_the_run_and_never_a_guess() -> None:
+    from agent_orchestrator.runtime.native_plane import RunPriorReserve
+
+    reader = RunPriorReserve()
+    with pytest.raises(ArpError) as unbound:
+        reader("run-1")
+    assert unbound.value.code == "PRIOR_RESERVE_UNAVAILABLE"
+    reader.bind(SimpleNamespace(uow=_FakeUow([])))
+    assert reader("run-1").tokens == 0 and reader("run-1").basis_ref is None
+    reader.bind(SimpleNamespace(uow=_FakeUow([_invocation("i1", "succeeded", 40), _invocation("i2", "claimed", None), _invocation("i3", "failed", 2)])))
+    basis = reader("run-1")
+    assert basis.tokens == 42 and basis.basis_ref is not None and basis.basis_ref.id == "prior-output:run-1"
+    same = reader("run-1")
+    assert same.basis_ref == basis.basis_ref
+    # An invocation whose usage is unresolved makes the reserve unavailable by name.
+    reader.bind(SimpleNamespace(uow=_FakeUow([_invocation("i1", "succeeded", 40), _invocation("i4", "handed_off", None)])))
+    with pytest.raises(ArpError) as unresolved:
+        reader("run-1")
+    assert unresolved.value.code == "PRIOR_RESERVE_UNAVAILABLE" and unresolved.value.detail["invocation_id"] == "i4"
+    reader.bind(SimpleNamespace(uow=_FakeUow([_invocation("i5", "succeeded", None)])))
+    with pytest.raises(ArpError):
+        reader("run-1")
+
+
+def test_after_build_binds_the_reader_to_the_assembled_native_pool(tmp_path) -> None:
+    from agent_orchestrator.runtime.native_plane import RunPriorReserve
+
+    tokenizer = ExactWordTokenizer()
+    reader = RunPriorReserve()
+    base = _native(tokenizer, authorization=RecordingAuthorization())
+    native = NativePlaneAssembly(arp_ports=base.arp_ports, authorization=base.authorization, caller_for=base.caller_for, after_build=reader.bind)
+    profiles = {"native": PoolProfile("native", ScriptedProvider([]), "agent-model", context_policy=ContextPolicy(), tokenizer=tokenizer, native_plane=native)}
+    assembled = assemble_orchestrator_runtime(OrchestratorConfig(evidence_root=tmp_path / "root"), profiles=profiles, default_profile="native")
+    assert reader._uow is assembled.pool("native").runtime.uow
+    assert reader("run-never").tokens == 0

@@ -625,6 +625,8 @@ def assemble_orchestrator_runtime(
             from simple_harness.agents.arp.runtime import build_arp_runtime
 
             runtime = build_arp_runtime(ports, native.arp_ports(database), owner_scope=OWNER_SCOPE)
+            if native.after_build is not None:
+                native.after_build(runtime)
             bridge = AgentBridge(runtime, unpriced=profile.unpriced, caller_for=native.caller_for)
         pools[profile_id] = RuntimePool(
             profile=profile,

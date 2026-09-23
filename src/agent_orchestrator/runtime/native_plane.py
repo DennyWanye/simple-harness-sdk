@@ -18,9 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from simple_harness.agents.arp.errors import ArpError
+from simple_harness.agents.arp.meter import NO_PRIOR, PriorBasis
 from simple_harness.agents.arp.pins import Pin
 from simple_harness.agents.arp.ports import TrustedCaller
 from simple_harness.agents.arp.strict import digest
+from simple_harness.contracts import RunId
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,50 @@ class NativePlaneAssembly:
     arp_ports: Callable[[Path], Any]
     authorization: Any
     caller_for: Callable[[Any], TrustedCaller]
+    # Called once with the assembled ``AgentRuntime`` (late bindings such as the prior
+    # reserve reader below, which needs the pool's own execution library).
+    after_build: Callable[[Any], None] | None = None
+
+
+class RunPriorReserve:
+    """``MeterBinding.prior_reserve`` for a pool: ``P`` is the sum of every prior output
+    token the pool's own execution library recorded for the Agent run.
+
+    The reader mirrors the orchestrator's admission accounting: a never-handed-off
+    (``claimed``) invocation has no usage; any other invocation whose usage is not yet
+    resolved makes the reserve unavailable by name — a reserve is never guessed.  It is
+    bound to the runtime after assembly (``NativePlaneAssembly.after_build``).
+    """
+
+    def __init__(self) -> None:
+        self._uow: Any = None
+
+    def bind(self, runtime: Any) -> None:
+        self._uow = runtime.uow
+
+    def __call__(self, run_id: str) -> PriorBasis:
+        if self._uow is None:
+            raise ArpError("PRIOR_RESERVE_UNAVAILABLE", "prior reserve reader is not bound to a runtime")
+        rows: list[tuple[str, int]] = []
+        for previous in self._uow.list_provider_invocations(RunId(run_id)):
+            record = self._uow.read_effective_provider_invocation(previous.invocation_id)
+            if record is None or str(record.state) == "claimed":
+                continue
+            usage = record.usage_json
+            values = usage.get("usage") if isinstance(usage, dict) else None
+            output = values.get("output_tokens") if isinstance(values, dict) else None
+            if str(record.state) not in ("succeeded", "failed") or type(output) is not int or output < 0:
+                raise ArpError(
+                    "PRIOR_RESERVE_UNAVAILABLE",
+                    "prior provider usage is unresolved",
+                    detail={"invocation_id": record.invocation_id, "state": str(record.state)},
+                )
+            rows.append((record.invocation_id, output))
+        tokens = sum(output for _, output in rows)
+        if tokens == 0:
+            return NO_PRIOR
+        basis = {"run_id": run_id, "invocations": [{"invocation_id": i, "output_tokens": o} for i, o in rows]}
+        return PriorBasis(tokens, Pin("receipt", f"prior-output:{run_id}", 0, digest(basis)))
 
 
 def intent_caller(intent: Any, *, principal_id: str, owner_contract_ref: Pin) -> TrustedCaller:
@@ -58,4 +105,4 @@ def intent_caller(intent: Any, *, principal_id: str, owner_contract_ref: Pin) ->
     )
 
 
-__all__ = ("NativePlaneAssembly", "intent_caller")
+__all__ = ("NativePlaneAssembly", "RunPriorReserve", "intent_caller")
