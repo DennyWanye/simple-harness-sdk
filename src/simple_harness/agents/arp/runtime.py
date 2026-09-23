@@ -36,6 +36,7 @@ from .migration import migrate_execution_to_v11
 from .pins import Pin
 from .ports import ArpPorts, RootIdentity, read_root
 from .search import SessionSearchService
+from .skills import SkillImporter
 from .strict import digest
 
 
@@ -58,6 +59,7 @@ class ArpRuntime:
     resolver: CapabilityResolver | None = None
     bootstrap: BootstrapReport | None = None
     catalogue_caller: Any | None = None
+    skills: SkillImporter | None = None
     _services: dict[str, SessionSearchService] = field(default_factory=dict)
 
     @property
@@ -225,6 +227,10 @@ def build_arp_runtime(
         state.catalogue_caller = caller
         state.exposure = ToolExposureService(state.catalogue)
         state.resolver = CapabilityResolver(state.catalogue)
+        state.skills = SkillImporter(
+            state.catalogue, root.directory / "bundles", state.bootstrap.instructions_capability_ref, state.bootstrap.instructions_schema_ref,
+            state.bootstrap.verification_policy_ref, arp.clock_ms,
+        )
         holder["exposure"] = state.exposure
     except BaseException:
         runtime.uow.database.close()

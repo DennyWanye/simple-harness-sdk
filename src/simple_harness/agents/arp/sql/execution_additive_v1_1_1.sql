@@ -299,6 +299,12 @@ CREATE TABLE arp_dependency_locks (
  lock_json TEXT NOT NULL CHECK(json_valid(lock_json)), complete INTEGER NOT NULL CHECK(complete IN (0,1)),
  source_receipt_ref_json TEXT NOT NULL CHECK(json_valid(source_receipt_ref_json)), PRIMARY KEY(skill_id,skill_revision,lock_hash)
 ) STRICT;
+-- Skill import command journal (§9.4): one command id, one bundle, one outcome.
+CREATE TABLE arp_skill_import_commands (
+ namespace_id TEXT NOT NULL, command_id TEXT NOT NULL, bundle_hash TEXT NOT NULL CHECK(length(bundle_hash)=64),
+ skill_id TEXT NOT NULL, skill_revision INTEGER NOT NULL CHECK(skill_revision>0), PRIMARY KEY(namespace_id,command_id)
+) STRICT;
+CREATE TRIGGER arp_skill_import_commands_update_deny BEFORE UPDATE ON arp_skill_import_commands BEGIN SELECT RAISE(ABORT,'immutable skill import command'); END;
 CREATE TABLE arp_event_bindings (
  original_event_id TEXT PRIMARY KEY NOT NULL, original_eventseq INTEGER NOT NULL CHECK(original_eventseq>=0),
  event_type TEXT NOT NULL CHECK(event_type IN ('AgentContextPolicyAdopted','RuntimeContextPrepared','RuntimeContextExposed','RuntimeSessionStateChanged','RuntimeIndexGenerationPublished','RuntimeJobChanged','RuntimeCatalogueChanged')),

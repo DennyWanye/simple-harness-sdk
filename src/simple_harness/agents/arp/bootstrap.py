@@ -39,6 +39,10 @@ DEFAULT_EFFECT_CLASSES = {
 }
 
 
+INSTRUCTIONS_CAPABILITY_ID = "sdk.skill.instructions"
+INSTRUCTIONS_SCHEMA_ID = "sdk.skill.instructions.io"
+
+
 @dataclass(frozen=True, slots=True)
 class BootstrapReport:
     namespace_id: str
@@ -47,6 +51,9 @@ class BootstrapReport:
     provider_ref: Pin
     deployment_ref: Pin
     capability_ref: Pin
+    instructions_capability_ref: Pin
+    instructions_schema_ref: Pin
+    verification_policy_ref: Pin
 
 
 def runtime_caller(profile_activation_ref: Pin, owner_contract_ref: Pin) -> TrustedCaller:
@@ -199,7 +206,33 @@ def bootstrap_builtin_tools(
         )
         admit(tool.pin)
         names.append(spec.name)
-    return BootstrapReport(scope.namespace_id, catalogue.epoch(), tuple(names), provider.pin, deployment.pin, capability.pin)
+    # 5. The INSTRUCTIONS skill capability (SKILL.md-only imports bind to it: read-only
+    #    instruction loading, zero execution authority).
+    instructions_schema, _ = catalogue.register(
+        "SCHEMA", {"type": "object", "properties": {"instructions": {"type": "string"}}, "additionalProperties": False},
+        entry_id=INSTRUCTIONS_SCHEMA_ID, caller=caller, command_id=f"{command}:schema:instructions", run_id=run_id,
+    )
+    admit(instructions_schema.pin)
+    instructions_capability, _ = catalogue.register(
+        "CAPABILITY",
+        {
+            "schema_version": 1,
+            "capability_id": INSTRUCTIONS_CAPABILITY_ID,
+            "version": 1,
+            "input_schema_ref": instructions_schema.pin.to_json(),
+            "output_schema_ref": instructions_schema.pin.to_json(),
+            "description": "Load a skill's instruction files into the request's E section (no execution).",
+            "required_semantics": [],
+            "verification_policy_ref": policy("skill-eval-v1").to_json(),
+            "provider_refs": [],
+        },
+        entry_id=INSTRUCTIONS_CAPABILITY_ID, caller=caller, command_id=f"{command}:capability:instructions", run_id=run_id,
+    )
+    admit(instructions_capability.pin)
+    return BootstrapReport(
+        scope.namespace_id, catalogue.epoch(), tuple(names), provider.pin, deployment.pin, capability.pin,
+        instructions_capability.pin, instructions_schema.pin, policy("skill-eval-v1"),
+    )
 
 
 __all__ = ("BUILTIN_CAPABILITY_ID", "BUILTIN_DEPLOYMENT_ID", "BUILTIN_PROVIDER_ID", "BootstrapReport", "bootstrap_builtin_tools", "refresh_builtin_health", "runtime_caller")

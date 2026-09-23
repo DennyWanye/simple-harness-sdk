@@ -478,6 +478,12 @@ class CatalogueService:
                 raise ArpError("CATALOGUE_STALE", "definition has no lifecycle row")
             if current.state == state:
                 return current  # command re-sent: the same outcome, no second epoch
+            if revision.entry_kind == "SKILL" and state in ("TRIAL", "ADMITTED"):
+                lock = connection.execute(
+                    "SELECT complete FROM arp_dependency_locks WHERE skill_id=? AND skill_revision=? ORDER BY rowid DESC LIMIT 1", (revision.entry_id, revision.revision)
+                ).fetchone()
+                if lock is None or int(lock[0]) != 1:
+                    raise ArpError("DEPENDENCY_UNRESOLVED", f"skill {revision.entry_id}@{revision.revision} has no complete dependency lock (§9.5)")
             receipt = Pin("receipt", f"catalogue:{command_id}", 0, digest({"command": command_id, "pin": pin.to_json(), "state": state, "caller": caller.to_json()}))
             row = transition_activation_locked(connection, current, state=state, authority_ref=self._authority(caller, receipt), evaluation_ref=evaluation_ref)
             self._changed_locked(connection, entry=row.pin, source_receipt_ref=receipt, run_id=run_id)

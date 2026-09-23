@@ -619,7 +619,7 @@ name = "importlib-metadata"
 version = "9.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp", marker = "python_full_version < '3.12'" },
+    { name = "zipp" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/01/15bb152d77b21318514a96f43af312635eb2500c96b55398d020c93d86ea/importlib_metadata-9.0.0.tar.gz", hash = "sha256:a4f57ab599e6a2e3016d7595cfd72eb4661a5106e787a95bcc90c7105b831efc", size = 56405, upload-time = "2026-03-20T06:42:56.999Z" }
 wheels = [
@@ -1581,7 +1581,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.12'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -1656,7 +1656,7 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.15'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.12'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7e/74/66de6258867beb2ef08f35f9f2ac017a52cacd5081714d239ff1a442d458/scipy-1.18.1.tar.gz", hash = "sha256:52c4b7422442aba924d03ad4019852b08a92e64ea187b933135687bfe2747307", size = 30781235, upload-time = "2026-08-21T23:28:50.599Z" }
 wheels = [
@@ -1775,6 +1775,9 @@ local-capacity = [
 planning-aries = [
     { name = "unified-planning", extra = ["aries"] },
 ]
+skill-import = [
+    { name = "pyyaml" },
+]
 testing = [
     { name = "pytest" },
 ]
@@ -1796,11 +1799,12 @@ requires-dist = [
     { name = "jinja2", marker = "extra == 'hf-tokenizer'", specifier = ">=3.1,<4" },
     { name = "psutil", marker = "extra == 'local-capacity'", specifier = ">=7.2.2,<8" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.3,<9" },
+    { name = "pyyaml", marker = "extra == 'skill-import'", specifier = ">=6.0,<7" },
     { name = "tokenizers", marker = "extra == 'hf-tokenizer'", specifier = ">=0.22,<1" },
     { name = "transformers", marker = "extra == 'hf-tokenizer'", specifier = ">=4.57,<6" },
     { name = "unified-planning", extras = ["aries"], marker = "extra == 'planning-aries'", specifier = ">=1.2,<2" },
 ]
-provides-extras = ["deepseek-tokenizer", "hf-tokenizer", "local-capacity", "planning-aries", "testing"]
+provides-extras = ["deepseek-tokenizer", "hf-tokenizer", "local-capacity", "planning-aries", "skill-import", "testing"]
 
 [package.metadata.requires-dev]
 dev = [
