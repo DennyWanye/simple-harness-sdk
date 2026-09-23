@@ -148,7 +148,10 @@ class MissionControlV1:
 
         try:
             body = fields(dict(command), {"mission_id", "command_id", "requirements_ref",
-                "completion_scope", "candidate_mapping"}, {"result_ref"})
+                "completion_scope", "candidate_mapping"}, {"result_ref", "purpose"})
+            purpose = body.get("purpose", "CONTENT")
+            if purpose not in ("CONTENT", "MISSION_FINAL"):
+                raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID", str(purpose))
             self._mission(body["mission_id"])
             ref = self._orchestrator.commit.approve_assurance_check_policy(
                 tenant_id=self._tenant, principal=self._principal,
@@ -159,6 +162,7 @@ class MissionControlV1:
                     for row in array(body["candidate_mapping"], minimum=1)),
                 result_ref=None if body.get("result_ref") is None else
                     AssuranceRef.from_json(body["result_ref"], kinds={"result"}),
+                purpose=purpose,
             )
             return {"check_policy_ref": ref.to_json()}
         except AssuranceError as error:

@@ -294,7 +294,7 @@ def approve_check_policy(
 
 
 def lossless_scope_mapping(
-    commit: CommitService, *, mission_id: str, scope_id: str
+    commit: CommitService, *, mission_id: str, scope_id: str, purpose: str = "CONTENT"
 ) -> tuple[AssuranceRef, AssuranceRef, tuple[CriterionPolicy, ...]]:
     """The candidate mapping a deployment derives *losslessly* from the original
     requirements for one frozen completion Scope (plan §5.1 无损旧适配).
@@ -307,12 +307,19 @@ def lossless_scope_mapping(
     ``CHECK_POLICY_UNRESOLVED`` — nothing is invented or dropped. The result is
     still approved through :func:`approve_check_policy` by the authenticated
     Host caller under its own command; this only spells out the original.
+
+    ``purpose="MISSION_FINAL"`` spells out the root review's domain on the root
+    Scope: the whole root requirements (as :func:`approve_check_policy` checks),
+    with the same lossless per-criterion rule (Host real model run 15/16,
+    2026-09-23: the root review had no approved policy and the Mission stalled).
     """
     from .scoped_composition_review import read_compound_projection
     from .scoped_content_review import read_task_check_policy_projection
 
     text(mission_id)
     text(scope_id)
+    if purpose not in {"CONTENT", "MISSION_FINAL"}:
+        raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID", purpose)
     store = commit.store
     row = store.connection.execute(
         "SELECT scope_id, occurrence_id, task_id, scope_hash, document_json "
@@ -334,15 +341,25 @@ def lossless_scope_mapping(
     binding = HtnStore(store).task_semantics_of(mission_id, str(row["task_id"]))
     if binding is None:
         raise AssuranceError("CHECK_POLICY_UNRESOLVED", scope_id)
-    if binding.form is TaskForm.PRIMITIVE:
-        projection = read_task_check_policy_projection(store, mission_id, str(row["task_id"]))
+    if purpose == "MISSION_FINAL":
+        criteria_source = tuple(
+            HtnStore(store)
+            .get_requirements_revision(mission_id, int(scope.requirements_ref.revision))
+            .criteria
+        )
+    elif binding.form is TaskForm.PRIMITIVE:
+        criteria_source = tuple(
+            read_task_check_policy_projection(store, mission_id, str(row["task_id"])).criteria
+        )
     else:
-        projection = read_compound_projection(
-            store, mission_id, str(row["occurrence_id"]), str(row["task_id"])
+        criteria_source = tuple(
+            read_compound_projection(
+                store, mission_id, str(row["occurrence_id"]), str(row["task_id"])
+            ).criteria
         )
     registry: dict[str, Any] | None = None
     mapping: list[CriterionPolicy] = []
-    for criterion in projection.criteria:
+    for criterion in criteria_source:
         required_ids = tuple(criterion.required_evidence_policy.required_check_ids)
         if not required_ids:
             if criterion.evaluation_kind is not EvaluationKind.SEMANTIC:
@@ -363,3 +380,20 @@ def lossless_scope_mapping(
             group.append(entry.binding.spec_ref)
         mapping.append(CriterionPolicy(criterion.criterion_id, "CHECKED", (tuple(group),)))
     return requirements_ref, scope_ref, tuple(sorted(mapping, key=lambda c: c.criterion_id))
+
+
+def mission_final_scope_id(orchestrator: Any, mission_id: str) -> str | None:
+    """The frozen root Scope a MISSION_FINAL review is judged on, or None when the
+    plan has not frozen it yet (same rule as ``mission_final_subject``)."""
+    from .assurance_purpose_reviews import _scope_ref_for
+
+    dispatch = orchestrator._dispatch_for(mission_id)
+    if dispatch is None:
+        return None
+    try:
+        roots = tuple(dispatch.network(mission_id).root_occurrence_ids)
+        if len(roots) != 1:
+            return None
+        return _scope_ref_for(orchestrator.store, mission_id, str(roots[0])).pin.id
+    except AssuranceError:
+        return None

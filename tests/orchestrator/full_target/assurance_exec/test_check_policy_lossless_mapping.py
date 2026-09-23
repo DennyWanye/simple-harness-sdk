@@ -61,3 +61,39 @@ def test_unknown_scope_is_unresolved_never_invented(tmp_path):
         assert error.code == "CHECK_POLICY_UNRESOLVED"
     else:
         raise AssertionError("an unknown Scope must be unresolved")
+
+
+def test_mission_final_mapping_covers_the_whole_root_requirements(tmp_path):
+    """Host real model run 15 (2026-09-23): the root review needs its own policy on
+    the root Scope's MISSION_FINAL domain; the mapping is the whole requirements."""
+    from _assured_fixture import build_world
+
+    from agent_orchestrator.storage.htn_store import HtnStore
+
+    world, task, stored, artifact, scope_ref = build_world(tmp_path / "w", approve_policy=False)
+    commit, mission_id = world.service, world.mission.id
+    requirements_ref, derived_scope_ref, mapping = lossless_scope_mapping(
+        commit, mission_id=mission_id, scope_id=scope_ref.pin.id, purpose="MISSION_FINAL")
+    assert derived_scope_ref == scope_ref
+    requirements = HtnStore(commit.store).get_requirements_revision(
+        mission_id, requirements_ref.pin.revision)
+    assert {row.criterion_id for row in mapping} == {c.criterion_id for c in requirements.criteria}
+    ref = commit.approve_assurance_check_policy(
+        tenant_id=world.mission.tenant_id, mission_id=mission_id,
+        command_id="host-check-policy:mission-final:" + scope_ref.pin.id,
+        principal=Principal("host-authenticated-user"), requirements_ref=requirements_ref,
+        completion_scope=derived_scope_ref, candidate_mapping=mapping, purpose="MISSION_FINAL")
+    assert ref.kind == "check_policy"
+
+
+def test_unknown_purpose_is_refused(tmp_path):
+    from _assured_fixture import build_world
+
+    world, task, stored, artifact, scope_ref = build_world(tmp_path / "w", approve_policy=False)
+    try:
+        lossless_scope_mapping(world.service, mission_id=world.mission.id,
+                               scope_id=scope_ref.pin.id, purpose="METHOD_PLAN")
+    except AssuranceError as error:
+        assert error.code == "CHECK_POLICY_APPROVAL_INVALID"
+    else:
+        raise AssertionError("only CONTENT and MISSION_FINAL are projected")

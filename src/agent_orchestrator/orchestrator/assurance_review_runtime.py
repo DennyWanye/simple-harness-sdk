@@ -347,6 +347,10 @@ class AssuranceReviewRuntime:
         """MISSION_FINAL from the root coordinator's cut package."""
         from .assurance_purpose_reviews import mission_final_subject
 
+        if self._check_policy_projector is not None and not self.store.connection.in_transaction:
+            # Same deployment port as TASK_CONTENT: the root Scope's MISSION_FINAL
+            # policy is projected right before the root review needs it.
+            self._check_policy_projector(mission.id)
         subject, requirements = mission_final_subject(
             self.store, mission_id=mission.id, package=package, dispatch=dispatch
         )
