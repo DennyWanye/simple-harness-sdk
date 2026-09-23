@@ -305,6 +305,22 @@ CREATE TABLE arp_skill_import_commands (
  skill_id TEXT NOT NULL, skill_revision INTEGER NOT NULL CHECK(skill_revision>0), PRIMARY KEY(namespace_id,command_id)
 ) STRICT;
 CREATE TRIGGER arp_skill_import_commands_update_deny BEFORE UPDATE ON arp_skill_import_commands BEGIN SELECT RAISE(ABORT,'immutable skill import command'); END;
+-- Skill trial bindings (§9.6): one immutable SkillEvaluationBinding per trial command.
+CREATE TABLE arp_skill_evaluations (
+ namespace_id TEXT NOT NULL, evaluation_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0),
+ content_hash TEXT NOT NULL CHECK(length(content_hash)=64), command_id TEXT NOT NULL,
+ skill_id TEXT NOT NULL, skill_revision INTEGER NOT NULL CHECK(skill_revision>0), lock_hash TEXT NOT NULL CHECK(length(lock_hash)=64),
+ body_json TEXT NOT NULL CHECK(json_valid(body_json)), expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms>=0),
+ PRIMARY KEY(namespace_id,evaluation_id,revision), UNIQUE(namespace_id,command_id)
+) STRICT;
+CREATE TRIGGER arp_skill_evaluations_update_deny BEFORE UPDATE ON arp_skill_evaluations BEGIN SELECT RAISE(ABORT,'immutable skill evaluation binding'); END;
+-- Skill admissions (§9.7): which official acceptance admitted which evaluation; immutable.
+CREATE TABLE arp_skill_admissions (
+ namespace_id TEXT NOT NULL, skill_id TEXT NOT NULL, skill_revision INTEGER NOT NULL CHECK(skill_revision>0),
+ evaluation_id TEXT NOT NULL, acceptance_ref_json TEXT NOT NULL CHECK(json_valid(acceptance_ref_json)), command_id TEXT NOT NULL,
+ PRIMARY KEY(namespace_id,skill_id,skill_revision,evaluation_id)
+) STRICT;
+CREATE TRIGGER arp_skill_admissions_update_deny BEFORE UPDATE ON arp_skill_admissions BEGIN SELECT RAISE(ABORT,'immutable skill admission'); END;
 CREATE TABLE arp_event_bindings (
  original_event_id TEXT PRIMARY KEY NOT NULL, original_eventseq INTEGER NOT NULL CHECK(original_eventseq>=0),
  event_type TEXT NOT NULL CHECK(event_type IN ('AgentContextPolicyAdopted','RuntimeContextPrepared','RuntimeContextExposed','RuntimeSessionStateChanged','RuntimeIndexGenerationPublished','RuntimeJobChanged','RuntimeCatalogueChanged')),

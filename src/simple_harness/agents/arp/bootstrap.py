@@ -36,6 +36,10 @@ DEFAULT_EFFECT_CLASSES = {
     "session_history_search": "READ_ONLY",
     "session_history_read": "READ_ONLY",
     "agent_delegate": "SANDBOX_WRITE",
+    "skill_discover": "READ_ONLY",
+    "tool_discover": "READ_ONLY",
+    "skill_load": "READ_ONLY",
+    "skill_execute": "SANDBOX_WRITE",
 }
 
 

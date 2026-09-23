@@ -30,7 +30,9 @@ from .creation import NativeCreationService
 from .errors import ArpError
 from .indexing import SessionIndexCoordinator
 from .retriever import SessionRetriever
-from .tools import ArpSessionHistoryTools
+from .lifecycle import SkillLifecycleService
+from .skill_tools import ArpModelTools
+from .skill_use import SkillUseService
 from .meter import MeterBinding, NativeMeterAdapter
 from .migration import migrate_execution_to_v11
 from .pins import Pin
@@ -60,6 +62,8 @@ class ArpRuntime:
     bootstrap: BootstrapReport | None = None
     catalogue_caller: Any | None = None
     skills: SkillImporter | None = None
+    lifecycle: SkillLifecycleService | None = None
+    skill_use: SkillUseService | None = None
     _services: dict[str, SessionSearchService] = field(default_factory=dict)
 
     @property
@@ -165,7 +169,7 @@ def build_arp_runtime(
         return ArpProviderWire(inner, database, context=lambda: holder["context"], **kwargs)
 
     def session_tools_factory():  # type: ignore[no-untyped-def]
-        holder["tools"] = ArpSessionHistoryTools()
+        holder["tools"] = ArpModelTools()
         return holder["tools"]
 
     def exposure_reader(base):  # type: ignore[no-untyped-def]
@@ -230,6 +234,21 @@ def build_arp_runtime(
         state.skills = SkillImporter(
             state.catalogue, root.directory / "bundles", state.bootstrap.instructions_capability_ref, state.bootstrap.instructions_schema_ref,
             state.bootstrap.verification_policy_ref, arp.clock_ms,
+        )
+        state.lifecycle = SkillLifecycleService(state.catalogue, state.skills, arp.acceptance, arp.clock_ms)
+        from .context.skill_blocks import skill_blocks_for
+
+        def skill_capacity() -> int:
+            limits = state.meter.binding.model_limits
+            body = policy.body
+            candidates = [int(body["max_context_tokens"]), int(limits["input_limit_tokens"])]
+            if limits.get("combined_limit_tokens") is not None:
+                candidates.append(int(limits["combined_limit_tokens"]) - int(limits["max_output_tokens"]))
+            return max(0, (min(candidates) - int(body["safety_reserve_tokens"]) - int(body["tool_headroom_tokens"])) // 2)
+
+        state.skill_use = SkillUseService(
+            state.catalogue, state.skills, runtime.uow, arp.clock_ms, ports.clock, policy.approval_ref, str(arp.profile.owner_mode), script_runner=arp.script_runner,
+            count=index.count, skill_capacity=skill_capacity, loaded_blocks=lambda session: skill_blocks_for(state, session, count=index.count),
         )
         holder["exposure"] = state.exposure
     except BaseException:

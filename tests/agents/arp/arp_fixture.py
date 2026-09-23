@@ -135,6 +135,8 @@ def build(
     input_limit: int = 8192,
     max_output: int = 1024,
     clock_ms: Callable[[], int] | None = None,
+    acceptance: object | None = None,
+    script_runner: object | None = None,
     **port_overrides: Any,
 ):
     root = bootstrap_root(tmp_path / "root", root_id="root-test")
@@ -163,6 +165,8 @@ def build(
         meter=meter_binding(tokenizer, input_limit=input_limit, max_output=max_output),
         embedding=embedding,
         embedding_resource_ref=None if embedding is None else Pin("deployment", "embedding-test", 1, digest(str(getattr(embedding, "fingerprint", "?")))),
+        acceptance=acceptance,
+        script_runner=script_runner,
         **({} if clock_ms is None else {"clock_ms": clock_ms}),
     )
     return build_arp_runtime(ports, arp)

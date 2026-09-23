@@ -44,6 +44,7 @@ from ..pins import Pin
 from ..rules import Budget, Group, Recall, Selection, Turn, allocate
 from ..search import SessionAccess, _text_of
 from ..strict import digest, plain
+from .skill_blocks import SkillBlock, replay_skill_blocks, skill_blocks_for, skill_message
 from . import groups as protocol_groups
 from .recall import RecallSources, limits_for
 
@@ -87,6 +88,7 @@ class PreparedContext:
     messages: tuple[Message, ...]
     tool_snapshot: Mapping[str, Any] | None = None
     tool_witnesses: tuple[Pin, ...] = ()
+    skill_blocks: tuple[SkillBlock, ...] = ()
 
 
 class ArpContextPort(JournalContextPort):
@@ -216,7 +218,8 @@ class ArpContextPort(JournalContextPort):
         )
         instructions = [r for r in snapshot.instructions if r.visibility == "context"]
         tool_tokens = count_tools(self._tokenizer, tuple(request.tools))
-        fixed = sum(self._count(r) for r in instructions) + tool_tokens
+        skill_blocks = skill_blocks_for(arp, session, count=arp.index.count)
+        fixed = sum(self._count(r) for r in instructions) + tool_tokens + sum(b.tokens for b in skill_blocks)
         rule_groups = [
             Group(g.group_id, g.turn_id, g.seq_from, g.budget_charge, g.kind, g.mandatory, g.closed, g.call_ids, g.result_call_ids)
             for g in snapshot.groups
@@ -277,7 +280,7 @@ class ArpContextPort(JournalContextPort):
                 candidates.append(Recall(item["chunk_id"], frozenset(item["source_group_ids"]), charge))
         candidates = candidates[: int(policy["max_recall_items"])]
         selection = allocate(budget, fixed, rule_groups, candidates, turns=rule_turns, current_turn_id=turn_id, enumeration_complete=bool(snapshot.body["enumeration_complete"]))
-        prepared = PreparedContext(highwater, turn_id, snapshot, session, selection, result, texts, budget, fixed, (), tool_snapshot, tool_witnesses)
+        prepared = PreparedContext(highwater, turn_id, snapshot, session, selection, result, texts, budget, fixed, (), tool_snapshot, tool_witnesses, skill_blocks)
         wire, measurement = self._render_and_measure(prepared, request, instructions)
         self._write_manifest(prepared, wire, measurement, request_key, ordinal, adoption.adoption_revision, tool_tokens, instructions)
         self.prepared.append(request_key)
@@ -288,6 +291,7 @@ class ArpContextPort(JournalContextPort):
     def _render(self, prepared: PreparedContext, request: ProviderRequest, instructions: Sequence[AgentJournalRecord]) -> ProviderRequest:
         by_id = {item["chunk_id"]: item for item in prepared.recall_result.get("candidate_items", [])}
         messages: list[Message] = [_message_of(r) for r in instructions]
+        messages.extend(skill_message(b) for b in prepared.skill_blocks)
         for recall in prepared.selection.recalled:
             messages.append(recall_message(by_id[recall.id], prepared.recall_texts[recall.id]))
         for group in prepared.selection.recent:
@@ -342,6 +346,13 @@ class ArpContextPort(JournalContextPort):
                     "trust": "CONTROL", "required": True, "budget_charge": tool_tokens, "validity_witness_ref": None,
                 }
             )
+        for block in prepared.skill_blocks:
+            sections.append(
+                {
+                    "section": "E", "block_id": block.block_id, "source_refs": [block.receipt_ref.to_json(), block.artifact_ref.to_json()],
+                    "view_ref": block.artifact_ref.to_json(), "trust": "SKILL_INSTRUCTIONS", "required": True, "budget_charge": block.tokens, "validity_witness_ref": None,
+                }
+            )
         by_id = {item["chunk_id"]: item for item in result.get("candidate_items", [])}
         for recall in selection.recalled:
             item = by_id[recall.id]
@@ -368,6 +379,7 @@ class ArpContextPort(JournalContextPort):
             "adoption_revision": adoption_revision,
             "tool_snapshot": tool_snapshot_hash,
             "recall_result": digest(result),
+            "skill_blocks": [[b.block_id, b.artifact_ref.content_hash] for b in prepared.skill_blocks],
         }
         manifest = {
             "schema_version": 2,
@@ -390,7 +402,7 @@ class ArpContextPort(JournalContextPort):
                 Pin("tool_snapshot", f"{session.agent_id}:tools", 0, tool_snapshot_hash) if prepared.tool_snapshot is None
                 else ToolExposureService.snapshot_pin(prepared.tool_snapshot)
             ).to_json(),
-            "skill_refs": [],
+            "skill_refs": [p.to_json() for p in dict.fromkeys(b.skill_ref for b in prepared.skill_blocks)],
             "planned_request_hash": measurement.request_hash,
             "input_token_charge": measurement.wire_tokens,
             "effective_input_budget": selection.input_budget,
@@ -443,6 +455,7 @@ class ArpContextPort(JournalContextPort):
         snapshot = self._capture(session, int(manifest["journal_highwater"]))
         instructions = [r for r in snapshot.instructions if r.visibility == "context"]
         messages: list[Message] = [_message_of(r) for r in instructions]
+        messages.extend(skill_message(b) for b in replay_skill_blocks(arp, manifest, count=arp.index.count))
         generation = arp.index.state_for(session).generation.index_generation
         service = arp.search_for(session)[0]
         recall_row = store.read_context_recall(self._connection(), str(manifest["retrieval_receipt_ref"]["id"]))

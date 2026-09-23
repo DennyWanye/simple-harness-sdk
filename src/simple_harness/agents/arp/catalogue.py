@@ -269,6 +269,7 @@ def transition_activation_locked(
     state: str,
     authority_ref: Pin,
     evaluation_ref: Pin | None = None,
+    admission_ref: Pin | None = None,
 ) -> ActivationRow:
     """One lifecycle step under CAS; illegal steps are named before SQLite aborts them."""
 
@@ -284,9 +285,19 @@ def transition_activation_locked(
         return current
     if state not in TRANSITIONS[current.state]:
         raise ArpError("STATE_COMBINATION_INVALID", f"{current.state} → {state} is not a catalogue transition")
-    if state == "ADMITTED" and current.entry_kind == "SKILL" and evaluation_ref is None:
-        raise ArpError("SKILL_EVALUATION_INCOMPLETE", "a Skill is admitted only with an official evaluation")
     keep_eval = evaluation_ref if evaluation_ref is not None else current.evaluation_ref
+    if state == "ADMITTED" and current.entry_kind == "SKILL":
+        # The store's own line of defence (§9.7): an ADMITTED Skill carries its trial
+        # evaluation AND that evaluation was accepted by an official acceptance recorded
+        # in arp_skill_admissions, on this very connection. No caller signs its own PASS.
+        if keep_eval is None:
+            raise ArpError("SKILL_EVALUATION_INCOMPLETE", "a Skill is admitted only with an official evaluation")
+        row = connection.execute(
+            "SELECT acceptance_ref_json FROM arp_skill_admissions WHERE namespace_id=? AND skill_id=? AND skill_revision=? AND evaluation_id=?",
+            (current.namespace_id, current.entry_id, current.revision, keep_eval.id),
+        ).fetchone()
+        if row is None or admission_ref is None or Pin.from_json(_load(row[0])) != admission_ref:
+            raise ArpError("SKILL_EVALUATION_INCOMPLETE", "a Skill is admitted only under its recorded official acceptance")
     updated = connection.execute(
         "UPDATE arp_catalog_activation SET state=?, row_version=row_version+1, authority_ref_json=?, evaluation_ref_json=?"
         " WHERE namespace_id=? AND entry_kind=? AND entry_id=? AND revision=? AND row_version=?",
@@ -467,11 +478,30 @@ class CatalogueService:
         caller: TrustedCaller,
         command_id: str,
         evaluation_ref: Pin | None = None,
+        admission_ref: Pin | None = None,
         run_id: str | None = None,
     ) -> ActivationRow:
+        with self.uow.database.transaction() as connection:
+            return self.transition_locked(connection, pin, state=state, caller=caller, command_id=command_id, evaluation_ref=evaluation_ref, admission_ref=admission_ref, run_id=run_id)
+
+    def transition_locked(
+        self,
+        connection: sqlite3.Connection,
+        pin: Pin,
+        *,
+        state: str,
+        caller: TrustedCaller,
+        command_id: str,
+        evaluation_ref: Pin | None = None,
+        admission_ref: Pin | None = None,
+        run_id: str | None = None,
+    ) -> ActivationRow:
+        """The transition inside a caller-owned transaction (admission record + step in one)."""
+
         if not isinstance(caller, TrustedCaller):
             raise ArpError("AUTHORITY_SOURCE_MISSING", "catalogue commands need an authenticated caller")
-        with self.uow.database.transaction() as connection:
+        require_transaction(connection)
+        if True:
             revision = resolve_pin(connection, self.namespace_id, pin)
             current = read_activation(connection, self.namespace_id, revision.entry_kind, revision.entry_id, revision.revision)
             if current is None:
@@ -485,7 +515,7 @@ class CatalogueService:
                 if lock is None or int(lock[0]) != 1:
                     raise ArpError("DEPENDENCY_UNRESOLVED", f"skill {revision.entry_id}@{revision.revision} has no complete dependency lock (§9.5)")
             receipt = Pin("receipt", f"catalogue:{command_id}", 0, digest({"command": command_id, "pin": pin.to_json(), "state": state, "caller": caller.to_json()}))
-            row = transition_activation_locked(connection, current, state=state, authority_ref=self._authority(caller, receipt), evaluation_ref=evaluation_ref)
+            row = transition_activation_locked(connection, current, state=state, authority_ref=self._authority(caller, receipt), evaluation_ref=evaluation_ref, admission_ref=admission_ref)
             self._changed_locked(connection, entry=row.pin, source_receipt_ref=receipt, run_id=run_id)
             return row
 

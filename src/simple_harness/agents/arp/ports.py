@@ -16,7 +16,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
 from .errors import ArpError
 from .pins import Pin
@@ -128,6 +128,68 @@ def read_root(directory: str | Path) -> RootIdentity:
     return RootIdentity(body["root_id"], body["root_incarnation"], base)
 
 
+ASSURANCE_SUCCESSOR_PENDING = "ASSURANCE_SUCCESSOR_PENDING"
+
+
+class SkillAcceptancePort(Protocol):
+    """The official evaluation acceptance reader (SKILL-CATALOGUE §4): the Assurance
+    successor's ``CheckPolicy / EvaluationAcceptance``.  ``verify`` returns the frozen
+    acceptance view for ``acceptance_ref`` bound to ``binding`` or raises a named error;
+    it never fabricates a PASS."""
+
+    def verify(self, binding: Mapping[str, Any], acceptance_ref: Pin) -> Mapping[str, Any]: ...
+
+
+class PendingAssuranceAcceptance:
+    """Interface freeze (BW09): until the Assurance line lands, no Skill can be admitted.
+    Every verify names the pending successor instead of inventing an acceptance."""
+
+    successor = ASSURANCE_SUCCESSOR_PENDING
+
+    def verify(self, binding: Mapping[str, Any], acceptance_ref: Pin) -> Mapping[str, Any]:
+        raise ArpError(
+            "SKILL_EVALUATION_INCOMPLETE",
+            "official evaluation acceptance is not available: Assurance successor pending",
+            detail={"successor": ASSURANCE_SUCCESSOR_PENDING, "evaluation_ref": dict(binding["evaluation_ref"]), "acceptance_ref": acceptance_ref.to_json()},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptRun:
+    """One approved SCRIPT execution handed to the original executor (§9.9). ``argv`` keeps
+    the whole tokens ``{input_json}`` / ``{output_json}``; the executor substitutes them
+    with the files it owns, runs with shell=False in the fixed workspace, and never
+    inherits more environment than its own allow-list."""
+
+    skill_ref: Pin
+    runner_ref: Pin
+    script_path: str
+    script_bytes: bytes
+    argv: tuple[str, ...]
+    input_json: bytes
+    workspace_key: str
+    timeout_ms: int
+    output_limit_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptRunReceipt:
+    """What the original executor really observed. ``terminal`` is EXITED (exit code
+    known), TIMEOUT (process tree confirmed stopped) or UNKNOWN (no confirmation)."""
+
+    terminal: str
+    exit_code: int | None
+    output: bytes | None
+    receipt_ref: Pin
+    stdout_ref: Pin | None = None
+    stderr_ref: Pin | None = None
+    truncated: bool = False
+
+
+class ScriptRunnerPort(Protocol):
+    def run(self, request: ScriptRun) -> ScriptRunReceipt: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ArpPorts:
     """Authenticated assembly inputs for the native runtime plane."""
@@ -149,10 +211,21 @@ class ArpPorts:
     # deployment pin; None means the §6 truth table decides (reject / LEXICAL_ONLY).
     embedding: Any | None = None
     embedding_resource_ref: Any | None = None
+    # RP-C3: the official evaluation acceptance reader (None → Assurance successor
+    # pending: every admit is refused by name) and the approved SCRIPT executor (None →
+    # RUNNER_UNAVAILABLE; the SDK never spawns processes itself).
+    acceptance: Any | None = None
+    script_runner: Any | None = None
 
 
 __all__ = (
+    "ASSURANCE_SUCCESSOR_PENDING",
     "ArpPorts",
+    "PendingAssuranceAcceptance",
+    "ScriptRun",
+    "ScriptRunReceipt",
+    "ScriptRunnerPort",
+    "SkillAcceptancePort",
     "LOCKS_DIR",
     "ROOT_MARKER",
     "RootIdentity",

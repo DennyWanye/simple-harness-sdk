@@ -1299,6 +1299,34 @@ def publish_index_generation_locked(
 # ---- original receipts (run_events rows for facts that have no table of their own) -----------
 
 
+def put_skill_use_locked(connection: sqlite3.Connection, *, use: Mapping[str, Any], use_key: str, original_call_ref: Pin | None) -> Mapping[str, Any]:
+    """Persist one immutable ``SkillUse``; the same key with the same body replays."""
+
+    require_transaction(connection)
+    use_hash = digest(use)
+    existing = connection.execute("SELECT use_hash, body_json FROM arp_skill_uses WHERE session_id=? AND use_key=?", (use["session_id"], use_key)).fetchone()
+    if existing is not None:
+        if str(existing[0]) != use_hash:
+            raise ArpError("SOURCE_HASH_CONFLICT", "skill use key reused with another body")
+        return _load(existing[1])
+    connection.execute(
+        "INSERT INTO arp_skill_uses(use_id,session_id,turn_id,use_key,use_hash,body_json,original_call_ref_json) VALUES (?,?,?,?,?,?,?)",
+        (use["use_id"], use["session_id"], use["turn_id"], use_key, use_hash, _json_column(use), None if original_call_ref is None else _json_column(original_call_ref.to_json())),
+    )
+    return use
+
+
+def read_skill_uses(connection: sqlite3.Connection, session_id: str, *, mode: str | None = None) -> tuple[Mapping[str, Any], ...]:
+    rows = connection.execute("SELECT body_json FROM arp_skill_uses WHERE session_id=? ORDER BY rowid ASC", (session_id,)).fetchall()
+    uses = tuple(_load(r[0]) for r in rows)
+    return uses if mode is None else tuple(u for u in uses if u["mode"] == mode)
+
+
+def read_skill_use(connection: sqlite3.Connection, use_id: str) -> Mapping[str, Any] | None:
+    raw = connection.execute("SELECT body_json FROM arp_skill_uses WHERE use_id=?", (use_id,)).fetchone()
+    return None if raw is None else _load(raw[0])
+
+
 def append_original_receipt_locked(
     connection: sqlite3.Connection,
     *,
