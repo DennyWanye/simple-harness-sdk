@@ -119,6 +119,11 @@ class FixedPrincipalAuthority:
             if environment is None:
                 raise AssuranceError("ASSURANCE_ENVIRONMENT_UNINITIALIZED")
             now_ms = int(self.store.now * 1000)
+        # One ACCESS observation per (caller, mission, use, *source*): the witness
+        # fingerprint below is per source, so the key must be too — a preparation
+        # that reads several sources merges its read set by (channel, key) and
+        # rejects one key with two fingerprints as RECHECK_REQUIRED (Host real
+        # model run 8/9, 2026-09-23: every content review failed on this).
         access = ReadItem(
             "ACCESS",
             canonical(
@@ -127,6 +132,7 @@ class FixedPrincipalAuthority:
                     "tenant": self.tenant_id,
                     "scope": mission_id,
                     "use": purpose,
+                    "ref": ref.key,
                 }
             ),
             fingerprint(
