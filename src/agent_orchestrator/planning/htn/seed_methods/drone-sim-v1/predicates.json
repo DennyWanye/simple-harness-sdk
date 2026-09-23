@@ -1,0 +1,116 @@
+[
+  {
+    "predicate_ref": {
+      "id": "drone-sim.connected",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "vehicle",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "drone-sim-telemetry"
+    ],
+    "authority_scope": "mission",
+    "statement": "local simulator telemetry confirms connected"
+  },
+  {
+    "predicate_ref": {
+      "id": "drone-sim.battery-safe",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "vehicle",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "drone-sim-telemetry"
+    ],
+    "authority_scope": "mission",
+    "statement": "local simulator telemetry confirms battery-safe"
+  },
+  {
+    "predicate_ref": {
+      "id": "drone-sim.zone-clear",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "vehicle",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "drone-sim-telemetry"
+    ],
+    "authority_scope": "mission",
+    "statement": "local simulator telemetry confirms zone-clear"
+  },
+  {
+    "predicate_ref": {
+      "id": "drone-sim.airborne",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "vehicle",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "drone-sim-telemetry"
+    ],
+    "authority_scope": "mission",
+    "statement": "local simulator telemetry confirms airborne"
+  },
+  {
+    "predicate_ref": {
+      "id": "drone-sim.landed",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "vehicle",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "drone-sim-telemetry"
+    ],
+    "authority_scope": "mission",
+    "statement": "local simulator telemetry confirms landed"
+  },
+  {
+    "predicate_ref": {
+      "id": "drone-sim.capture-exists",
+      "version": 1
+    },
+    "parameters": [
+      {
+        "name": "vehicle",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "world_assumption": "CLOSED",
+    "observer_ids": [
+      "drone-sim-telemetry"
+    ],
+    "authority_scope": "mission",
+    "statement": "local simulator telemetry confirms capture-exists"
+  }
+]

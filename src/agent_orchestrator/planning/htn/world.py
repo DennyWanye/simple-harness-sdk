@@ -57,6 +57,7 @@ from ...contracts.models import ContractError
 from ...contracts.semantic_base import VersionedRef, content_hash_of
 from ...knowledge.predicates import PredicateRegistry
 from .applicability import CapabilityRecord, CapabilitySnapshot
+from .domain_package import DomainPackageInstaller
 from .observation_pipeline import ObserverIndex, build_index
 from .observers import PredicateObserver
 from .registry import (
@@ -286,6 +287,7 @@ class DeploymentPlanningWorld:
     policy_ref: str = "deployment-policy"
     policy_version: int = 1
     max_steps: int = 64
+    package_installer: DomainPackageInstaller | None = None
     _empty_at_ms: int = field(default=0, repr=False)
 
     # -- the structural type -------------------------------------------------------
@@ -332,6 +334,29 @@ class DeploymentPlanningWorld:
             support_revision=len(observations),
             entries=entries,
         )
+
+    def freeze_method_evaluation(self, reference: Any, evaluation_set: Any, *,
+                                 baseline_mission_ids: tuple[str, ...], policy: Any = None) -> Any:
+        from ...storage.method_evaluation_store import MethodEvaluationStore
+        if self.semantics is None:
+            raise ContractError("method evaluation needs the durable method store")
+        service = MethodEvaluationStore(self.semantics._store)
+        result = service.freeze(reference, evaluation_set,
+            baseline_mission_ids=baseline_mission_ids, policy=policy)
+        service.refresh_registry(self.registry, mission_id=self.mission_id)
+        return result
+
+    def evaluate_method(self, reference: Any, *, promote: bool = False) -> Any:
+        from ...storage.method_evaluation_store import MethodEvaluationStore
+        if self.semantics is None:
+            raise ContractError("method evaluation needs the durable method store")
+        service = MethodEvaluationStore(self.semantics._store)
+        result = service.evaluate(reference)
+        if promote and result["state"] in {"EVALUATED", "ADMITTED"}:
+            service.promote(reference)
+            result = {**result, "state": "ADMITTED"}
+        service.refresh_registry(self.registry, mission_id=self.mission_id)
+        return result
 
     # -- what a deployment does with it --------------------------------------------
     def policy(self, **overrides: Any) -> AdmissionPolicy:
@@ -417,8 +442,14 @@ def build_planning_world(
     predicates = PredicateRegistry()
     catalog = TaskTypeCatalog()
     registry = MethodRegistry()
+    package_installer = DomainPackageInstaller()
     installed = install_library(
-        chosen, root=root_path, schemas=schemas, predicates=predicates, catalog=catalog
+        chosen,
+        root=root_path,
+        schemas=schemas,
+        predicates=predicates,
+        catalog=catalog,
+        package_installer=package_installer,
     )
     records = capability_records(
         catalog,
@@ -435,6 +466,7 @@ def build_planning_world(
         registry=registry,
         records=records,
         domains=installed,
+        package_installer=package_installer,
         semantics=semantics,
         scope_id=scope_id,
     )
@@ -487,6 +519,8 @@ def publish_methods(world: DeploymentPlanningWorld) -> tuple[str, ...]:
             continue
         world.semantics.register_method(contract, registration)
         published.append(f"{reference.method_id}@{int(reference.version)}")
+    from ...storage.method_evaluation_store import MethodEvaluationStore
+    MethodEvaluationStore(world.semantics._store).refresh_registry(world.registry, mission_id=world.mission_id)
     return tuple(published)
 
 

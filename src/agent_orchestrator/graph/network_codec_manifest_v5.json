@@ -1,0 +1,94 @@
+{
+  "manifest_version": 5,
+  "codecs": [
+    {
+      "component": "OccurrenceSpec",
+      "kind": "occurrence",
+      "source_path": "agent_orchestrator/contracts/htn.py",
+      "source_sha256": "3ac7b0407d3904d7e0fdf11b343fbeafea81a96d86be0294926c1617a3d27d16"
+    },
+    {
+      "component": "TaskSemanticBindingV1",
+      "kind": "task_semantics",
+      "source_path": "agent_orchestrator/contracts/htn.py",
+      "source_sha256": "3ac7b0407d3904d7e0fdf11b343fbeafea81a96d86be0294926c1617a3d27d16"
+    },
+    {
+      "component": "MethodInstanceDraft",
+      "kind": "method_instance",
+      "source_path": "agent_orchestrator/contracts/htn.py",
+      "source_sha256": "3ac7b0407d3904d7e0fdf11b343fbeafea81a96d86be0294926c1617a3d27d16"
+    },
+    {
+      "component": "OrderConstraint",
+      "kind": "order_constraint",
+      "source_path": "agent_orchestrator/contracts/htn.py",
+      "source_sha256": "3ac7b0407d3904d7e0fdf11b343fbeafea81a96d86be0294926c1617a3d27d16"
+    },
+    {
+      "component": "DataRequirement",
+      "kind": "data_requirement",
+      "source_path": "agent_orchestrator/contracts/htn.py",
+      "source_sha256": "3ac7b0407d3904d7e0fdf11b343fbeafea81a96d86be0294926c1617a3d27d16"
+    },
+    {
+      "component": "TypedEdge",
+      "kind": "typed_edge",
+      "source_path": "agent_orchestrator/contracts/htn.py",
+      "source_sha256": "3ac7b0407d3904d7e0fdf11b343fbeafea81a96d86be0294926c1617a3d27d16"
+    },
+    {
+      "component": "ObligationCoverage",
+      "kind": "obligation_coverage",
+      "source_path": "agent_orchestrator/contracts/htn.py",
+      "source_sha256": "3ac7b0407d3904d7e0fdf11b343fbeafea81a96d86be0294926c1617a3d27d16"
+    }
+  ],
+  "supporting_sources": [
+    {
+      "component": "json",
+      "source_path": "simple_harness/contracts/json.py",
+      "source_sha256": "07be368843c6de6c001feee4cc99eacdaa8f8fe4cc3c67896b5621c4579b895f"
+    },
+    {
+      "component": "contracts export",
+      "source_path": "simple_harness/contracts/__init__.py",
+      "source_sha256": "eb04ec604a876295078db2fcddfc61d65d612cbe5a54c3f7111f5b49dae1d945"
+    },
+    {
+      "component": "semantic",
+      "source_path": "agent_orchestrator/contracts/semantic_base.py",
+      "source_sha256": "e60c139c9c2f372a5a0aab1bd7a0d7f9ce7e96d4fa1be07a116661395db56363"
+    },
+    {
+      "component": "evidence",
+      "source_path": "agent_orchestrator/contracts/evidence_state.py",
+      "source_sha256": "d251feb15bd77a1c58c5b983b3a30bd78eb5c2228e3f29b8333e6d9304ee24de"
+    },
+    {
+      "component": "models",
+      "source_path": "agent_orchestrator/contracts/models.py",
+      "source_sha256": "ca16ec7c103bbeed6e2cfd43c8cf847f2604b275b9b997b62550b4431708b582"
+    },
+    {
+      "component": "network",
+      "source_path": "agent_orchestrator/graph/task_network.py",
+      "source_sha256": "5399dd8d43a1621ce37170fa5490e5ab7b58571e7212af98bf473cf87801d370"
+    },
+    {
+      "component": "network document codec",
+      "source_path": "agent_orchestrator/graph/network_codec.py",
+      "source_sha256": "c68bb20b62f41ce9200a5d8a9d67e30bca516e095583c3b221bcb6c096214b61"
+    },
+    {
+      "component": "state machines",
+      "source_path": "agent_orchestrator/contracts/state_machines.py",
+      "source_sha256": "dfddfcfd484f3beb089b81cc9702d0e3fb1986fe867d566d740734965c5caf07"
+    },
+    {
+      "component": "contract errors",
+      "source_path": "simple_harness/contracts/errors.py",
+      "source_sha256": "a0406110611ceeed34a61eedb38cf188c4f65ff9c382be7a5aed4017e566e537"
+    }
+  ]
+}

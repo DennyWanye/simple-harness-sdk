@@ -6553,6 +6553,15 @@ class SqliteExecutionUnitOfWork(ProviderAccountingMixin):
         assert record is not None
         return record
 
+    def list_effects_for_run(self, run_id: str) -> tuple[EffectRecord, ...]:
+        """Complete effect inventory; settlement readers must not filter UNKNOWN only."""
+        rows = self.database.connection.execute(
+            "SELECT * FROM execution_effects WHERE run_id = ? "
+            "ORDER BY turn_ordinal, call_ordinal, effect_id",
+            (_required(run_id, "run_id"),),
+        ).fetchall()
+        return tuple(_effect_record(row) for row in rows)
+
     def list_unknown_effects_for_run(self, run_id: str) -> tuple[EffectRecord, ...]:
         """Effects of one Run whose outcome is still UNKNOWN (oldest first)."""
 

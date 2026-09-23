@@ -31,12 +31,19 @@ class DeploymentPolicy:
     allowed_tools: tuple[str, ...] = TOOL_NAMES
     agentdojo_tools: tuple[str, ...] = field(default=(), kw_only=True)
     are_tools: tuple[str, ...] = field(default=(), kw_only=True)
+    domain_tools: tuple[str, ...] = field(default=(), kw_only=True)
+    domain_read_only_tools: tuple[str, ...] = field(default=(), kw_only=True)
+    operator_tool_allowlists: tuple[tuple[str, tuple[str, ...]], ...] = field(default=(), kw_only=True)
+    require_operator_tool_policy: bool = field(default=False, kw_only=True)
     denied_path_prefixes: tuple[str, ...] = ()  # workspace paths no Agent may read or write
     # step 7 (D7-3): real actions — which connectors this deployment enables, the highest
     # level it will run at all, per-operation level overrides (only ever *raise* a level),
     # whether an L3 double approval needs two different people (this build's deployment
     # convention, not an original rule), and how long an approval stays valid
     enabled_connectors: tuple[str, ...] = ()  # D7-3': off unless a deployment enables one
+    # New Operation deployments may explicitly enable journalled event writes.
+    # Historical deployments keep their original state-only permission and bytes.
+    enabled_event_operations: tuple[str, ...] = field(default=(), kw_only=True)
     max_action_level: str = "L3"
     level_overrides: tuple[tuple[str, str], ...] = ()  # (("connector.operation", "L3"), ...)
     l3_distinct_principals: bool = True
@@ -58,13 +65,29 @@ class DeploymentPolicy:
     code_execution: str | None = None
 
     def __post_init__(self) -> None:
+        if type(self.require_operator_tool_policy) is not bool:
+            raise ValueError("operator tool policy requirement must be boolean")
+        operator_ids = [name for name, _ in self.operator_tool_allowlists]
+        if (len(operator_ids) != len(set(operator_ids))
+                or any(not name or not set(names) <= set(self.allowed_tools)
+                       for name, names in self.operator_tool_allowlists)):
+            raise ValueError("operator tool policy must uniquely narrow deployment tools")
+        if (len(set(self.enabled_event_operations)) != len(self.enabled_event_operations)
+                or any(not isinstance(name, str) or len(name.split(".")) != 2
+                       or not all(name.split(".")) or name.split(".")[0] not in self.enabled_connectors
+                       for name in self.enabled_event_operations)):
+            raise ValueError("event operations must explicitly name enabled connector.operation pairs")
         if set(self.agentdojo_tools) & set(TOOL_NAMES):
             raise ValueError("AgentDojo tools cannot replace SDK tools")
         if set(self.are_tools) & (set(TOOL_NAMES) | set(self.agentdojo_tools)):
             raise ValueError("ARE tools cannot replace SDK or AgentDojo tools")
+        if set(self.domain_tools) & (set(TOOL_NAMES) | set(self.agentdojo_tools) | set(self.are_tools)):
+            raise ValueError("domain tools cannot replace existing tools")
+        if not set(self.domain_read_only_tools) <= set(self.domain_tools):
+            raise ValueError("read-only domain tools must be deployed")
         unknown = (
             set(self.allowed_tools) - set(TOOL_NAMES)
-            - set(self.agentdojo_tools) - set(self.are_tools)
+            - set(self.agentdojo_tools) - set(self.are_tools) - set(self.domain_tools)
         )
         if unknown:
             raise ValueError(f"deployment policy names unknown tools: {sorted(unknown)}")
@@ -87,10 +110,15 @@ class DeploymentPolicy:
     def to_json(self) -> dict[str, Any]:
         return {
             "allowed_tools": list(self.allowed_tools),
+            **({"operator_tool_allowlists": {name: list(names) for name, names in self.operator_tool_allowlists}}
+               if self.operator_tool_allowlists else {}),
+            **({"require_operator_tool_policy": True} if self.require_operator_tool_policy else {}),
             **({"agentdojo_tools": list(self.agentdojo_tools)} if self.agentdojo_tools else {}),
             **({"are_tools": list(self.are_tools)} if self.are_tools else {}),
+            **({"domain_tools": list(self.domain_tools), "domain_read_only_tools": list(self.domain_read_only_tools)} if self.domain_tools else {}),
             "denied_path_prefixes": list(self.denied_path_prefixes),
             "enabled_connectors": list(self.enabled_connectors),
+            **({"enabled_event_operations": list(self.enabled_event_operations)} if self.enabled_event_operations else {}),
             "max_action_level": self.max_action_level,
             "level_overrides": [list(item) for item in self.level_overrides],
             "l3_distinct_principals": self.l3_distinct_principals,
@@ -153,8 +181,14 @@ def action_decision(deployment: DeploymentPolicy, connector: Any, operation: str
         # P3.2 D7: without an authoritative lookup, a lost receipt can never be resolved
         # except by a person — such a connector may not carry an L2 action at all
         refused = "connector_lookup_not_authoritative"
-    elif spec.mutates and spec.kind != "state":
-        refused = "event_operation_not_supported"  # D7-2': one business action = one state
+    elif spec.mutates and spec.kind != "state" and not (
+        spec.kind == "event"
+        and f"{connector.name}.{operation}" in deployment.enabled_event_operations
+        and getattr(connector, "supports_idempotency", False)
+        and getattr(connector, "supports_reconciliation", False)
+        and getattr(connector, "lookup_authority", "best_effort") == "authoritative"
+    ):
+        refused = "event_operation_not_supported"
     elif level_rank(level) > level_rank(deployment.max_action_level):
         refused = f"above_deployment_ceiling:{deployment.max_action_level}"
     return ActionDecision(
@@ -186,7 +220,8 @@ def effective_tools(
     allowed = set(mission_tools) & set(task_tools) & set(deployment.allowed_tools)
     names = tuple(name for name in role_tools if name in allowed)
     if read_only_leaf:
-        names = tuple(name for name in names if name not in READ_ONLY_LEAF_HIDDEN_TOOLS)
+        names = tuple(name for name in names if name not in READ_ONLY_LEAF_HIDDEN_TOOLS
+                      and (name not in deployment.domain_tools or name in deployment.domain_read_only_tools))
     return names
 
 
@@ -236,9 +271,14 @@ SNAPSHOT_FIELDS: dict[str, str] = {
     "are_tool_schemas": "capability: public schemas frozen only when deployed",
     "agentdojo_invoke": "capability: callback presence; no environment serialization",
     "agentdojo_tool_schemas": "capability: public schemas frozen only when deployed",
+    "domain_tools": "capability: public schemas and read-only flags; no callback serialization",
+    "planning_backend": "capability: backend identity; no runtime object serialization",
     **{
         name: "include"
         for name in (
+            "hierarchical_repair_enabled",
+            "method_selection_policy",
+            "planning_backend_limits",
             "model",
             "max_concurrency",
             "max_concurrent_model_calls",
@@ -395,6 +435,13 @@ def policy_snapshot(
     # objects can carry credentials). Availability still changes admission.
     if "appworld_execute" in fields:
         configuration["appworld_execute"] = getattr(config, "appworld_execute") is not None
+    if getattr(config, "domain_tools", None):
+        configuration["domain_tools"] = {
+            name: {"schema": tool.schema, "read_only": tool.read_only}
+            for name, tool in sorted(config.domain_tools.items())
+        }
+    if getattr(config, "planning_backend", None) is not None:
+        configuration["planning_backend"] = {"backend_id": config.planning_backend.backend_id}
     if (getattr(config, "agentdojo_invoke", None) is not None
             or getattr(config, "agentdojo_tool_schemas", None)):
         configuration["agentdojo_invoke"] = getattr(config, "agentdojo_invoke", None) is not None

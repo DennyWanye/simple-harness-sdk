@@ -224,6 +224,13 @@ class RepairKind(StrEnum):
     """Section 25/26: the H1 repair sub-kinds.  H4 may add more."""
 
     REPLACE_METHOD = "REPLACE_METHOD"
+    REFINE_DEEPER = "REFINE_DEEPER"
+    REBIND_INPUT = "REBIND_INPUT"
+    CANCEL_BRANCH = "CANCEL_BRANCH"
+    RETRY_SAME_METHOD = "RETRY_SAME_METHOD"
+    DECLARE_RUNTIME_BLOCKED = "DECLARE_RUNTIME_BLOCKED"
+    ESCALATE = "ESCALATE"
+    REQUEST_COMPENSATION = "REQUEST_COMPENSATION"
     PROPOSE_SUCCESSOR = "PROPOSE_SUCCESSOR"
 
 
@@ -273,6 +280,39 @@ H1_DECISION_ENABLEMENT: Mapping[str, DecisionEnablement] = MappingProxyType(
         "PROPOSE_METHOD": _DECODE_ONLY,
     }
 )
+
+#: §12 H3 enables formal evidence requests while preserving H1's executable
+#: decision surface.  Keeping this as a separate map makes the phase transition
+#: explicit; callers using H1 continue to read the unchanged H1 constant.
+H3_DECISION_ENABLEMENT: Mapping[str, DecisionEnablement] = MappingProxyType(
+    {
+        **H1_DECISION_ENABLEMENT,
+        "REQUEST_EVIDENCE": _EXECUTABLE,
+    }
+)
+
+
+V14_DECISION_ENABLEMENT: Mapping[str, DecisionEnablement] = MappingProxyType({
+    **H3_DECISION_ENABLEMENT,
+    "REQUEST_HUMAN": _EXECUTABLE,
+    "PROPOSE_METHOD": _EXECUTABLE,
+})
+
+
+# Package 7 is an explicit H4 extension. Never mutate the package 6 matrix: it
+# also defines the authority and prompt surface of already frozen Missions.
+H4_DECISION_ENABLEMENT: Mapping[str, DecisionEnablement] = MappingProxyType({
+    **V14_DECISION_ENABLEMENT,
+    "BIND_EXISTING_GOAL": _EXECUTABLE,
+    "REPAIR/PROPOSE_SUCCESSOR": _EXECUTABLE,
+    "REPAIR/REBIND_INPUT": _EXECUTABLE,
+    "REPAIR/CANCEL_BRANCH": _EXECUTABLE,
+    "REPAIR/REFINE_DEEPER": _EXECUTABLE,
+    "REPAIR/RETRY_SAME_METHOD": _EXECUTABLE,
+    "REPAIR/DECLARE_RUNTIME_BLOCKED": _EXECUTABLE,
+    "REPAIR/ESCALATE": _EXECUTABLE,
+    "REPAIR/REQUEST_COMPENSATION": _EXECUTABLE,
+})
 
 
 # --------------------------------------------------------------------------------------
@@ -1021,6 +1061,127 @@ class RefineDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class RepairRetrySameMethodDecision:
+    """Retry a precise failed Attempt under its still-adopted Method."""
+
+    repair_kind: RepairKind
+    failed_attempt_id: str
+    method_instance_ref: PlanningRefV1
+
+    def __post_init__(self) -> None:
+        kind = enum_of(RepairKind, self.repair_kind, "repair_retry.repair_kind")
+        if kind is not RepairKind.RETRY_SAME_METHOD:
+            raise ContractError("repair_retry.repair_kind must be RETRY_SAME_METHOD")
+        object.__setattr__(self, "repair_kind", kind)
+        object.__setattr__(self, "failed_attempt_id", identifier(self.failed_attempt_id, "repair_retry.failed_attempt_id"))
+        object.__setattr__(self, "method_instance_ref", _has_method_instance_kind(
+            _planning_ref(self.method_instance_ref, "repair_retry.method_instance_ref"), "repair_retry.method_instance_ref"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"repair_kind": str(self.repair_kind), "failed_attempt_id": self.failed_attempt_id,
+                "method_instance_ref": self.method_instance_ref.to_json()}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "repair_retry") -> RepairRetrySameMethodDecision:
+        data = fields_of(value, name, required=("repair_kind", "failed_attempt_id", "method_instance_ref"))
+        return cls(repair_kind=data["repair_kind"], failed_attempt_id=data["failed_attempt_id"],
+                   method_instance_ref=data["method_instance_ref"])
+
+
+@dataclass(frozen=True, slots=True)
+class RepairCancelBranchDecision:
+    """Withdraw one optional membership without cancelling other consumers' work."""
+
+    repair_kind: RepairKind
+    method_instance_ref: PlanningRefV1
+    step: str
+
+    def __post_init__(self) -> None:
+        kind = enum_of(RepairKind, self.repair_kind, "repair_cancel.repair_kind")
+        if kind is not RepairKind.CANCEL_BRANCH:
+            raise ContractError("repair_cancel.repair_kind must be CANCEL_BRANCH")
+        object.__setattr__(self, "repair_kind", kind)
+        object.__setattr__(self, "method_instance_ref", _has_method_instance_kind(
+            _planning_ref(self.method_instance_ref, "repair_cancel.method_instance_ref"), "repair_cancel.method_instance_ref"))
+        object.__setattr__(self, "step", identifier(self.step, "repair_cancel.step"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"repair_kind": str(self.repair_kind), "method_instance_ref": self.method_instance_ref.to_json(), "step": self.step}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "repair_cancel") -> RepairCancelBranchDecision:
+        data = fields_of(value, name, required=("repair_kind", "method_instance_ref", "step"))
+        return cls(**data)
+
+
+@dataclass(frozen=True, slots=True)
+class RepairRebindInputDecision:
+    """Replace one frozen DATA source; schemas and consumption policies are system-owned."""
+
+    repair_kind: RepairKind
+    consumer_task_ref: PlanningRefV1
+    requirement_id: str
+    expected_requirement_hash: str
+    producer_task_ref: PlanningRefV1
+    output_port: str
+
+    def __post_init__(self) -> None:
+        kind = enum_of(RepairKind, self.repair_kind, "repair_rebind.repair_kind")
+        if kind is not RepairKind.REBIND_INPUT:
+            raise ContractError("repair_rebind.repair_kind must be REBIND_INPUT")
+        object.__setattr__(self, "repair_kind", kind)
+        for name in ("consumer_task_ref", "producer_task_ref"):
+            ref = _planning_ref(getattr(self, name), f"repair_rebind.{name}")
+            if ref.kind is not PlanningRefKind.TASK:
+                raise ContractError(f"repair_rebind.{name} must name a Task")
+            object.__setattr__(self, name, ref)
+        for name in ("requirement_id", "output_port"):
+            object.__setattr__(self, name, identifier(getattr(self, name), f"repair_rebind.{name}"))
+        object.__setattr__(self, "expected_requirement_hash", hash_hex(
+            self.expected_requirement_hash, "repair_rebind.expected_requirement_hash"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"repair_kind": str(self.repair_kind),
+                "consumer_task_ref": self.consumer_task_ref.to_json(),
+                "producer_task_ref": self.producer_task_ref.to_json(),
+                "requirement_id": self.requirement_id,
+                "expected_requirement_hash": self.expected_requirement_hash,
+                "output_port": self.output_port}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "repair_rebind") -> RepairRebindInputDecision:
+        data = fields_of(value, name, required=("repair_kind", "consumer_task_ref", "producer_task_ref",
+            "requirement_id", "expected_requirement_hash", "output_port"))
+        return cls(**data)
+
+
+@dataclass(frozen=True, slots=True)
+class RepairRefineDeeperDecision:
+    """H4 expands an open compound frontier without replacing its parent method."""
+
+    repair_kind: RepairKind
+    method_ref: PlanningRefV1
+    bindings: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        kind = enum_of(RepairKind, self.repair_kind, "repair_refine.repair_kind")
+        if kind is not RepairKind.REFINE_DEEPER:
+            raise ContractError("repair_refine.repair_kind must be REFINE_DEEPER")
+        object.__setattr__(self, "repair_kind", kind)
+        object.__setattr__(self, "method_ref", _planning_ref(self.method_ref, "repair_refine.method_ref"))
+        object.__setattr__(self, "bindings", _json_arg_map(self.bindings, "repair_refine.bindings", limit=MAX_PD_BINDINGS))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"repair_kind": str(self.repair_kind), "method_ref": self.method_ref.to_json(),
+                "bindings": dict(self.bindings)}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "repair_refine") -> RepairRefineDeeperDecision:
+        data = fields_of(value, name, required=("repair_kind", "method_ref", "bindings"))
+        return cls(repair_kind=data["repair_kind"], method_ref=data["method_ref"], bindings=data["bindings"])
+
+
+@dataclass(frozen=True, slots=True)
 class RepairReplaceMethodDecision:
     """V2 section 25: REPAIR / REPLACE_METHOD."""
 
@@ -1295,6 +1456,41 @@ class DeclareBlockedDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class RepairRuntimeBlockedDecision:
+    """Suspend fresh work for an original runtime failure, without synthesizing."""
+
+    repair_kind: RepairKind
+    repair_request_id: str
+    blockers: tuple[BlockedItemV1, ...]
+    resumable_if: tuple[ResumableIf, ...]
+
+    def __post_init__(self) -> None:
+        kind = enum_of(RepairKind, self.repair_kind, "repair_blocked.repair_kind")
+        if kind is not RepairKind.DECLARE_RUNTIME_BLOCKED:
+            raise ContractError("repair_blocked.repair_kind must be DECLARE_RUNTIME_BLOCKED")
+        object.__setattr__(self, "repair_kind", kind)
+        object.__setattr__(self, "repair_request_id", hash_hex(self.repair_request_id, "repair_blocked.repair_request_id"))
+        blocked = DeclareBlockedDecision(self.blockers, self.resumable_if)
+        if not blocked.blockers:
+            raise ContractError("runtime blockage needs at least one blocker")
+        if any(item not in {ResumableIf.EVIDENCE_UPDATED, ResumableIf.HUMAN_RESOLVED,
+                            ResumableIf.PLAN_REVISION_CHANGED} for item in blocked.resumable_if):
+            raise ContractError("runtime resume condition has no supported authoritative reader")
+        object.__setattr__(self, "blockers", blocked.blockers)
+        object.__setattr__(self, "resumable_if", blocked.resumable_if)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"repair_kind": str(self.repair_kind), "repair_request_id": self.repair_request_id,
+                **DeclareBlockedDecision(self.blockers, self.resumable_if).to_json()}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "repair_blocked") -> RepairRuntimeBlockedDecision:
+        data = fields_of(value, name, required=("repair_kind", "repair_request_id", "blockers", "resumable_if"))
+        return cls(repair_kind=data["repair_kind"], repair_request_id=data["repair_request_id"],
+                   blockers=data["blockers"], resumable_if=data["resumable_if"])
+
+
+@dataclass(frozen=True, slots=True)
 class WaitDecision:
     """V2 section 29: wait for already-dispatched work; no plan change."""
 
@@ -1522,8 +1718,77 @@ PAYLOAD_BY_DECISION_TYPE: Mapping[PlanningDecisionType, type[Any]] = MappingProx
     }
 )
 
+@dataclass(frozen=True, slots=True)
+class RepairCompensationRequestDecision:
+    """Request human disposition of an exact successful action, never execute its inverse."""
+
+    repair_kind: RepairKind
+    action_key: str
+    action_hash: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        kind = enum_of(RepairKind, self.repair_kind, "repair_compensation.repair_kind")
+        if kind is not RepairKind.REQUEST_COMPENSATION:
+            raise ContractError("repair_compensation.repair_kind must be REQUEST_COMPENSATION")
+        object.__setattr__(self, "repair_kind", kind)
+        object.__setattr__(self, "action_key", identifier(self.action_key, "repair_compensation.action_key"))
+        object.__setattr__(self, "action_hash", hash_hex(self.action_hash, "repair_compensation.action_hash"))
+        object.__setattr__(self, "reason", text(self.reason, "repair_compensation.reason"))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"repair_kind": str(self.repair_kind), "action_key": self.action_key,
+                "action_hash": self.action_hash, "reason": self.reason}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "repair_compensation") -> RepairCompensationRequestDecision:
+        data = fields_of(value, name, required=("repair_kind", "action_key", "action_hash", "reason"))
+        return cls(repair_kind=data["repair_kind"], action_key=data["action_key"],
+                   action_hash=data["action_hash"], reason=data["reason"])
+
+
+@dataclass(frozen=True, slots=True)
+class RepairEscalateDecision:
+    """H4 escalation explicitly targets a human; it never selects another model."""
+
+    repair_kind: RepairKind
+    target: str
+    question: str
+    options: tuple[HumanOptionV1, ...]
+    blocking: bool
+
+    def __post_init__(self) -> None:
+        kind = enum_of(RepairKind, self.repair_kind, "repair_escalate.repair_kind")
+        if kind is not RepairKind.ESCALATE or self.target != "human":
+            raise ContractError("ESCALATE requires the explicit target 'human'")
+        normalized = RequestHumanDecision(self.question, self.options, self.blocking)
+        object.__setattr__(self, "repair_kind", kind)
+        object.__setattr__(self, "question", normalized.question)
+        object.__setattr__(self, "options", normalized.options)
+        object.__setattr__(self, "blocking", normalized.blocking)
+
+    def human_request(self) -> RequestHumanDecision:
+        return RequestHumanDecision(self.question, self.options, self.blocking)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"repair_kind": str(self.repair_kind), "target": self.target, **self.human_request().to_json()}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "repair_escalate") -> RepairEscalateDecision:
+        data = fields_of(value, name, required=("repair_kind", "target", "question", "options", "blocking"))
+        return cls(repair_kind=data["repair_kind"], target=data["target"], question=data["question"],
+                   options=data["options"], blocking=data["blocking"])
+
+
 REPAIR_PAYLOAD_BY_KIND: Mapping[RepairKind, type[Any]] = MappingProxyType(
     {
+        RepairKind.REQUEST_COMPENSATION: RepairCompensationRequestDecision,
+        RepairKind.ESCALATE: RepairEscalateDecision,
+        RepairKind.DECLARE_RUNTIME_BLOCKED: RepairRuntimeBlockedDecision,
+        RepairKind.RETRY_SAME_METHOD: RepairRetrySameMethodDecision,
+        RepairKind.CANCEL_BRANCH: RepairCancelBranchDecision,
+        RepairKind.REBIND_INPUT: RepairRebindInputDecision,
+        RepairKind.REFINE_DEEPER: RepairRefineDeeperDecision,
         RepairKind.REPLACE_METHOD: RepairReplaceMethodDecision,
         RepairKind.PROPOSE_SUCCESSOR: RepairProposeSuccessorDecision,
     }
@@ -1534,6 +1799,20 @@ def _payload_class(
     decision_type: PlanningDecisionType, payload: object, name: str
 ) -> type[Any]:
     if decision_type is PlanningDecisionType.REPAIR:
+        if isinstance(payload, RepairCompensationRequestDecision):
+            return RepairCompensationRequestDecision
+        if isinstance(payload, RepairEscalateDecision):
+            return RepairEscalateDecision
+        if isinstance(payload, RepairRuntimeBlockedDecision):
+            return RepairRuntimeBlockedDecision
+        if isinstance(payload, RepairRetrySameMethodDecision):
+            return RepairRetrySameMethodDecision
+        if isinstance(payload, RepairCancelBranchDecision):
+            return RepairCancelBranchDecision
+        if isinstance(payload, RepairRebindInputDecision):
+            return RepairRebindInputDecision
+        if isinstance(payload, RepairRefineDeeperDecision):
+            return RepairRefineDeeperDecision
         if isinstance(payload, RepairReplaceMethodDecision):
             return RepairReplaceMethodDecision
         if isinstance(payload, RepairProposeSuccessorDecision):
@@ -1553,6 +1832,13 @@ def _payload_class(
 
 _ALL_PAYLOAD_CLASSES = (
     RefineDecision,
+    RepairCompensationRequestDecision,
+    RepairEscalateDecision,
+    RepairRuntimeBlockedDecision,
+    RepairRetrySameMethodDecision,
+    RepairRefineDeeperDecision,
+    RepairRebindInputDecision,
+    RepairCancelBranchDecision,
     RepairReplaceMethodDecision,
     RepairProposeSuccessorDecision,
     BindExistingGoalDecision,
@@ -1784,6 +2070,7 @@ __all__ = (
     "ENVELOPE_FIELDS",
     "EvidenceQuestionV1",
     "H1_DECISION_ENABLEMENT",
+    "H3_DECISION_ENABLEMENT",
     "HumanOptionV1",
     "LEGACY_PLANNING_PROTOCOL",
     "MAX_PD_ALTERNATIVES",
@@ -1821,6 +2108,14 @@ __all__ = (
     "REPAIR_PAYLOAD_BY_KIND",
     "RefineDecision",
     "ReplanTriggerHintV1",
+    "H4_DECISION_ENABLEMENT",
+    "RepairRefineDeeperDecision",
+    "RepairRebindInputDecision",
+    "RepairCancelBranchDecision",
+    "RepairRetrySameMethodDecision",
+    "RepairRuntimeBlockedDecision",
+    "RepairEscalateDecision",
+    "RepairCompensationRequestDecision",
     "RepairKind",
     "RepairProposeSuccessorDecision",
     "RepairReplaceMethodDecision",

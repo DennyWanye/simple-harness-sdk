@@ -197,6 +197,23 @@ def check_ids(layers: Sequence[LayerOutcome]) -> tuple[str, ...]:
     return tuple(sorted({item.layer for item in layers if item.conclusive}))
 
 
+def local_content_criterion(
+    binding: TaskSemanticBindingV1, layers: Sequence[LayerOutcome]
+) -> Criterion:
+    """Fixed local output review; this never attests a root goal or an effect."""
+    return Criterion(
+        criterion_id=LEAF_LOCAL_CRITERION,
+        revision=1,
+        origin=CriterionOrigin.DERIVED,
+        statement=(f"the result of {binding.task_id!s} passed the verification layers that ran; "
+                   "this acceptance vouches only for its own declared outputs, "
+                   "not for the root goal or any external effect"),
+        requirement_class=RequirementClass.REQUIRED_OUTCOME,
+        evaluation_kind=EvaluationKind.DETERMINISTIC,
+        required_evidence_policy=RequiredEvidencePolicy(required_check_ids=check_ids(layers)),
+    )
+
+
 def criteria_for(
     binding: TaskSemanticBindingV1,
     layers: Sequence[LayerOutcome],
@@ -453,7 +470,13 @@ class LeafAcceptanceAssembly:
         """
 
         outcomes = layer_outcomes(layers)
-        binding = self.semantics.task_semantics_of(mission_id, task_id)
+        from .taskgraph_dispatch import taskgraph_enabled
+        from .taskgraph_review import read_review_origin
+        origin = None
+        if taskgraph_enabled(self.store, mission_id):
+            origin = read_review_origin(self.commit, mission_id, task_id, result_id)
+        binding = (origin.semantic if origin is not None
+                   else self.semantics.task_semantics_of(mission_id, task_id))
         if binding is None:
             raise ContractError(
                 f"task {task_id!r} has no TaskSemanticBindingV1 in mission {mission_id!r}; in "
@@ -466,14 +489,41 @@ class LeafAcceptanceAssembly:
                 "of its own (§6.3)"
             )
         semantics = self.semantics
-        carried = self.carried_criteria(mission_id, binding)
-        revision = self._requirements(mission_id, binding, outcomes, carried=carried)
-        manifest = input_manifest_hash or self._manifest_hash(mission_id, task_id)
+        carried = origin.carried if origin is not None else self.carried_criteria(mission_id, binding)
+        from .scoped_content_review import read_task_content_projection, uses_completion_protocol
+
+        projection = None
+        if uses_completion_protocol(self.store, mission_id):
+            projection = read_task_content_projection(self.store, mission_id, task_id, result_id)
+            revision = projection.requirements
+            outcomes = layer_outcomes(self.store.list_verifications(result_id))
+            producer_agent_ids = (projection.producer_agent_id,)
+        else:
+            revision = self._requirements(mission_id, binding, outcomes, carried=carried)
+        if origin is not None:
+            manifest = origin.context.inputs.binding.manifest_hash
+            if input_manifest_hash and input_manifest_hash != manifest:
+                raise ContractError("TASKGRAPH_REVIEW_MANIFEST_MISMATCH")
+        else:
+            manifest = input_manifest_hash or self._manifest_hash(mission_id, task_id)
         package = self._package(
-            mission_id, binding, revision, result_id, manifest, producer_agent_ids
+            mission_id,
+            binding,
+            revision,
+            result_id,
+            manifest,
+            producer_agent_ids,
+            projection=projection,
         )
         record = self._record(package, outcomes, result_id, reviewer_agent_id)
         acceptance_id = f"acc-{content_hash_of({'task': task_id, 'result': result_id})[:32]}"
+        if projection is not None:
+            try:
+                previous = self.semantics.get_acceptance(acceptance_id)
+            except StoreError:
+                previous = None
+            if previous is not None:
+                now_ms = previous.accepted_at_ms
         witness = self._witness(mission_id, task_id, acceptance_id=acceptance_id, now_ms=now_ms)
         command = AcceptReviewCommand(
             command_id=command_id or f"accept:{result_id}",
@@ -500,6 +550,11 @@ class LeafAcceptanceAssembly:
                 artifacts=artifacts,
                 namespace=namespace,
                 port_claims=port_claims,
+                pinned_origin=origin,
+            ),
+            artifact_refs=tuple(
+                TypedRef(kind=TypedRefKind.ARTIFACT, **ref.to_json(), produced_by=Provenance.TOOL)
+                for ref in (() if projection is None else projection.artifacts)
             ),
             purpose=ReviewPurpose.TASK_CONTENT,
             # The Critic layer is the independent semantic review; this deployment
@@ -631,6 +686,9 @@ class LeafAcceptanceAssembly:
         result_id: str,
         manifest_hash: str,
         producer_agent_ids: Sequence[str],
+        *,
+        projection: Any = None,
+        persist: bool = True,
     ) -> ReviewPackage:
         package = ReviewPackage(
             package_id=ReviewPackageId(
@@ -655,8 +713,10 @@ class LeafAcceptanceAssembly:
                     content_hash=content_hash_of(LEAF_REVIEW_POLICY),
                 ),
             ),
-            criteria=revision.criteria,
-            success_expression=revision.success_expression,
+            criteria=revision.criteria if projection is None else projection.criteria,
+            success_expression=revision.success_expression
+            if projection is None
+            else projection.expression,
             candidate_refs=(
                 TypedRef(
                     # The candidate is the recorded *result*, referenced as the
@@ -674,6 +734,10 @@ class LeafAcceptanceAssembly:
             reviewer_workspace_access=REVIEWER_ACCESS,
             requirements_content_hash=revision.content_hash(),
         )
+        if not persist:
+            # Assurance freezes the same original package before the reserve/
+            # intent transaction. Its transport owns the atomic insertion.
+            return package
         try:
             stored = self.semantics.get_review_package(str(package.package_id))
         except StoreError:
@@ -813,15 +877,20 @@ class LeafAcceptanceAssembly:
         artifacts: Sequence[Any],
         namespace: str,
         port_claims: Sequence[PortClaim] = (),
+        pinned_origin: Any = None,
     ) -> tuple[AcceptedOutput, ...]:
         semantics = self.semantics
-        located = self._occurrence_in_active_revision(mission_id, str(binding.task_id))
-        if located is None:
-            return ()
-        revision, occurrence = located
-        ports = output_ports_in_revision(
-            semantics, mission_id, revision, occurrence, str(binding.task_id)
-        )
+        if pinned_origin is not None:
+            occurrence = OccurrenceId(pinned_origin.context.inputs.binding.occurrence_id)
+            ports = dict(pinned_origin.ports)
+        else:
+            located = self._occurrence_in_active_revision(mission_id, str(binding.task_id))
+            if located is None:
+                return ()
+            revision, occurrence = located
+            ports = output_ports_in_revision(
+                semantics, mission_id, revision, occurrence, str(binding.task_id)
+            )
         return accepted_outputs_for(
             ports,
             occurrence=occurrence,

@@ -15,6 +15,9 @@ def read_knowledge_tool(
     store: Store, mission_id: str, tool: str, args: Mapping[str, Any],
     *, sync_currentness: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    gate = getattr(store, "_assurance_root_gate", None)
+    if gate is not None:
+        gate.require_execution()
     if sync_currentness is not None:
         sync_currentness(mission_id)
     index = KnowledgeIndex.load(store, mission_id)

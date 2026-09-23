@@ -60,6 +60,7 @@ from ..contracts.resolution import (
 )
 from ..contracts.semantic_base import TypedRef, content_hash_of, enum_of, identifier, index
 from ..knowledge.validity import witness_subject
+from .assurance_changes import original_source_mutation
 from .store import Store, StoreConflict
 
 #: A plan revision is PREPARED until it is adopted, ACTIVE while it is the plan
@@ -320,24 +321,25 @@ class HtnStore:
                 )
             return self._stored_method(stored)
         now = self._store.now
-        self._insert(
-            "INSERT INTO method_contracts(method_id,method_version,content_hash,registry_status,"
-            "author,trial_scope_mission,registration_json,contract_json,created_at,updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                reference.method_id,
-                reference.version,
-                reference.content_hash,
-                str(registration.status),
-                str(registration.author),
-                registration.trial_scope_mission,
-                canonical_json(registration.to_json()),
-                canonical_json(contract.to_json()),
-                now,
-                now,
-            ),
-            f"method {reference.method_id}@{reference.version} already stored",
-        )
+        with original_source_mutation(self._store, writer="HtnStore.register_method"):
+            self._insert(
+                "INSERT INTO method_contracts(method_id,method_version,content_hash,registry_status,"
+                "author,trial_scope_mission,registration_json,contract_json,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    reference.method_id,
+                    reference.version,
+                    reference.content_hash,
+                    str(registration.status),
+                    str(registration.author),
+                    registration.trial_scope_mission,
+                    canonical_json(registration.to_json()),
+                    canonical_json(contract.to_json()),
+                    now,
+                    now,
+                ),
+                f"method {reference.method_id}@{reference.version} already stored",
+            )
         return StoredMethod(contract=contract, registration=registration)
 
     def set_method_registration(self, registration: MethodRegistration) -> StoredMethod:
@@ -353,7 +355,7 @@ class HtnStore:
             raise StoreConflict(
                 f"method {reference.method_id}@{reference.version} has a different content hash"
             )
-        with self._store.transaction() as connection:
+        with original_source_mutation(self._store, writer="HtnStore.set_method_registration"), self._store.transaction() as connection:
             try:
                 connection.execute(
                     "UPDATE method_contracts SET registry_status = ?, author = ?,"
@@ -833,13 +835,21 @@ class HtnStore:
         revision = index(input_binding_revision, "input_binding_revision")
         now = self._store.now
         with self._store.transaction() as connection:
-            self._execute(
-                connection,
-                "INSERT INTO input_manifests(manifest_hash,origin_mission_id,manifest_json,"
-                "created_at) VALUES (?,?,?,?) ON CONFLICT(manifest_hash) DO NOTHING",
-                (digest, mission, canonical_json(document), now),
-                f"input manifest {digest} could not be stored",
-            )
+            frozen = canonical_json(document)
+            known = connection.execute(
+                "SELECT manifest_json FROM input_manifests WHERE manifest_hash=?", (digest,)
+            ).fetchone()
+            if known is not None:
+                if known[0] != frozen:
+                    raise StoreConflict(f"input manifest {digest} has a different frozen body")
+            else:
+                self._execute(
+                    connection,
+                    "INSERT INTO input_manifests(manifest_hash,origin_mission_id,manifest_json,"
+                    "created_at) VALUES (?,?,?,?)",
+                    (digest, mission, frozen, now),
+                    f"input manifest {digest} could not be stored",
+                )
             self._execute(
                 connection,
                 "INSERT INTO input_manifest_bindings(mission_id,task_id,manifest_hash,attempt_id,"
@@ -916,6 +926,22 @@ class HtnStore:
         ).fetchone()
         return None if row is None else RequirementsRevision.from_json(json.loads(row[0]))
 
+    def list_requirements_revisions(self, mission_id: str) -> tuple[RequirementsRevision, ...]:
+        rows = self._store.connection.execute(
+            "SELECT revision_json FROM requirements_revisions WHERE mission_id=? ORDER BY revision",
+            (identifier(mission_id, "mission_id"),),
+        ).fetchall()
+        return tuple(RequirementsRevision.from_json(json.loads(row[0])) for row in rows)
+
+    def support_dependency_edges(self, mission_id: str) -> tuple[tuple[str, str], ...]:
+        mission = identifier(mission_id, "mission_id")
+        rows = self._store.connection.execute(
+            "SELECT s.member_id, j.subject_id FROM support_members s JOIN justification_sets j "
+            "ON s.set_id=j.set_id WHERE s.mission_id=? AND j.mission_id=? "
+            "ORDER BY s.member_id, j.subject_id", (mission, mission),
+        ).fetchall()
+        return tuple((str(row[0]), str(row[1])) for row in rows)
+
     # ================================================================== review
     def insert_review_package(self, package: ReviewPackage) -> str:
         if not isinstance(package, ReviewPackage):
@@ -970,7 +996,9 @@ class HtnStore:
         ).fetchall()
         return tuple(ReviewPackage.from_json(json.loads(row[0])) for row in rows)
 
-    def insert_review_record(self, record: ReviewRecord, *, official: bool = False) -> str:
+    def insert_review_record(
+        self, record: ReviewRecord, *, official: bool = False, assurance_import: Any = None
+    ) -> str:
         """Store one judgement and its per-criterion evaluations in one transaction.
 
         At most one record per package may be ``official`` — AER §18.2's "同 review
@@ -989,6 +1017,16 @@ class HtnStore:
         mission = record.binding.mission_id
         now = self._store.now
         with self._store.transaction() as connection:
+            if official:
+                from ..assurance.codec import AssuranceError
+                from .assurance_store import AssuranceStore
+
+                if AssuranceStore(self._store).lane(mission) == "ASSURANCE_1_1":
+                    from ..orchestrator.assurance_review_import import PreparedOfficialReview
+
+                    if not isinstance(assurance_import, PreparedOfficialReview):
+                        raise AssuranceError("REVIEW_RUNTIME_IMPORT_REQUIRED")
+                    assurance_import.require_locked(self._store, record)
             self._execute(
                 connection,
                 "INSERT INTO review_records(record_id,package_id,mission_id,purpose,"
@@ -1267,33 +1305,38 @@ class HtnStore:
                 " was taken over, never under one supplied beside it"
             )
         mission = identifier(mission_id, "mission_id")
-        self._insert(
-            "INSERT INTO validity_witnesses(witness_id,mission_id,consumer_kind,consumer_id,"
-            "purpose,subject_digest,scope_id,scope_epoch,support_revision,truth,freshness,"
-            "availability,decision,as_of_ms,not_after_ms,witness_json,created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                witness.witness_id,
-                mission,
-                str(witness.consumer_ref.kind),
-                witness.consumer_ref.id,
-                str(witness.purpose),
-                expected,
-                witness.scope_id,
-                witness.scope_epoch,
-                witness.support_revision,
-                str(witness.truth),
-                str(witness.freshness),
-                str(witness.availability),
-                str(witness.decision),
-                witness.as_of_ms,
-                witness.not_after_ms,
-                canonical_json(witness.to_json()),
-                self._store.now,
-            ),
-            f"validity witness {witness.witness_id} conflicts with one already stored"
-            f" for {witness.consumer_ref.id}/{witness.purpose!s}",
-        )
+        with self._store.transaction():
+            self._insert(
+                "INSERT INTO validity_witnesses(witness_id,mission_id,consumer_kind,consumer_id,"
+                "purpose,subject_digest,scope_id,scope_epoch,support_revision,truth,freshness,"
+                "availability,decision,as_of_ms,not_after_ms,witness_json,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    witness.witness_id,
+                    mission,
+                    str(witness.consumer_ref.kind),
+                    witness.consumer_ref.id,
+                    str(witness.purpose),
+                    expected,
+                    witness.scope_id,
+                    witness.scope_epoch,
+                    witness.support_revision,
+                    str(witness.truth),
+                    str(witness.freshness),
+                    str(witness.availability),
+                    str(witness.decision),
+                    witness.as_of_ms,
+                    witness.not_after_ms,
+                    canonical_json(witness.to_json()),
+                    self._store.now,
+                ),
+                f"validity witness {witness.witness_id} conflicts with one already stored"
+                f" for {witness.consumer_ref.id}/{witness.purpose!s}",
+            )
+            from .taskgraph_source_events import record_source_change
+            from ..contracts.models import sha256_hex
+            record_source_change(self._store, mission, kind="validity_witness",
+                source_id=witness.witness_id, revision=1, content_hash=sha256_hex(witness.to_json()))
         return witness
 
     def get_validity_witness(self, witness_id: str) -> ValidityWitness:
@@ -1328,30 +1371,35 @@ class HtnStore:
         if not isinstance(observation, ObservationRecord):
             raise StoreConflict("insert_observation expects an ObservationRecord")
         mission = identifier(mission_id, "mission_id")
-        self._insert(
-            "INSERT INTO observations(observation_id,mission_id,proposition_key,polarity,scope_id,"
-            "source_kind,source_id,coverage,observer_id,observed_at_ms,recorded_at_ms,"
-            "query_watermark_ms,valid_until_ms,observation_json,created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                observation.observation_id,
-                mission,
-                observation.proposition_key,
-                1 if observation.polarity else 0,
-                identifier(scope_id, "scope_id"),
-                str(observation.source_ref.kind),
-                observation.source_ref.id,
-                str(observation.coverage),
-                observation.observer_id,
-                observation.observed_at_ms,
-                observation.recorded_at_ms,
-                observation.query_watermark_ms,
-                observation.valid_until_ms,
-                canonical_json(observation.to_json()),
-                self._store.now,
-            ),
-            f"observation {observation.observation_id} already stored",
-        )
+        with self._store.transaction():
+            self._insert(
+                "INSERT INTO observations(observation_id,mission_id,proposition_key,polarity,scope_id,"
+                "source_kind,source_id,coverage,observer_id,observed_at_ms,recorded_at_ms,"
+                "query_watermark_ms,valid_until_ms,observation_json,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    observation.observation_id,
+                    mission,
+                    observation.proposition_key,
+                    1 if observation.polarity else 0,
+                    identifier(scope_id, "scope_id"),
+                    str(observation.source_ref.kind),
+                    observation.source_ref.id,
+                    str(observation.coverage),
+                    observation.observer_id,
+                    observation.observed_at_ms,
+                    observation.recorded_at_ms,
+                    observation.query_watermark_ms,
+                    observation.valid_until_ms,
+                    canonical_json(observation.to_json()),
+                    self._store.now,
+                ),
+                f"observation {observation.observation_id} already stored",
+            )
+            from .taskgraph_source_events import record_source_change
+            from ..contracts.models import sha256_hex
+            record_source_change(self._store, mission, kind="observation",
+                source_id=observation.observation_id, revision=1, content_hash=sha256_hex(observation.to_json()))
         return observation
 
     def get_observation(self, observation_id: str) -> ObservationRecord:
@@ -1512,7 +1560,13 @@ class HtnStore:
                 "SELECT epoch FROM validity_epochs WHERE mission_id = ? AND scope_id = ?",
                 (mission, scope),
             ).fetchone()
-            epoch = 0 if row is None else int(row[0]) + 1
+            from .taskgraph_source_events import taskgraph_enabled
+            # TaskGraph readers already treat a missing row as epoch zero. The
+            # first invalidation must move past that reading too; inserting zero
+            # would leave the original witnesses current. Keep the pre-existing
+            # initialization convention for Missions outside the bound protocol.
+            epoch = (int(taskgraph_enabled(self._store, mission)) if row is None
+                     else int(row[0]) + 1)
             connection.execute(
                 "INSERT INTO validity_epochs(mission_id,scope_id,epoch,bumped_by,updated_at)"
                 " VALUES (?,?,?,?,?) ON CONFLICT(mission_id,scope_id) DO UPDATE SET"
@@ -1520,6 +1574,11 @@ class HtnStore:
                 " updated_at = excluded.updated_at",
                 (mission, scope, epoch, actor, self._store.now),
             )
+            from .taskgraph_source_events import record_source_change
+            from ..contracts.models import sha256_hex
+            record_source_change(self._store, mission, kind="validity_epoch", source_id=scope,
+                revision=epoch, content_hash=sha256_hex({"mission_id": mission, "scope_id": scope,
+                    "epoch": epoch, "bumped_by": actor}))
         return epoch
 
     def epoch(self, mission_id: str, scope_id: str) -> int:

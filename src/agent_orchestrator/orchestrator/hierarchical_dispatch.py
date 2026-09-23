@@ -45,7 +45,7 @@ handled, because §18.5 calls that corruption and not a legacy fallback.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
@@ -175,6 +175,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..contracts import Mission
     from ..contracts.htn import PlanProposal
     from ..planning.htn.registry import AdmissionReceipt
+    from ..planning.plan_preview import CandidatePreview
     from ..storage.store import Store
     from .commit_service import CommitService
 
@@ -254,6 +255,10 @@ SYNTHESIS_REPLY_REJECTED = "MethodSynthesisReplyRejected"
 #: grows ``:synth:{n}`` once ``n > 1``; otherwise the post-admission Planner round
 #: would reuse the pre-admission assessment (H-L3-C1-r0/r1 ordinal 5).
 METHOD_APPLICABILITY_ASSESSED = "MethodApplicabilityAssessed"
+# H3: one model-selection identity may open at most one Planner call.  The claim is
+# durable in the Mission event log so a restarted Orchestrator cannot recreate an
+# in-memory ledger and issue the same call again.
+METHOD_SELECTION_CALL_CLAIMED = "MethodSelectionCallClaimed"
 #: P2.3q: the Planner round that would have answered ``no_applicable_method``
 #: because evidence is saturated and nothing applies.  The loop skips it and opens
 #: a MethodSynthesizer round instead; this event is the audit trail.
@@ -300,6 +305,10 @@ REPAIR_BLOCKED_BY_RUNNING_WORK = "repair_blocked_by_running_work"
 #: instead of asking the Planner again (Grok H-L3-C1-r0 r3–r6).
 REPAIR_COMPILE_DEFERRED = "RepairCompileDeferred"
 REPAIR_COMPILE_RESUMED = "RepairCompileResumed"
+# H4: the adapter result is a durable handoff record.  The model/compiler may act
+# later, but the trigger, program-computed impact and admitted action survive a
+# process restart as one idempotent event.
+REPAIR_DECISION_DISPATCHED = "RepairDecisionDispatched"
 
 #: How many refusals one :data:`METHOD_APPLICABILITY_ASSESSED` payload carries.  Far
 #: larger than the prompt's own cap (that one protects the model's attention; this one
@@ -846,6 +855,9 @@ class HierarchicalDispatch:
     #: of one proposition, with the truth still UNKNOWN afterwards, before looking again
     #: stops counting as an answer.  See :meth:`goals_needing_method`.
     evidence_saturation_rounds: int = DEFAULT_EVIDENCE_SATURATION_ROUNDS
+    _taskgraph_settlement_reader: Any = field(default=None, repr=False)
+    _taskgraph_preview: Any = field(default=None, repr=False)
+    _taskgraph_history: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if int(self.compile_attempts) < 1:
@@ -854,6 +866,34 @@ class HierarchicalDispatch:
             raise ContractError("evidence_saturation_rounds must be at least 1")
 
     # ---------------------------------------------------------------- reading the plan
+    @classmethod
+    def for_commit(cls, commit: CommitService, mission_id: str) -> HierarchicalDispatch:
+        """Use the installed graph readers for an enabled Mission's original commits."""
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(commit.store, mission_id):
+            binding = commit._taskgraph_dispatch
+            if binding is None:
+                raise StoreError("TASKGRAPH_DISPATCH_ASSEMBLY_REQUIRED")
+            dispatch = binding.dispatch_for(mission_id)
+            if not isinstance(dispatch, cls) or dispatch.store is not commit.store or dispatch.commit is not commit:
+                raise StoreError("TASKGRAPH_DISPATCH_STORE_MISMATCH")
+            return dispatch
+        return cls(commit.store, commit)
+
+    def target_rules_for(self, task_id: str) -> TargetRules:
+        """The original workspace destination policy, resolved for one Task."""
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise ContractError("workspace target requires a Task identity")
+        return self.target_rules or TargetRules(namespace=f"workspace:{task_id}")
+
+    def target_rules_policy(self) -> dict[str, Any]:
+        """Freeze the installed rule or its original per-Task namespace strategy."""
+        from ..artifacts.taskgraph_inputs import encode_target_rules
+        if self.target_rules is not None:
+            return {"kind": "FIXED", "rules": encode_target_rules(self.target_rules)}
+        return {"kind": "TASK_WORKSPACE_V1", "namespace_prefix": "workspace:",
+                "port_prefixes": {}, "preserve_source_namespace": False, "case_insensitive": False}
+
     def semantics(self) -> HtnStore:
         return HtnStore(self.store)
 
@@ -893,7 +933,7 @@ class HierarchicalDispatch:
         return snapshot
 
     def _read_network(
-        self, mission_id: str
+        self, mission_id: str, *, capturing_baseline: bool = False
     ) -> tuple[TaskNetworkSnapshot, PlanIntegrityError | None]:
         """The plan as it can be read, plus what was wrong with it.
 
@@ -913,6 +953,27 @@ class HierarchicalDispatch:
             # root is its own occurrence, which is why the compiler owns the shape.
             return self._read_seed_network(mission_id)
         revision = int(active.revision)
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self.store, mission_id) and not capturing_baseline:
+            from dataclasses import replace
+            from ..graph.network_codec import decode
+            from ..runtime.planning_operations import SourceUnavailable
+            if self._taskgraph_history is None:
+                raise SourceUnavailable("taskgraph_history_reader_unavailable")
+            frozen = decode(self._taskgraph_history.read_revision(mission_id, revision).record.document.to_json()).snapshot
+            current_bindings = []
+            for original in frozen.task_bindings:
+                current = semantics.task_semantics_of(mission_id, str(original.task_id))
+                if current is None:
+                    raise missing_bindings(mission_id, [str(original.task_id)])
+                current_bindings.append(current)
+            # Roots, memberships, adoptions and declared endpoints come from the
+            # verified full record. Current control is a separate binding overlay;
+            # never infer new roots or drop dangling edges while reading a graph.
+            return replace(frozen, task_bindings=tuple(current_bindings)), None
+        if capturing_baseline and (not self.store.connection.in_transaction or self.store.connection.execute(
+                "SELECT 1 FROM taskgraph_revision_records WHERE mission_id=?", (mission_id,)).fetchone() is not None):
+            raise ContractError("explicit baseline capture requires an uncaptured plan in the enable transaction")
         members = semantics.list_plan_memberships(mission_id, revision)
         bindings: dict[TaskRef, TaskSemanticBindingV1] = {}
         missing: list[str] = []
@@ -956,7 +1017,7 @@ class HierarchicalDispatch:
             mission_id=MissionRef(mission_id),
             plan_revision=PlanRevision(revision),
             occurrences=tuple(occurrences),
-            task_bindings=tuple(bindings[TaskRef(str(spec.task_id))] for spec in occurrences),
+            task_bindings=tuple(bindings[key] for key in sorted(bindings, key=str)),
             method_instances=instances,
             adopted_instance_ids=adopted,
             root_occurrence_ids=roots,
@@ -1087,6 +1148,12 @@ class HierarchicalDispatch:
         scopes = {"mission"} | {
             str(witness.scope_id) for witness in semantics.list_validity_witnesses(mission_id)
         }
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self.store, mission_id):
+            # A newly bumped scope can have no witness yet. Its barrier still
+            # belongs in the complete current read token and input policy.
+            from .taskgraph_epochs import current_scope_epochs
+            return current_scope_epochs(self.store, mission_id)
         return {scope: semantics.epoch(mission_id, scope) for scope in sorted(scopes)}
 
     def obligation_accounts(
@@ -1131,6 +1198,13 @@ class HierarchicalDispatch:
             raise integrity
         plan = self.plan_view(mission_id, network, integrity=integrity)
         outcomes = self.occurrence_outcomes(mission_id, network)
+        settlements = None
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self.store, mission_id):
+            if not callable(self._taskgraph_settlement_reader):
+                from ..runtime.planning_operations import SourceUnavailable
+                raise SourceUnavailable("taskgraph_settlement_reader_unavailable")
+            settlements = self._taskgraph_settlement_reader(mission_id, network, outcomes)
         resolved = self.resolved_occurrences(mission_id, network)
         witnesses = self.witnesses(mission_id, network)
         accepted = self.accepted_outputs(mission_id, network, outcomes=outcomes)
@@ -1164,8 +1238,10 @@ class HierarchicalDispatch:
                     spec,
                     accepted=accepted,
                     witnesses=licences.get(str(spec.task_id), {}),
+                    now_ms=moment,
                 ),
                 now_ms=moment,
+                settlements=settlements,
             )
         return NetworkView(
             network=network,
@@ -1228,6 +1304,10 @@ class HierarchicalDispatch:
         ``RUNNING`` or ``UNKNOWN`` however its legacy Task row happens to read.
         """
 
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self.store, mission_id):
+            from .taskgraph_outcomes import read_taskgraph_outcomes
+            return read_taskgraph_outcomes(self.store, mission_id, network)
         semantics = self.semantics()
         # An Acceptance names a *task*, so an occurrence counts as accepted when the
         # task it instantiates has a CURRENT Acceptance under the same duty.  A
@@ -1246,8 +1326,39 @@ class HierarchicalDispatch:
             for item in semantics.list_acceptances(mission_id)
             if str(item.validity) == "CURRENT"
         }
+        from .scoped_content_review import uses_completion_protocol
+        completion_protocol = uses_completion_protocol(self.store, mission_id)
         outcomes: dict[OccurrenceId, OccurrenceOutcome] = {}
         for spec in network.occurrences:
+            if completion_protocol:
+                from .completion_status import read_occurrence_completion
+                from .operation_completion import OperationCompletionError
+                status = None
+                if semantics.active_plan_revision(mission_id) is not None:
+                    try:
+                        status = read_occurrence_completion(
+                            self.store, mission_id, str(spec.occurrence_id)
+                        )
+                    except OperationCompletionError as error:
+                        if error.code not in {
+                            "OP_COMPLETION_SCOPE_UNRESOLVED", "OP_REQUIREMENT_MAPPING_MISSING"
+                        }:
+                            raise
+                        # A planner may repair missing scope publication. Missing
+                        # completion facts never make the occurrence ACCEPTED.
+                if status is not None and status.complete:
+                    outcomes[spec.occurrence_id] = OccurrenceOutcome.ACCEPTED
+                    continue
+                task = self.store.get_task(str(spec.task_id))
+                outcomes[spec.occurrence_id] = (
+                    OccurrenceOutcome.FAILED if task is not None and task.status is TaskStatus.FAILED
+                    else OccurrenceOutcome.CANCELLED
+                    if task is not None and task.status is TaskStatus.CANCELLED
+                    else OccurrenceOutcome.SETTLED_OTHER
+                    if task is not None and task.status is TaskStatus.COMPLETED
+                    else OccurrenceOutcome.RUNNING
+                )
+                continue
             if str(spec.task_id) in resolved_tasks:
                 outcomes[spec.occurrence_id] = OccurrenceOutcome.ACCEPTED
                 continue
@@ -1258,12 +1369,12 @@ class HierarchicalDispatch:
             if task is None:
                 outcomes[spec.occurrence_id] = OccurrenceOutcome.UNKNOWN
                 continue
-            status = str(task.status)
-            if status == "FAILED":
+            task_status = str(task.status)
+            if task_status == "FAILED":
                 outcomes[spec.occurrence_id] = OccurrenceOutcome.FAILED
-            elif status == "CANCELLED":
+            elif task_status == "CANCELLED":
                 outcomes[spec.occurrence_id] = OccurrenceOutcome.CANCELLED
-            elif status == "COMPLETED":
+            elif task_status == "COMPLETED":
                 # Completed *without* an Acceptance is not an acceptance: TG
                 # decision 1 says an unknown ending never settles anything.
                 outcomes[spec.occurrence_id] = OccurrenceOutcome.SETTLED_OTHER
@@ -1275,6 +1386,18 @@ class HierarchicalDispatch:
         self, mission_id: str, network: TaskNetworkSnapshot
     ) -> frozenset[OccurrenceId]:
         """Occurrences whose duty has an *adopted* GoalResolution (§7.2)."""
+
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self.store, mission_id) and self.semantics().active_plan_revision(mission_id) is None:
+            # No committed scope/resolution exists for the verified original seed.
+            self.seed_network(mission_id)
+            return frozenset()
+        from .scoped_content_review import uses_completion_protocol
+        if uses_completion_protocol(self.store, mission_id):
+            from .completion_status import read_occurrence_completion
+            return frozenset(spec.occurrence_id for spec in network.occurrences
+                if spec.form is TaskForm.COMPOUND and read_occurrence_completion(
+                    self.store, mission_id, str(spec.occurrence_id)).complete)
 
         semantics = self.semantics()
         adopted: set[ObligationId] = set()
@@ -1321,6 +1444,7 @@ class HierarchicalDispatch:
         *,
         accepted: AcceptedOutputsIndex | None = None,
         witnesses: Mapping[str, ValidityWitness] | None = None,
+        now_ms: int | None = None,
     ) -> ResolutionResult | None:
         """The declared DATA contract of one occurrence, resolved — or None.
 
@@ -1352,7 +1476,7 @@ class HierarchicalDispatch:
                 if witnesses is None
                 else witnesses
             ),
-            policy=self.resolution_policy_for(mission_id),
+            policy=self.resolution_policy_for(mission_id, now_ms=now_ms),
         )
 
     def resolution_policy_for(self, mission_id: str, *, now_ms: int | None = None) -> Any:
@@ -1364,13 +1488,15 @@ class HierarchicalDispatch:
         cached on the dataclass, for the same reason nothing else on this class is
         cached: a bumped epoch has to be visible to the very next read.
 
-        A policy the caller already filled in is left exactly as it is.
+        Legacy callers retain explicitly supplied epochs. TaskGraph always binds
+        its installed policy to the actual current epochs and evaluation clock.
         """
 
         from dataclasses import replace as _replace
 
         policy = self.resolution_policy
-        if policy.scope_epochs:
+        from .taskgraph_dispatch import taskgraph_enabled
+        if policy.scope_epochs and not taskgraph_enabled(self.store, mission_id):
             return policy
         return _replace(
             policy,
@@ -1796,6 +1922,7 @@ class HierarchicalDispatch:
         *,
         accepted: AcceptedOutputsIndex | None = None,
         witnesses: Mapping[str, ValidityWitness] | None = None,
+        now_ms: int | None = None,
     ) -> ResolutionResult:
         """The DATA gate's input, never ``None`` (P2.3c part 2).
 
@@ -1814,7 +1941,7 @@ class HierarchicalDispatch:
         """
 
         result = self.input_result(
-            mission_id, network, spec, accepted=accepted, witnesses=witnesses
+            mission_id, network, spec, accepted=accepted, witnesses=witnesses, now_ms=now_ms
         )
         if result is not None:
             return result
@@ -1835,6 +1962,41 @@ class HierarchicalDispatch:
         ``WAITING_DATA`` rather than a silent all-ancestors sweep.
         """
 
+        from .scoped_content_review import uses_completion_protocol
+        if uses_completion_protocol(self.store, mission_id):
+            if self.semantics().active_plan_revision(mission_id) is None:
+                return AcceptedOutputsIndex(outputs=(), completed_producers=frozenset())
+            from .completion_status import read_occurrence_completion
+            statuses = {
+                spec.occurrence_id: read_occurrence_completion(self.store, mission_id, str(spec.occurrence_id))
+                for spec in network.occurrences
+            }
+            prepared = frozenset(key for key, value in statuses.items() if value.preparation_ready)
+            allowed_acceptances = {
+                acceptance for value in statuses.values()
+                for acceptance in value.preparation_acceptance_ids
+            }
+            from ..storage.operation_completion_store import OperationCompletionStore
+            completion_store = OperationCompletionStore(self.store)
+            scoped_outputs = []
+            for output in self._recorded_outputs(mission_id, network):
+                state = statuses.get(output.producer_occurrence)
+                if (state is None or output.acceptance_id not in allowed_acceptances
+                        or output.acceptance_id not in state.preparation_acceptance_ids):
+                    continue
+                row = completion_store.get_acceptance_scope_exact(mission_id, output.acceptance_id)
+                if row is None:
+                    continue
+                contribution = row["document"]
+                if any(ref.id == output.artifact_id
+                       and str(ref.revision) == output.source_revision
+                       and ref.content_hash == output.content_hash
+                       for ref in contribution.output_artifact_refs):
+                    scoped_outputs.append(output)
+            return AcceptedOutputsIndex(
+                outputs=tuple(scoped_outputs),
+                completed_producers=prepared,
+            )
         settled = self.occurrence_outcomes(mission_id, network) if outcomes is None else outcomes
         completed = frozenset(
             occurrence
@@ -2071,6 +2233,11 @@ class HierarchicalDispatch:
         if not roots:
             return False
         for root in roots:
+            from .scoped_content_review import uses_completion_protocol
+            if uses_completion_protocol(self.store, mission_id):
+                from .completion_status import read_occurrence_completion
+                if not read_occurrence_completion(self.store, mission_id, str(root)).effects_ready:
+                    return False
             spec = view.network.occurrence(root)
             if spec.form is not TaskForm.COMPOUND:
                 if view.outcomes.get(root) is not OccurrenceOutcome.ACCEPTED:
@@ -2093,6 +2260,11 @@ class HierarchicalDispatch:
         required = set(view.network.required_obligations)
         if not required:
             return False
+        from .scoped_content_review import uses_completion_protocol
+        if uses_completion_protocol(self.store, mission_id):
+            from .completion_status import read_occurrence_completion
+            return all(read_occurrence_completion(self.store, mission_id, str(root)).complete
+                       for root in view.network.root_occurrence_ids)
         semantics = self.semantics()
         return all(
             semantics.adopted_goal_resolution(mission_id, str(duty)) is not None
@@ -2112,6 +2284,20 @@ class HierarchicalDispatch:
 
         semantics = self.semantics()
         network = self.network(mission_id)
+        from .scoped_content_review import uses_completion_protocol
+        if uses_completion_protocol(self.store, mission_id):
+            from .completion_status import read_occurrence_completion
+            scoped = {}
+            for spec in network.occurrences:
+                status = read_occurrence_completion(self.store, mission_id, str(spec.occurrence_id))
+                if status.preparation_acceptance_ids:
+                    scoped[str(spec.occurrence_id)] = tuple(sorted(status.preparation_acceptance_ids))
+            from .completion_status import current_effect_proofs
+
+            for proof in current_effect_proofs(self.store, mission_id):
+                occurrence = proof["occurrence_id"]
+                scoped[occurrence] = tuple(sorted({*scoped.get(occurrence, ()), proof["acceptance_id"]}))
+            return scoped
         by_occurrence: dict[str, list[str]] = {}
         for acceptance in semantics.list_acceptances(mission_id):
             if acceptance.validity is not Validity.CURRENT:
@@ -2252,6 +2438,12 @@ class HierarchicalDispatch:
                 for item in semantics.list_goal_resolutions(mission_id)
             ):
                 contributions[str(child.occurrence_id)] = ()
+        from .scoped_content_review import uses_completion_protocol
+
+        if uses_completion_protocol(self.store, mission_id):
+            from .completion_support import current_child_supports
+
+            contributions = current_child_supports(self.store, mission_id, network.adopted_children(root))
         return RootResolutionInputs(
             reason="",
             occurrence_id=str(root),
@@ -2370,6 +2562,8 @@ class HierarchicalDispatch:
         assert requirements is not None and inputs.package is not None
         assert inputs.record is not None
         manifest_hash = input_manifest_hash or inputs.package.binding.input_manifest_hash
+        from .scoped_content_review import uses_completion_protocol
+        completion_protocol = uses_completion_protocol(self.store, mission_id)
         resolution = GoalResolution(
             resolution_id=GoalResolutionId(resolution_id or f"res-{inputs.occurrence_id}"),
             mission_id=mission_id,
@@ -2380,7 +2574,10 @@ class HierarchicalDispatch:
             method_instance_id=inputs.method_instance_id,
             input_manifest_hash=manifest_hash,
             artifact_refs=(),
-            child_resolution_ids=(),
+            child_resolution_ids=tuple(
+                str(item.resolution_id) for item in self.semantics().list_goal_resolutions(mission_id)
+                if str(item.resolution_id) in {source_id for ids in inputs.contributions.values() for source_id in ids}
+            ),
             # Review F4: every verdict is **read from the official review record**, and
             # a criterion the record did not judge is written ``UNKNOWN``.  Writing
             # ``PASS`` for all of them — what this used to do — put an unevidenced
@@ -2392,7 +2589,7 @@ class HierarchicalDispatch:
             # extend it.  A required criterion the record left unjudged now shows up as
             # UNKNOWN and the AER §6.2 formula answers for it, instead of the trigger
             # answering on the reviewer's behalf.
-            criteria=_root_criteria(requirements, inputs.record),
+            criteria=_root_criteria(requirements, inputs.record, include_evidence=completion_protocol),
             review_receipt_id=str(inputs.record.record_id),
             verdict=ReviewVerdict.ACCEPT,
             validity=Validity.CURRENT,
@@ -2560,6 +2757,17 @@ class HierarchicalDispatch:
             task_view = view.views[spec.occurrence_id]
             if task_view.binding is not None:
                 bindings[task_id] = task_view.binding
+            from .scoped_content_review import uses_completion_protocol
+            task = self.store.get_task(task_id)
+            if (uses_completion_protocol(self.store, mission_id)
+                    and task is not None and task.accepted_result_id):
+                refusals.append(DispatchRefusal(
+                    task_id=task_id, occurrence_id=str(spec.occurrence_id),
+                    reason=ReadinessReason.NOT_SELECTED,
+                    detail_codes=("PREPARATION_ALREADY_ACCEPTED",),
+                    detail="accepted preparation is waiting for completion, not another Worker",
+                ))
+                continue
             report = view.reports[spec.occurrence_id]
             if not report.ready:
                 refusals.append(
@@ -2800,6 +3008,8 @@ class HierarchicalDispatch:
         reports: dict[str, Any] = {}
         signature = goal.goal_signature
         for reference in world.registry.method_refs():
+            if not world.registry.retrievable(reference, mission_id=MissionRef(mission_id)):
+                continue
             contract = world.registry.definition(reference)
             if contract is None or contract.goal_type_ref.id != signature.signature_id:
                 continue
@@ -2810,7 +3020,7 @@ class HierarchicalDispatch:
                 world.capabilities(),
                 registry=world.predicates,
             )
-        return build_request(
+        request = build_request(
             goal,
             world.capabilities(),
             world.registry,
@@ -2821,6 +3031,11 @@ class HierarchicalDispatch:
             schema_feedback=schema_feedback,
             review_feedback=review_feedback,
         )
+        from dataclasses import replace
+        fresh_id = "synth-" + content_hash_of({"goal_task_id": str(goal_task_id)})[:24]
+        occupied = [int(item.contract.method_version) for item in self.semantics().list_methods()
+                    if item.contract.method_id == fresh_id]
+        return replace(request, new_method_identity=(fresh_id, max(occupied, default=0) + 1))
 
     # ------------------------------------------------- rejected refinements (P2.3j)
     def rejected_refinements(self, mission_id: str) -> tuple[RejectedRefinement, ...]:
@@ -3004,6 +3219,8 @@ class HierarchicalDispatch:
         snapshot = world.snapshot()
         capabilities = world.capabilities()
         rejected = {item.occurrence_id for item in self.rejected_refinements(mission_id)}
+        from .planning_repair_requests import repair_goal_occurrences
+        repair_goals = set(repair_goal_occurrences(self.store, network))
         # Verification P1-1: the whole history of rejected methods at the occurrence,
         # not only the one the current instance carries.
         history = self.rejected_method_refs(mission_id)
@@ -3015,11 +3232,14 @@ class HierarchicalDispatch:
             if (
                 network.adopted_instance_for(spec.occurrence_id) is not None
                 and str(spec.occurrence_id) not in rejected
+                and str(spec.occurrence_id) not in repair_goals
             ):
                 continue
             goal = network.binding_for_occurrence(spec.occurrence_id)
             signature = goal.goal_signature.signature_id
             for reference in world.registry.method_refs():
+                if not world.registry.retrievable(reference, mission_id=MissionRef(mission_id)):
+                    continue
                 contract = world.registry.definition(reference)
                 if contract is None or str(contract.goal_type_ref.id) != str(signature):
                     continue
@@ -3037,6 +3257,167 @@ class HierarchicalDispatch:
                     )
                 )
         return tuple(entries)
+
+    def dispatch_repair_event(
+        self,
+        mission_id: str,
+        event: Mapping[str, Any] | object,
+        *,
+        actions: Sequence[Any],
+        all_items: Iterable[str] = (),
+        plan_revision: int | None = None,
+        **impact_indexes: Any,
+    ) -> Any:
+        """Enter the H4 event adapter from the authoritative dispatch context.
+
+        The adapter remains side-effect free; callers pass the reverse indexes
+        owned by their planner store, and the returned audit record is then fed
+        to the existing repair/compiler boundary.  Binding the mission and
+        current plan revision here prevents a repair event from being evaluated
+        against an ambient or stale mission identity.
+        """
+        from ..planning.htn.repair_adapter import RepairEventAdapter
+
+        from .repair_impact import read_repair_impact_indexes
+        del all_items
+        with self.store.read_view():
+            network = self.network(mission_id)
+            if plan_revision is not None and plan_revision != int(network.plan_revision):
+                raise ContractError("REQUEST_BINDING_STALE: repair request uses a stale Plan")
+            indexes = read_repair_impact_indexes(self.store, network, mission_id)
+            # Callers may supply model diagnosis, never substitute a guessed graph.
+            for name in (*indexes, "new_work"):
+                impact_indexes.pop(name, None)
+            result = RepairEventAdapter.dispatch(
+                event, actions=actions, mission_id=mission_id,
+                plan_revision=int(network.plan_revision), **indexes, **impact_indexes,
+            )
+        append_hierarchical_event(
+            self.store,
+            REPAIR_DECISION_DISPATCHED,
+            mission_id,
+            key=result.request.idempotency_key,
+            payload=result.audit_json(),
+        )
+        return result
+
+    def select_method_candidates(
+        self,
+        mission_id: str,
+        *,
+        reports: Sequence[Any] | None = None,
+        policy: Any | None = None,
+        ledger: Any | None = None,
+        persist_claims: bool = False,
+    ) -> Mapping[str, Any]:
+        """Route current HTN method candidates through the H3 selection seam.
+
+        This is the production adapter between the dispatcher's authoritative
+        applicability read and the pure H3 policy.  It groups candidates by open
+        compound occurrence and binds the selection identity to the current plan
+        revision and evidence support revision.  Legacy Missions deliberately use
+        the deterministic policy, so merely calling this adapter cannot change
+        their planner bytes or dispatch behavior.
+
+        The adapter returns decisions for every open compound, including an empty
+        candidate set.  A caller that owns the planner request may use the route
+        to take the deterministic fast path, open evidence/synthesis, or issue
+        one ``REFINE`` request; this method itself performs no model call or plan
+        mutation.
+        """
+
+        from ..contracts.planning_decisions import LEGACY_PLANNING_PROTOCOL
+        from ..planning.htn.method_selection import (
+            MethodSelectionCandidateV1,
+            MethodSelectionPolicyV1,
+            SelectionCallLedger,
+            select_method,
+        )
+        from .planning_protocol_binding import planning_protocol_for_mission
+
+        network = self.network(mission_id)
+        world = self._world()
+        current_reports = (
+            tuple(reports) if reports is not None else self.method_applicability(mission_id)
+        )
+        by_occurrence: dict[str, list[MethodSelectionCandidateV1]] = {}
+        for entry in current_reports:
+            reference = entry.method_ref
+            by_occurrence.setdefault(str(entry.goal_occurrence_id), []).append(
+                MethodSelectionCandidateV1(
+                    method_id=str(reference.method_id),
+                    method_version=int(reference.version),
+                    method_content_hash=str(reference.content_hash),
+                    report=entry.report,
+                    bindings=dict(network.binding_for_occurrence(entry.goal_occurrence_id).typed_parameters),
+                )
+            )
+        open_occurrences = tuple(
+            sorted(
+                str(spec.occurrence_id)
+                for spec in network.occurrences
+                if spec.form is TaskForm.COMPOUND
+                and network.adopted_instance_for(spec.occurrence_id) is None
+            )
+        )
+        stored_protocol = planning_protocol_for_mission(self.store, mission_id)
+        legacy = stored_protocol is None or (
+            stored_protocol["protocol_version"] == LEGACY_PLANNING_PROTOCOL
+        )
+        resolved_policy = policy
+        if resolved_policy is None:
+            resolved_policy = (
+                MethodSelectionPolicyV1.legacy()
+                if legacy
+                else MethodSelectionPolicyV1.new_protocol()
+            )
+        evidence_epoch = int(world.snapshot().support_revision)
+        owned_ledger = ledger is None
+        if ledger is None:
+            restored: list[dict[str, Any]] = []
+            for event in self.store.list_events(mission_id):
+                if event.type != METHOD_SELECTION_CALL_CLAIMED:
+                    continue
+                payload = dict(event.payload or {})
+                identity = payload.get("identity")
+                call_id = payload.get("call_id")
+                if isinstance(identity, Mapping) and isinstance(call_id, str) and call_id:
+                    restored.append({"identity": dict(identity), "call_id": call_id})
+            ledger = SelectionCallLedger.from_json(restored)
+        decisions = {
+            occurrence_id: select_method(
+                by_occurrence.get(occurrence_id, ()),
+                plan_revision=int(network.plan_revision),
+                evidence_epoch=evidence_epoch,
+                policy=resolved_policy,
+                legacy=legacy,
+                ledger=ledger,
+                subject_id=(occurrence_id if stored_protocol is not None
+                            and int(stored_protocol["package_version"]) >= 6 else None),
+            )
+            for occurrence_id in open_occurrences
+        }
+        if owned_ledger and not legacy and persist_claims:
+            for occurrence_id, result in decisions.items():
+                if not result.should_call_model:
+                    continue
+                identity = result.identity
+                call_id = ledger.call_id(identity)
+                if call_id is None:
+                    continue
+                append_hierarchical_event(
+                    self.store,
+                    METHOD_SELECTION_CALL_CLAIMED,
+                    mission_id,
+                    key=f"{identity.plan_revision}:{identity.evidence_epoch}:"
+                    f"{identity.candidate_set_digest}:{occurrence_id}",
+                    payload={
+                        "occurrence_id": occurrence_id,
+                        "identity": identity.to_json(),
+                        "call_id": call_id,
+                    },
+                )
+        return decisions
 
     def record_method_applicability(
         self, mission_id: str, *, reports: Sequence[Any] | None = None
@@ -3248,6 +3629,8 @@ class HierarchicalDispatch:
             goal = network.binding_for_occurrence(spec.occurrence_id)
             parameters = dict(goal.typed_parameters)
             for reference in world.registry.method_refs():
+                if not world.registry.retrievable(reference, mission_id=MissionRef(mission_id)):
+                    continue
                 contract = world.registry.definition(reference)
                 if contract is None:
                     continue
@@ -3341,6 +3724,8 @@ class HierarchicalDispatch:
         by_signature: dict[str, int] = {}
         registered: set[MethodRef] = set()
         for reference in world.registry.method_refs():
+            if not world.registry.retrievable(reference, mission_id=MissionRef(mission_id)):
+                continue
             definition = world.registry.definition(reference)
             if definition is None:
                 continue
@@ -3602,6 +3987,26 @@ class HierarchicalDispatch:
         self.require_hierarchical(mission_id)
         synthesizer = MethodSynthesizer(world.registry, world.catalog)
         resolved = policy if policy is not None else self._admission_policy(mission_id)
+        # Trial admission is Mission-scoped, but immutable method IDs live in a
+        # shared library. Reject a name/version collision before mutating this
+        # Mission's registry, and feed the correctable identity error through the
+        # existing bounded synthesis retry.
+        from ..planning.planner import parse_method_proposal
+        from ..planning.htn.synthesis import SynthesisReplyUnreadable
+        try:
+            proposed = parse_method_proposal(text).method
+        except ContractError as error:
+            raise SynthesisReplyUnreadable(error) from error
+        versions = [stored for stored in self.semantics().list_methods()
+                    if stored.contract.method_id == proposed.method_id]
+        if any(item.contract.method_version == proposed.method_version
+               and (item.contract.method_ref() != proposed.method_ref()
+                    or (item.registration.trial_scope_mission is not None
+                        and item.registration.trial_scope_mission != mission_id)) for item in versions):
+            next_version = max(int(item.contract.method_version) for item in versions) + 1
+            raise SynthesisReplyUnreadable(ContractError(
+                f"method {proposed.method_id}@{proposed.method_version} already has a different "
+                f"immutable definition or another Mission trial scope; use method_version={next_version} or a new method_id"))
         receipt = synthesizer.accept_response(text, policy=resolved)
         if receipt.admitted:
             self._publish_admitted_method(world, receipt.method_ref)
@@ -3698,9 +4103,37 @@ class HierarchicalDispatch:
         round on ``running_work_not_reconciled``.
         """
 
+        proposal = parse_plan_proposal(text, mission_id=mission_id)
+        return self.apply_plan_proposal(
+            mission_id,
+            proposal,
+            principal=principal,
+            command_id=command_id,
+            source=source,
+            owner=owner,
+            proposal_text=text,
+        )
+
+    def apply_plan_proposal(
+        self,
+        mission_id: str,
+        proposal: PlanProposal,
+        *,
+        principal: PlanPrincipal,
+        command_id: str,
+        source: Mapping[str, Any] | None = None,
+        owner: str | None = None,
+        proposal_text: str = "",
+    ) -> PlanRoundOutcome:
+        """Compile and commit an already decoded proposal.
+
+        The new planning-decision adapter produces the same typed ``PlanProposal``
+        used by the legacy text parser.  Keeping the compile/commit path here makes
+        that boundary explicit without duplicating the safety checks of one round.
+        """
+
         mission = self.require_hierarchical(mission_id)
         del mission
-        proposal = parse_plan_proposal(text, mission_id=mission_id)
         retirements = [item for item in proposal.operations if _is_retirement(item)]
         if retirements:
             instance_id = str(retirements[0].method_instance_id)
@@ -3711,7 +4144,7 @@ class HierarchicalDispatch:
                 self.record_repair_compile_deferred(
                     mission_id,
                     proposal_id=str(proposal.proposal_id),
-                    text=text,
+                    text=proposal_text,
                     instance_id=instance_id,
                     attempts=remaining,
                     command_id=command_id,
@@ -3719,7 +4152,7 @@ class HierarchicalDispatch:
                 raise RepairBlockedByRunningWork(
                     mission_id=mission_id,
                     proposal_id=str(proposal.proposal_id),
-                    text=text,
+                    text=proposal_text,
                     instance_id=instance_id,
                     attempts=remaining,
                 )
@@ -3756,6 +4189,121 @@ class HierarchicalDispatch:
                 proposal_id=proposal.proposal_id, receipt=receipt, refusals=tuple(refusals)
             )
         raise AssertionError("unreachable: the loop returns on every path")  # pragma: no cover
+
+    def solver_preview_lane(self, mission_id: str, proposal: PlanProposal, *,
+                            preview: Any, admission: Any, principal: PlanPrincipal,
+                            command_id: str, source: Mapping[str, Any]) -> Any:
+        """Prepare H7's real compiler/Commit lane; solve outside any write transaction."""
+        from ..contracts.models import sha256_hex
+        from ..planning.plan_preview import CandidatePreview, _source_snapshot_payload
+        from .planning_admission_commits import PlanningCommitAdmission
+        from .planning_backend_commit import SolverPlanCommitLane
+        if not isinstance(preview, CandidatePreview) or not isinstance(admission, PlanningCommitAdmission):
+            raise ContractError("solver commit requires the typed preview and H1-H admission")
+        self.require_hierarchical(mission_id)
+        network = self.network(mission_id)
+        if (sha256_hex(_source_snapshot_payload(network)) != preview.source_snapshot_hash
+                or int(proposal.expected_plan_revision) != int(network.plan_revision)):
+            raise ContractError("REQUEST_BINDING_STALE: solver preview no longer matches the active Plan")
+        command = self.build_command(mission_id, proposal, preview.compilation,
+            principal=principal, command_id=command_id,
+            source={**dict(source), "preview_compilation_hash": preview.compilation_hash,
+                    "preview_source_snapshot_hash": preview.source_snapshot_hash})
+        return SolverPlanCommitLane(self.commit, command, principal, admission)
+
+    def commit_preview_plan_proposal(
+        self,
+        mission_id: str,
+        proposal: PlanProposal,
+        *,
+        preview: CandidatePreview,
+        admission: Any | None = None,
+        principal: PlanPrincipal,
+        command_id: str,
+        source: Mapping[str, Any] | None = None,
+        owner: str | None = None,
+        proposal_text: str = "",
+    ) -> PlanRoundOutcome:
+        """Commit exactly the compilation produced by the H1-H candidate preview.
+
+        The ordinary ``apply_plan_proposal`` path deliberately recompiles because it
+        owns the legacy planner round.  A new-protocol decision has already frozen a
+        typed source snapshot and preview compilation, however: recompiling here
+        could commit a different candidate than the one admitted.  This seam therefore
+        only accepts a typed :class:`CandidatePreview`, rechecks the frozen network
+        identity, and sends that compilation directly to ``CommitService``.  Legacy
+        callers continue through ``apply_plan_proposal`` unchanged.
+        """
+
+        from ..contracts.models import sha256_hex
+        from ..planning.plan_preview import CandidatePreview, _source_snapshot_payload
+        from .planning_admission_commits import PlanningCommitAdmission
+
+        if not isinstance(preview, CandidatePreview):
+            raise ContractError("SOURCE_UNAVAILABLE: final commit requires a typed preview")
+        # Existing unit seams use a tiny commit stub to assert that the exact
+        # preview compilation is forwarded.  Keep that seam working while the
+        # production CommitService (which exposes commit_planning_revision) always
+        # requires the typed H1-H admission below.
+        compatibility_stub = admission is None and not callable(
+            getattr(self.commit, "commit_planning_revision", None)
+        )
+        if not compatibility_stub and not isinstance(admission, PlanningCommitAdmission):
+            raise ContractError("SOURCE_UNAVAILABLE: final commit requires H1-H admission")
+        mission = self.require_hierarchical(mission_id)
+        del mission
+        compilation = preview.compilation
+        network = self.network(mission_id)
+        current_hash = sha256_hex(_source_snapshot_payload(network))
+        if current_hash != preview.source_snapshot_hash:
+            raise ContractError(
+                "REQUEST_BINDING_STALE: preview network changed before final commit"
+            )
+        # ``compilation.network`` is the *result* snapshot produced by the pure
+        # compiler after applying the candidate delta.  It is expected to differ
+        # from the current source network; the source identity was already checked
+        # above through ``preview.source_snapshot_hash``.  Comparing the result to
+        # the source would reject every valid refinement immediately before commit.
+        if int(proposal.expected_plan_revision) != int(network.plan_revision):
+            raise ContractError(
+                "REQUEST_BINDING_STALE: proposal revision changed before final commit"
+            )
+
+        command = self.build_command(
+            mission_id,
+            proposal,
+            compilation,
+            principal=principal,
+            command_id=(command_id if isinstance(admission, PlanningCommitAdmission)
+                        and admission.taskgraph_candidate is not None else f"{command_id}:preview"),
+            source={
+                **dict(source or {}),
+                "preview_compilation_hash": preview.compilation_hash,
+                "preview_source_snapshot_hash": preview.source_snapshot_hash,
+            },
+        )
+        try:
+            if compatibility_stub:
+                receipt = self.commit.commit_plan_revision(command, principal)
+            else:
+                assert isinstance(admission, PlanningCommitAdmission)
+                receipt = self.commit.commit_planning_revision(
+                    command,
+                    principal,
+                    admission=admission,
+                )
+        except PlanCommitRejected as refused:
+            refusal = PlanRefusal(
+                attempt=1,
+                reason=refused.reason,
+                detail=refused.detail,
+                recompilable=False,
+            )
+            self._record_refusal(mission_id, proposal, (refusal,))
+            return PlanRoundOutcome(
+                proposal_id=proposal.proposal_id, refusals=(refusal,)
+            )
+        return PlanRoundOutcome(proposal_id=proposal.proposal_id, receipt=receipt)
 
     def compile_proposal(
         self, mission_id: str, proposal: PlanProposal, network: TaskNetworkSnapshot
@@ -3871,7 +4419,7 @@ class HierarchicalDispatch:
             shared_goal_index(
                 network,
                 catalog=world.catalog,
-                exclude_occurrence_ids=leaving,
+                exclude_occurrence_ids=tuple(leaving),
             ),
         )
         draft = ground_method(
@@ -3929,6 +4477,19 @@ class HierarchicalDispatch:
             # delta id (§18.3's naming convention: the two are different objects).
             compiled_from_proposal_id=proposal.proposal_id,
         )
+
+    @staticmethod
+    def preview_plan_proposal(proposal: PlanProposal, *, inputs: Any) -> Any:
+        """Run the H1H pure candidate preview without entering dispatch/commit.
+
+        The live ``compile_proposal`` method remains the legacy shell.  This
+        explicit seam makes it impossible for preview callers to accidentally
+        invoke ``apply_planner_reply`` or its reconciliation side effects.
+        """
+
+        from ..planning.plan_preview import preview_candidate
+
+        return preview_candidate(proposal, inputs=inputs)
 
     def _lease_blocks_cancel(self, attempt: Any, owner: str | None) -> bool:
         """A live lease held by somebody else must not be stolen (P2.3s)."""
@@ -4233,8 +4794,16 @@ class HierarchicalDispatch:
 
         mission = self.mission(mission_id)
         policy: dict[str, Any] = {}
-        if compilation.delta.retired_instance_ids:
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self.store, mission_id):
+            from .taskgraph_policy import read_installed_graph_policy
+            from ..contracts.htn import GraphStructureBudget
+            policy["structure_budget"] = GraphStructureBudget.from_json(
+                read_installed_graph_policy(self.store, mission_id).to_json()["graph_structure_budget"])
+        if compilation.delta.retired_instance_ids or compilation.superseded_occurrences:
             policy["running_work_policy"] = RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE
+        if compilation.superseded_occurrences:
+            policy["superseded_occurrences"] = compilation.superseded_occurrences
         return CommitPlanCommand(
             command_id=command_id,
             mission_id=mission_id,
@@ -4279,8 +4848,45 @@ class HierarchicalDispatch:
             # "not resolved yet", which is the DATA gate's business (WAITING_DATA) and
             # not a materialisation failure — so nothing is placed and nothing raises.
             return []
-        rules = self.target_rules or TargetRules(namespace=f"workspace:{task_id}")
+        rules = self.target_rules_for(task_id)
         return manifest_upstream_inputs(result.manifest, rules, network=network)
+
+    def overlay_attempt_inputs(
+        self, mission_id: str, inputs: Sequence[UpstreamInput]
+    ) -> list[UpstreamInput]:
+        """Project accepted workspace files from DATA-bound producers only.
+
+        Dispatch and its writer-transaction check share this projection.  The
+        Attempt freezes the resulting exact artifact identities and hashes.
+        """
+        from ..artifacts.bound_workspace import overlay_bound_producer_files
+        from .occurrence_tasks import read_only_leaf
+
+        mission = self.store.get_mission(mission_id)
+        if mission is None:
+            raise ContractError("input overlay Mission is unavailable")
+        artifacts: dict[str, list[Any]] = {}
+        read_only: set[str] = set()
+        for task_id in dict.fromkeys(item.task_id for item in inputs):
+            producer = self.store.get_task(task_id)
+            if producer is None or producer.mission_id != mission_id:
+                raise ContractError("input overlay producer is outside the Mission")
+            artifacts[task_id] = []
+            for artifact_id in producer.accepted_artifacts:
+                artifact = self.store.get_artifact(artifact_id)
+                if (artifact is None or artifact.mission_id != mission_id
+                        or artifact.task_id != producer.id):
+                    raise ContractError("input overlay artifact ownership is unavailable or differs")
+                artifacts[task_id].append(artifact)
+            semantic = self.semantics().task_semantics_of(mission_id, task_id)
+            if semantic is not None and read_only_leaf(semantic):
+                read_only.add(task_id)
+        return overlay_bound_producer_files(
+            inputs,
+            seed_paths=set((mission.final_report or {}).get("workspace_seed", {})),
+            artifacts_by_producer=artifacts,
+            read_only_producers=read_only,
+        )
 
     # ------------------------------------------------------------------------ plumbing
     def require_planning_world(self) -> PlanningWorld:
@@ -4409,7 +5015,7 @@ def _refined_occurrence(
     )
 
 
-def _root_criteria(requirements: Any, record: Any) -> tuple[ResolutionCriterion, ...]:
+def _root_criteria(requirements: Any, record: Any, *, include_evidence: bool = False) -> tuple[ResolutionCriterion, ...]:
     """The root resolution's criteria, restated from the review record (review F4).
 
     The *set* of criteria is the requirements revision's — that is what the goal owes
@@ -4418,11 +5024,19 @@ def _root_criteria(requirements: Any, record: Any) -> tuple[ResolutionCriterion,
     trigger that decides nothing can write.
     """
 
+    from ..contracts.semantic_base import EvidenceRef, EvidenceRefKind
+
     reviewed = {str(item.criterion_id): item.verdict for item in record.criteria}
     return tuple(
         ResolutionCriterion(
             criterion_id=item.criterion_id,
             verdict=reviewed.get(str(item.criterion_id), CriterionVerdict.UNKNOWN),
+            evidence_refs=tuple(
+                EvidenceRef.from_json(ref.to_json())
+                for outcome in record.criteria if outcome.criterion_id == item.criterion_id
+                for ref in outcome.evidence_refs
+                if include_evidence and str(ref.kind) in {str(kind) for kind in EvidenceRefKind}
+            ),
         )
         for item in requirements.criteria
     )
@@ -4674,10 +5288,11 @@ class _RepairReadOnlyShareIndex:
         )
 
 
-class _CompositeShareIndex:
+class _CompositeShareIndex(SharedGoalIndex):
     """Try the repair-share index first, then the ordinary network index."""
 
     def __init__(self, primary: Any, fallback: SharedGoalIndex) -> None:
+        super().__init__((*primary.entries, *fallback.entries()))
         self._primary = primary
         self._fallback = fallback
 
@@ -4750,6 +5365,8 @@ __all__ = (
     "ROOT_REVIEW_REPAIR_REASON",
     "SYNTHESIS_WORTHY_REFUSALS",
     "METHOD_APPLICABILITY_ASSESSED",
+    "METHOD_SELECTION_CALL_CLAIMED",
+    "REPAIR_DECISION_DISPATCHED",
     "PLANNER_SKIPPED_FOR_SYNTHESIS",
     "append_hierarchical_event",
     "shared_goal_index",

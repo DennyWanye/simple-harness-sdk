@@ -146,6 +146,7 @@ class RefinementCompilation:
     refinement_report: ProjectionReport
     network: TaskNetworkSnapshot
     shared_occurrences: tuple[OccurrenceId, ...] = ()
+    superseded_occurrences: tuple[OccurrenceId, ...] = ()
     #: Duties this increment opens (§6.1, CR#6).  Empty when every slot refines the
     #: parent duty, which is the common case and the one that keeps recursion fuel
     #: meaningful.  The same tuple is carried on ``delta.obligation_openings``.
@@ -466,6 +467,42 @@ def compile_refinement_bundle(
         shared_occurrences=tuple(dict.fromkeys(shared)),
         new_obligations=new_obligations,
         steps=tuple(steps),
+    )
+
+
+def compile_candidate_from_snapshot(
+    draft: MethodInstanceDraft,
+    current: TaskNetworkSnapshot,
+    *,
+    method: MethodContract,
+    catalog: TaskTypeCatalog,
+    schemas: SchemaCatalog,
+    registry: MethodRegistry | None = None,
+    sharing: SharedGoalIndex | None = None,
+    retire_instance_ids: Sequence[MethodInstanceId] = (),
+    budget: GraphStructureBudget = DEFAULT_PROJECTION_BUDGET,
+    requirements_revision: int = 0,
+    compiled_from_proposal_id: str | None = None,
+) -> RefinementCompilation:
+    """Pure candidate kernel used by H1H preview.
+
+    This named seam keeps the preview path on the same compiler implementation as
+    the legacy dispatch shell.  It deliberately exposes only frozen value inputs;
+    all commit, witness, event and dispatch work remains outside the compiler.
+    """
+
+    return compile_refinement_bundle(
+        draft,
+        current,
+        method=method,
+        catalog=catalog,
+        schemas=schemas,
+        registry=registry,
+        sharing=sharing,
+        retire_instance_ids=retire_instance_ids,
+        budget=budget,
+        requirements_revision=requirements_revision,
+        compiled_from_proposal_id=compiled_from_proposal_id,
     )
 
 
@@ -1464,6 +1501,7 @@ __all__ = (
     "build_read_set",
     "compile_refinement",
     "compile_refinement_bundle",
+    "compile_candidate_from_snapshot",
     "coverage_from_slots",
     "task_ref_of",
     "unbound_required_ports",

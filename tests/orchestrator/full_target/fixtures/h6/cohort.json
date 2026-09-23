@@ -1,0 +1,1752 @@
+[
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-01-clamp",
+    "fixture": {
+      "goal": "Implement clamp in target.py. Return value limited to the inclusive [low, high] range; reject low > high. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def clamp(value, low, high):\n    return None\n",
+        "tests/test_target.py": "from target import clamp\n\ndef test_contract():\n    assert clamp(-1, 0, 5) == 0\n    assert clamp(7, 0, 5) == 5\n    assert clamp(3, 0, 5) == 3\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import clamp\n\ndef test_contract():\n    assert clamp(-1, 0, 5) == 0\n    assert clamp(7, 0, 5) == 5\n    assert clamp(3, 0, 5) == 3\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import clamp\n\ndef test_hidden():\n    assert clamp(2.5, 1.0, 2.0) == 2.0\n    with pytest.raises(ValueError): clamp(1, 3, 2)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-01-clamp",
+    "fixture": {
+      "goal": "Implement clamp in target.py. Return value limited to the inclusive [low, high] range; reject low > high. Do not modify tests.",
+      "files": {
+        "target.py": "def clamp(value, low, high):\n    return None\n",
+        "tests/test_target.py": "from target import clamp\n\ndef test_contract():\n    assert clamp(-1, 0, 5) == 0\n    assert clamp(7, 0, 5) == 5\n    assert clamp(3, 0, 5) == 3\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import clamp\n\ndef test_contract():\n    assert clamp(-1, 0, 5) == 0\n    assert clamp(7, 0, 5) == 5\n    assert clamp(3, 0, 5) == 3\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import clamp\n\ndef test_hidden():\n    assert clamp(2.5, 1.0, 2.0) == 2.0\n    with pytest.raises(ValueError): clamp(1, 3, 2)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-02-flatten_once",
+    "fixture": {
+      "goal": "Implement flatten_once in target.py. Flatten exactly one list/tuple nesting level while preserving order. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def flatten_once(values):\n    return None\n",
+        "tests/test_target.py": "from target import flatten_once\n\ndef test_contract():\n    assert flatten_once([[1, 2], (3,), [], [4]]) == [1, 2, 3, 4]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import flatten_once\n\ndef test_contract():\n    assert flatten_once([[1, 2], (3,), [], [4]]) == [1, 2, 3, 4]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import flatten_once\n\ndef test_hidden():\n    nested = [[1, [2]], 3]\n    assert flatten_once(nested) == [1, [2], 3]\n    assert nested == [[1, [2]], 3]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-02-flatten_once",
+    "fixture": {
+      "goal": "Implement flatten_once in target.py. Flatten exactly one list/tuple nesting level while preserving order. Do not modify tests.",
+      "files": {
+        "target.py": "def flatten_once(values):\n    return None\n",
+        "tests/test_target.py": "from target import flatten_once\n\ndef test_contract():\n    assert flatten_once([[1, 2], (3,), [], [4]]) == [1, 2, 3, 4]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import flatten_once\n\ndef test_contract():\n    assert flatten_once([[1, 2], (3,), [], [4]]) == [1, 2, 3, 4]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import flatten_once\n\ndef test_hidden():\n    nested = [[1, [2]], 3]\n    assert flatten_once(nested) == [1, [2], 3]\n    assert nested == [[1, [2]], 3]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-03-dedupe_by",
+    "fixture": {
+      "goal": "Implement dedupe_by in target.py. Keep the first item for each key returned by key, preserving order. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def dedupe_by(values, key):\n    return None\n",
+        "tests/test_target.py": "from target import dedupe_by\n\ndef test_contract():\n    assert dedupe_by(['A', 'a', 'B'], str.lower) == ['A', 'B']\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import dedupe_by\n\ndef test_contract():\n    assert dedupe_by(['A', 'a', 'B'], str.lower) == ['A', 'B']\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import dedupe_by\n\ndef test_hidden():\n    values = [{'id': 1, 'v': 'a'}, {'id': 1, 'v': 'b'}, {'id': 2, 'v': 'c'}]\n    assert dedupe_by(values, lambda x: x['id']) == [values[0], values[2]]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-03-dedupe_by",
+    "fixture": {
+      "goal": "Implement dedupe_by in target.py. Keep the first item for each key returned by key, preserving order. Do not modify tests.",
+      "files": {
+        "target.py": "def dedupe_by(values, key):\n    return None\n",
+        "tests/test_target.py": "from target import dedupe_by\n\ndef test_contract():\n    assert dedupe_by(['A', 'a', 'B'], str.lower) == ['A', 'B']\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import dedupe_by\n\ndef test_contract():\n    assert dedupe_by(['A', 'a', 'B'], str.lower) == ['A', 'B']\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import dedupe_by\n\ndef test_hidden():\n    values = [{'id': 1, 'v': 'a'}, {'id': 1, 'v': 'b'}, {'id': 2, 'v': 'c'}]\n    assert dedupe_by(values, lambda x: x['id']) == [values[0], values[2]]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-04-merge_counts",
+    "fixture": {
+      "goal": "Implement merge_counts in target.py. Return summed integer counts from two mappings without mutating either; omit zero totals. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def merge_counts(left, right):\n    return None\n",
+        "tests/test_target.py": "from target import merge_counts\n\ndef test_contract():\n    assert merge_counts({'a': 2, 'b': 1}, {'a': -2, 'c': 3}) == {'b': 1, 'c': 3}\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import merge_counts\n\ndef test_contract():\n    assert merge_counts({'a': 2, 'b': 1}, {'a': -2, 'c': 3}) == {'b': 1, 'c': 3}\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import merge_counts\n\ndef test_hidden():\n    a, b = {'x': 1}, {'x': 2, 'y': -1}\n    assert merge_counts(a, b) == {'x': 3, 'y': -1}\n    assert a == {'x': 1} and b == {'x': 2, 'y': -1}\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-04-merge_counts",
+    "fixture": {
+      "goal": "Implement merge_counts in target.py. Return summed integer counts from two mappings without mutating either; omit zero totals. Do not modify tests.",
+      "files": {
+        "target.py": "def merge_counts(left, right):\n    return None\n",
+        "tests/test_target.py": "from target import merge_counts\n\ndef test_contract():\n    assert merge_counts({'a': 2, 'b': 1}, {'a': -2, 'c': 3}) == {'b': 1, 'c': 3}\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import merge_counts\n\ndef test_contract():\n    assert merge_counts({'a': 2, 'b': 1}, {'a': -2, 'c': 3}) == {'b': 1, 'c': 3}\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import merge_counts\n\ndef test_hidden():\n    a, b = {'x': 1}, {'x': 2, 'y': -1}\n    assert merge_counts(a, b) == {'x': 3, 'y': -1}\n    assert a == {'x': 1} and b == {'x': 2, 'y': -1}\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-05-parse_csv_line",
+    "fixture": {
+      "goal": "Implement parse_csv_line in target.py. Parse one comma-separated line with double-quoted fields and doubled quote escaping. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def parse_csv_line(text):\n    return None\n",
+        "tests/test_target.py": "from target import parse_csv_line\n\ndef test_contract():\n    assert parse_csv_line('a,\"b,c\",d') == ['a', 'b,c', 'd']\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import parse_csv_line\n\ndef test_contract():\n    assert parse_csv_line('a,\"b,c\",d') == ['a', 'b,c', 'd']\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import parse_csv_line\n\ndef test_hidden():\n    assert parse_csv_line('\"a\"\"b\",,c') == ['a\"b', '', 'c']\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-05-parse_csv_line",
+    "fixture": {
+      "goal": "Implement parse_csv_line in target.py. Parse one comma-separated line with double-quoted fields and doubled quote escaping. Do not modify tests.",
+      "files": {
+        "target.py": "def parse_csv_line(text):\n    return None\n",
+        "tests/test_target.py": "from target import parse_csv_line\n\ndef test_contract():\n    assert parse_csv_line('a,\"b,c\",d') == ['a', 'b,c', 'd']\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import parse_csv_line\n\ndef test_contract():\n    assert parse_csv_line('a,\"b,c\",d') == ['a', 'b,c', 'd']\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import parse_csv_line\n\ndef test_hidden():\n    assert parse_csv_line('\"a\"\"b\",,c') == ['a\"b', '', 'c']\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-06-group_runs",
+    "fixture": {
+      "goal": "Implement group_runs in target.py. Group consecutive equal values into (value, count) pairs. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def group_runs(values):\n    return None\n",
+        "tests/test_target.py": "from target import group_runs\n\ndef test_contract():\n    assert group_runs([1, 1, 2, 1]) == [(1, 2), (2, 1), (1, 1)]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import group_runs\n\ndef test_contract():\n    assert group_runs([1, 1, 2, 1]) == [(1, 2), (2, 1), (1, 1)]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import group_runs\n\ndef test_hidden():\n    assert group_runs([]) == []\n    assert group_runs(['x']) == [('x', 1)]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-06-group_runs",
+    "fixture": {
+      "goal": "Implement group_runs in target.py. Group consecutive equal values into (value, count) pairs. Do not modify tests.",
+      "files": {
+        "target.py": "def group_runs(values):\n    return None\n",
+        "tests/test_target.py": "from target import group_runs\n\ndef test_contract():\n    assert group_runs([1, 1, 2, 1]) == [(1, 2), (2, 1), (1, 1)]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import group_runs\n\ndef test_contract():\n    assert group_runs([1, 1, 2, 1]) == [(1, 2), (2, 1), (1, 1)]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import group_runs\n\ndef test_hidden():\n    assert group_runs([]) == []\n    assert group_runs(['x']) == [('x', 1)]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-07-rotate",
+    "fixture": {
+      "goal": "Implement rotate in target.py. Return a new sequence rotated left by steps, accepting negative and oversized steps. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def rotate(values, steps):\n    return None\n",
+        "tests/test_target.py": "from target import rotate\n\ndef test_contract():\n    assert rotate([1, 2, 3, 4], 1) == [2, 3, 4, 1]\n    assert rotate([1, 2, 3], -1) == [3, 1, 2]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import rotate\n\ndef test_contract():\n    assert rotate([1, 2, 3, 4], 1) == [2, 3, 4, 1]\n    assert rotate([1, 2, 3], -1) == [3, 1, 2]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import rotate\n\ndef test_hidden():\n    values = [1, 2]\n    assert rotate(values, 5) == [2, 1]\n    assert rotate([], 9) == [] and values == [1, 2]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-07-rotate",
+    "fixture": {
+      "goal": "Implement rotate in target.py. Return a new sequence rotated left by steps, accepting negative and oversized steps. Do not modify tests.",
+      "files": {
+        "target.py": "def rotate(values, steps):\n    return None\n",
+        "tests/test_target.py": "from target import rotate\n\ndef test_contract():\n    assert rotate([1, 2, 3, 4], 1) == [2, 3, 4, 1]\n    assert rotate([1, 2, 3], -1) == [3, 1, 2]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import rotate\n\ndef test_contract():\n    assert rotate([1, 2, 3, 4], 1) == [2, 3, 4, 1]\n    assert rotate([1, 2, 3], -1) == [3, 1, 2]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import rotate\n\ndef test_hidden():\n    values = [1, 2]\n    assert rotate(values, 5) == [2, 1]\n    assert rotate([], 9) == [] and values == [1, 2]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-08-safe_get",
+    "fixture": {
+      "goal": "Implement safe_get in target.py. Traverse nested mappings by a dot-separated path; return default when any component is absent. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def safe_get(mapping, path, default=None):\n    return None\n",
+        "tests/test_target.py": "from target import safe_get\n\ndef test_contract():\n    assert safe_get({'a': {'b': 3}}, 'a.b') == 3\n    assert safe_get({'a': {}}, 'a.x', 9) == 9\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import safe_get\n\ndef test_contract():\n    assert safe_get({'a': {'b': 3}}, 'a.b') == 3\n    assert safe_get({'a': {}}, 'a.x', 9) == 9\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import safe_get\n\ndef test_hidden():\n    assert safe_get({'a.b': 1}, 'a.b', 'missing') == 'missing'\n    assert safe_get({'a': {'b': None}}, 'a.b', 2) is None\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-08-safe_get",
+    "fixture": {
+      "goal": "Implement safe_get in target.py. Traverse nested mappings by a dot-separated path; return default when any component is absent. Do not modify tests.",
+      "files": {
+        "target.py": "def safe_get(mapping, path, default=None):\n    return None\n",
+        "tests/test_target.py": "from target import safe_get\n\ndef test_contract():\n    assert safe_get({'a': {'b': 3}}, 'a.b') == 3\n    assert safe_get({'a': {}}, 'a.x', 9) == 9\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import safe_get\n\ndef test_contract():\n    assert safe_get({'a': {'b': 3}}, 'a.b') == 3\n    assert safe_get({'a': {}}, 'a.x', 9) == 9\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import safe_get\n\ndef test_hidden():\n    assert safe_get({'a.b': 1}, 'a.b', 'missing') == 'missing'\n    assert safe_get({'a': {'b': None}}, 'a.b', 2) is None\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-09-partition",
+    "fixture": {
+      "goal": "Implement partition in target.py. Split values into two new lists (predicate true, predicate false) while preserving order. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def partition(values, predicate):\n    return None\n",
+        "tests/test_target.py": "from target import partition\n\ndef test_contract():\n    assert partition([1, 2, 3, 4], lambda x: x % 2 == 0) == ([2, 4], [1, 3])\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import partition\n\ndef test_contract():\n    assert partition([1, 2, 3, 4], lambda x: x % 2 == 0) == ([2, 4], [1, 3])\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import partition\n\ndef test_hidden():\n    values = []\n    assert partition(values, bool) == ([], [])\n    assert values == []\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-09-partition",
+    "fixture": {
+      "goal": "Implement partition in target.py. Split values into two new lists (predicate true, predicate false) while preserving order. Do not modify tests.",
+      "files": {
+        "target.py": "def partition(values, predicate):\n    return None\n",
+        "tests/test_target.py": "from target import partition\n\ndef test_contract():\n    assert partition([1, 2, 3, 4], lambda x: x % 2 == 0) == ([2, 4], [1, 3])\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import partition\n\ndef test_contract():\n    assert partition([1, 2, 3, 4], lambda x: x % 2 == 0) == ([2, 4], [1, 3])\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import partition\n\ndef test_hidden():\n    values = []\n    assert partition(values, bool) == ([], [])\n    assert values == []\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-10-format_bytes",
+    "fixture": {
+      "goal": "Implement format_bytes in target.py. Format a nonnegative byte count using B, KiB, MiB or GiB and one decimal above bytes. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def format_bytes(count):\n    return None\n",
+        "tests/test_target.py": "from target import format_bytes\n\ndef test_contract():\n    assert format_bytes(0) == '0 B'\n    assert format_bytes(1024) == '1.0 KiB'\n    assert format_bytes(1536) == '1.5 KiB'\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import format_bytes\n\ndef test_contract():\n    assert format_bytes(0) == '0 B'\n    assert format_bytes(1024) == '1.0 KiB'\n    assert format_bytes(1536) == '1.5 KiB'\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import format_bytes\n\ndef test_hidden():\n    assert format_bytes(1024**2) == '1.0 MiB'\n    assert format_bytes(1024**3 * 2) == '2.0 GiB'\n    with pytest.raises(ValueError): format_bytes(-1)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-10-format_bytes",
+    "fixture": {
+      "goal": "Implement format_bytes in target.py. Format a nonnegative byte count using B, KiB, MiB or GiB and one decimal above bytes. Do not modify tests.",
+      "files": {
+        "target.py": "def format_bytes(count):\n    return None\n",
+        "tests/test_target.py": "from target import format_bytes\n\ndef test_contract():\n    assert format_bytes(0) == '0 B'\n    assert format_bytes(1024) == '1.0 KiB'\n    assert format_bytes(1536) == '1.5 KiB'\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import format_bytes\n\ndef test_contract():\n    assert format_bytes(0) == '0 B'\n    assert format_bytes(1024) == '1.0 KiB'\n    assert format_bytes(1536) == '1.5 KiB'\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import format_bytes\n\ndef test_hidden():\n    assert format_bytes(1024**2) == '1.0 MiB'\n    assert format_bytes(1024**3 * 2) == '2.0 GiB'\n    with pytest.raises(ValueError): format_bytes(-1)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-11-parse_range",
+    "fixture": {
+      "goal": "Implement parse_range in target.py. Parse 'start:end' integers with either side optional; reject malformed text. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def parse_range(text):\n    return None\n",
+        "tests/test_target.py": "from target import parse_range\n\ndef test_contract():\n    assert parse_range('2:5') == (2, 5)\n    assert parse_range(':7') == (None, 7)\n    assert parse_range('3:') == (3, None)\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import parse_range\n\ndef test_contract():\n    assert parse_range('2:5') == (2, 5)\n    assert parse_range(':7') == (None, 7)\n    assert parse_range('3:') == (3, None)\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import parse_range\n\ndef test_hidden():\n    assert parse_range(' -2 : 4 ') == (-2, 4)\n    with pytest.raises(ValueError): parse_range('1:2:3')\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-11-parse_range",
+    "fixture": {
+      "goal": "Implement parse_range in target.py. Parse 'start:end' integers with either side optional; reject malformed text. Do not modify tests.",
+      "files": {
+        "target.py": "def parse_range(text):\n    return None\n",
+        "tests/test_target.py": "from target import parse_range\n\ndef test_contract():\n    assert parse_range('2:5') == (2, 5)\n    assert parse_range(':7') == (None, 7)\n    assert parse_range('3:') == (3, None)\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import parse_range\n\ndef test_contract():\n    assert parse_range('2:5') == (2, 5)\n    assert parse_range(':7') == (None, 7)\n    assert parse_range('3:') == (3, None)\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import parse_range\n\ndef test_hidden():\n    assert parse_range(' -2 : 4 ') == (-2, 4)\n    with pytest.raises(ValueError): parse_range('1:2:3')\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-12-top_k",
+    "fixture": {
+      "goal": "Implement top_k in target.py. Return the k largest values in descending order without mutating input; k<=0 gives empty. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def top_k(values, k):\n    return None\n",
+        "tests/test_target.py": "from target import top_k\n\ndef test_contract():\n    assert top_k([3, 1, 4, 2], 2) == [4, 3]\n    assert top_k([1], 0) == []\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import top_k\n\ndef test_contract():\n    assert top_k([3, 1, 4, 2], 2) == [4, 3]\n    assert top_k([1], 0) == []\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import top_k\n\ndef test_hidden():\n    values = [2, 2, 1]\n    assert top_k(values, 9) == [2, 2, 1]\n    assert values == [2, 2, 1]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-12-top_k",
+    "fixture": {
+      "goal": "Implement top_k in target.py. Return the k largest values in descending order without mutating input; k<=0 gives empty. Do not modify tests.",
+      "files": {
+        "target.py": "def top_k(values, k):\n    return None\n",
+        "tests/test_target.py": "from target import top_k\n\ndef test_contract():\n    assert top_k([3, 1, 4, 2], 2) == [4, 3]\n    assert top_k([1], 0) == []\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import top_k\n\ndef test_contract():\n    assert top_k([3, 1, 4, 2], 2) == [4, 3]\n    assert top_k([1], 0) == []\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import top_k\n\ndef test_hidden():\n    values = [2, 2, 1]\n    assert top_k(values, 9) == [2, 2, 1]\n    assert values == [2, 2, 1]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-13-invert_mapping",
+    "fixture": {
+      "goal": "Implement invert_mapping in target.py. Map each value to a list of its keys in original mapping iteration order. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def invert_mapping(mapping):\n    return None\n",
+        "tests/test_target.py": "from target import invert_mapping\n\ndef test_contract():\n    assert invert_mapping({'a': 1, 'b': 2, 'c': 1}) == {1: ['a', 'c'], 2: ['b']}\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import invert_mapping\n\ndef test_contract():\n    assert invert_mapping({'a': 1, 'b': 2, 'c': 1}) == {1: ['a', 'c'], 2: ['b']}\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import invert_mapping\n\ndef test_hidden():\n    assert invert_mapping({}) == {}\n    assert invert_mapping({'x': None}) == {None: ['x']}\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-13-invert_mapping",
+    "fixture": {
+      "goal": "Implement invert_mapping in target.py. Map each value to a list of its keys in original mapping iteration order. Do not modify tests.",
+      "files": {
+        "target.py": "def invert_mapping(mapping):\n    return None\n",
+        "tests/test_target.py": "from target import invert_mapping\n\ndef test_contract():\n    assert invert_mapping({'a': 1, 'b': 2, 'c': 1}) == {1: ['a', 'c'], 2: ['b']}\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import invert_mapping\n\ndef test_contract():\n    assert invert_mapping({'a': 1, 'b': 2, 'c': 1}) == {1: ['a', 'c'], 2: ['b']}\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import invert_mapping\n\ndef test_hidden():\n    assert invert_mapping({}) == {}\n    assert invert_mapping({'x': None}) == {None: ['x']}\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-14-windows",
+    "fixture": {
+      "goal": "Implement windows in target.py. Return all consecutive windows of size n as tuples; reject n<=0. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def windows(values, n):\n    return None\n",
+        "tests/test_target.py": "from target import windows\n\ndef test_contract():\n    assert windows([1, 2, 3, 4], 3) == [(1, 2, 3), (2, 3, 4)]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import windows\n\ndef test_contract():\n    assert windows([1, 2, 3, 4], 3) == [(1, 2, 3), (2, 3, 4)]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import windows\n\ndef test_hidden():\n    assert windows([1, 2], 3) == []\n    assert windows([1, 2], 2) == [(1, 2)]\n    with pytest.raises(ValueError): windows([1], 0)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-14-windows",
+    "fixture": {
+      "goal": "Implement windows in target.py. Return all consecutive windows of size n as tuples; reject n<=0. Do not modify tests.",
+      "files": {
+        "target.py": "def windows(values, n):\n    return None\n",
+        "tests/test_target.py": "from target import windows\n\ndef test_contract():\n    assert windows([1, 2, 3, 4], 3) == [(1, 2, 3), (2, 3, 4)]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import windows\n\ndef test_contract():\n    assert windows([1, 2, 3, 4], 3) == [(1, 2, 3), (2, 3, 4)]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import windows\n\ndef test_hidden():\n    assert windows([1, 2], 3) == []\n    assert windows([1, 2], 2) == [(1, 2)]\n    with pytest.raises(ValueError): windows([1], 0)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-15-normalize_path",
+    "fixture": {
+      "goal": "Implement normalize_path in target.py. Normalize slash-separated relative paths by removing empty and '.' components; reject '..'. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def normalize_path(path):\n    return None\n",
+        "tests/test_target.py": "from target import normalize_path\n\ndef test_contract():\n    assert normalize_path('./a//b/') == 'a/b'\n    assert normalize_path('') == ''\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import normalize_path\n\ndef test_contract():\n    assert normalize_path('./a//b/') == 'a/b'\n    assert normalize_path('') == ''\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import normalize_path\n\ndef test_hidden():\n    assert normalize_path('a/./b') == 'a/b'\n    with pytest.raises(ValueError): normalize_path('a/../b')\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-15-normalize_path",
+    "fixture": {
+      "goal": "Implement normalize_path in target.py. Normalize slash-separated relative paths by removing empty and '.' components; reject '..'. Do not modify tests.",
+      "files": {
+        "target.py": "def normalize_path(path):\n    return None\n",
+        "tests/test_target.py": "from target import normalize_path\n\ndef test_contract():\n    assert normalize_path('./a//b/') == 'a/b'\n    assert normalize_path('') == ''\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import normalize_path\n\ndef test_contract():\n    assert normalize_path('./a//b/') == 'a/b'\n    assert normalize_path('') == ''\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import normalize_path\n\ndef test_hidden():\n    assert normalize_path('a/./b') == 'a/b'\n    with pytest.raises(ValueError): normalize_path('a/../b')\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-16-retry_delays",
+    "fixture": {
+      "goal": "Implement retry_delays in target.py. Return count exponential delays starting at base and capped at maximum; reject negative count. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def retry_delays(base, maximum, count):\n    return None\n",
+        "tests/test_target.py": "from target import retry_delays\n\ndef test_contract():\n    assert retry_delays(1, 5, 5) == [1, 2, 4, 5, 5]\n    assert retry_delays(2, 8, 0) == []\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import retry_delays\n\ndef test_contract():\n    assert retry_delays(1, 5, 5) == [1, 2, 4, 5, 5]\n    assert retry_delays(2, 8, 0) == []\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import retry_delays\n\ndef test_hidden():\n    assert retry_delays(0.5, 1.0, 4) == [0.5, 1.0, 1.0, 1.0]\n    with pytest.raises(ValueError): retry_delays(1, 2, -1)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-16-retry_delays",
+    "fixture": {
+      "goal": "Implement retry_delays in target.py. Return count exponential delays starting at base and capped at maximum; reject negative count. Do not modify tests.",
+      "files": {
+        "target.py": "def retry_delays(base, maximum, count):\n    return None\n",
+        "tests/test_target.py": "from target import retry_delays\n\ndef test_contract():\n    assert retry_delays(1, 5, 5) == [1, 2, 4, 5, 5]\n    assert retry_delays(2, 8, 0) == []\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import retry_delays\n\ndef test_contract():\n    assert retry_delays(1, 5, 5) == [1, 2, 4, 5, 5]\n    assert retry_delays(2, 8, 0) == []\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import retry_delays\n\ndef test_hidden():\n    assert retry_delays(0.5, 1.0, 4) == [0.5, 1.0, 1.0, 1.0]\n    with pytest.raises(ValueError): retry_delays(1, 2, -1)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-17-coalesce_ranges",
+    "fixture": {
+      "goal": "Implement coalesce_ranges in target.py. Merge overlapping or touching inclusive integer ranges; return sorted tuples. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def coalesce_ranges(ranges):\n    return None\n",
+        "tests/test_target.py": "from target import coalesce_ranges\n\ndef test_contract():\n    assert coalesce_ranges([(5, 7), (1, 2), (3, 4), (9, 9)]) == [(1, 7), (9, 9)]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import coalesce_ranges\n\ndef test_contract():\n    assert coalesce_ranges([(5, 7), (1, 2), (3, 4), (9, 9)]) == [(1, 7), (9, 9)]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import coalesce_ranges\n\ndef test_hidden():\n    assert coalesce_ranges([]) == []\n    assert coalesce_ranges([(1, 1), (1, 2)]) == [(1, 2)]\n    with pytest.raises(ValueError): coalesce_ranges([(3, 2)])\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-17-coalesce_ranges",
+    "fixture": {
+      "goal": "Implement coalesce_ranges in target.py. Merge overlapping or touching inclusive integer ranges; return sorted tuples. Do not modify tests.",
+      "files": {
+        "target.py": "def coalesce_ranges(ranges):\n    return None\n",
+        "tests/test_target.py": "from target import coalesce_ranges\n\ndef test_contract():\n    assert coalesce_ranges([(5, 7), (1, 2), (3, 4), (9, 9)]) == [(1, 7), (9, 9)]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import coalesce_ranges\n\ndef test_contract():\n    assert coalesce_ranges([(5, 7), (1, 2), (3, 4), (9, 9)]) == [(1, 7), (9, 9)]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import coalesce_ranges\n\ndef test_hidden():\n    assert coalesce_ranges([]) == []\n    assert coalesce_ranges([(1, 1), (1, 2)]) == [(1, 2)]\n    with pytest.raises(ValueError): coalesce_ranges([(3, 2)])\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-18-weighted_average",
+    "fixture": {
+      "goal": "Implement weighted_average in target.py. Compute weighted average of (value, weight); reject negative weights or zero total weight. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def weighted_average(items):\n    return None\n",
+        "tests/test_target.py": "from target import weighted_average\n\ndef test_contract():\n    assert weighted_average([(10, 1), (20, 3)]) == 17.5\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import weighted_average\n\ndef test_contract():\n    assert weighted_average([(10, 1), (20, 3)]) == 17.5\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import weighted_average\n\ndef test_hidden():\n    assert weighted_average([(2.5, 2)]) == 2.5\n    with pytest.raises(ValueError): weighted_average([])\n    with pytest.raises(ValueError): weighted_average([(1, -1)])\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-18-weighted_average",
+    "fixture": {
+      "goal": "Implement weighted_average in target.py. Compute weighted average of (value, weight); reject negative weights or zero total weight. Do not modify tests.",
+      "files": {
+        "target.py": "def weighted_average(items):\n    return None\n",
+        "tests/test_target.py": "from target import weighted_average\n\ndef test_contract():\n    assert weighted_average([(10, 1), (20, 3)]) == 17.5\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import weighted_average\n\ndef test_contract():\n    assert weighted_average([(10, 1), (20, 3)]) == 17.5\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import weighted_average\n\ndef test_hidden():\n    assert weighted_average([(2.5, 2)]) == 2.5\n    with pytest.raises(ValueError): weighted_average([])\n    with pytest.raises(ValueError): weighted_average([(1, -1)])\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-19-deep_keys",
+    "fixture": {
+      "goal": "Implement deep_keys in target.py. Return sorted dot paths of all non-mapping leaves in a nested string-keyed mapping. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def deep_keys(mapping):\n    return None\n",
+        "tests/test_target.py": "from target import deep_keys\n\ndef test_contract():\n    assert deep_keys({'b': 1, 'a': {'d': 2, 'c': 3}}) == ['a.c', 'a.d', 'b']\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import deep_keys\n\ndef test_contract():\n    assert deep_keys({'b': 1, 'a': {'d': 2, 'c': 3}}) == ['a.c', 'a.d', 'b']\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import deep_keys\n\ndef test_hidden():\n    assert deep_keys({'a': {}}) == []\n    assert deep_keys({'x': {'y': None}}) == ['x.y']\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-19-deep_keys",
+    "fixture": {
+      "goal": "Implement deep_keys in target.py. Return sorted dot paths of all non-mapping leaves in a nested string-keyed mapping. Do not modify tests.",
+      "files": {
+        "target.py": "def deep_keys(mapping):\n    return None\n",
+        "tests/test_target.py": "from target import deep_keys\n\ndef test_contract():\n    assert deep_keys({'b': 1, 'a': {'d': 2, 'c': 3}}) == ['a.c', 'a.d', 'b']\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import deep_keys\n\ndef test_contract():\n    assert deep_keys({'b': 1, 'a': {'d': 2, 'c': 3}}) == ['a.c', 'a.d', 'b']\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import deep_keys\n\ndef test_hidden():\n    assert deep_keys({'a': {}}) == []\n    assert deep_keys({'x': {'y': None}}) == ['x.y']\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "trial",
+    "idempotency_key": "h6-trial-20-parse_duration",
+    "fixture": {
+      "goal": "Implement parse_duration in target.py. Parse a positive sequence of integer number+unit tokens using ms,s,m,h and return milliseconds. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def parse_duration(text):\n    return None\n",
+        "tests/test_target.py": "from target import parse_duration\n\ndef test_contract():\n    assert parse_duration('1m30s') == 90000\n    assert parse_duration('250ms') == 250\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import parse_duration\n\ndef test_contract():\n    assert parse_duration('1m30s') == 90000\n    assert parse_duration('250ms') == 250\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import parse_duration\n\ndef test_hidden():\n    assert parse_duration('1h2m3s4ms') == 3723004\n    with pytest.raises(ValueError): parse_duration('1.5s')\n    with pytest.raises(ValueError): parse_duration('')\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-20-parse_duration",
+    "fixture": {
+      "goal": "Implement parse_duration in target.py. Parse a positive sequence of integer number+unit tokens using ms,s,m,h and return milliseconds. Do not modify tests.",
+      "files": {
+        "target.py": "def parse_duration(text):\n    return None\n",
+        "tests/test_target.py": "from target import parse_duration\n\ndef test_contract():\n    assert parse_duration('1m30s') == 90000\n    assert parse_duration('250ms') == 250\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import parse_duration\n\ndef test_contract():\n    assert parse_duration('1m30s') == 90000\n    assert parse_duration('250ms') == 250\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import parse_duration\n\ndef test_hidden():\n    assert parse_duration('1h2m3s4ms') == 3723004\n    with pytest.raises(ValueError): parse_duration('1.5s')\n    with pytest.raises(ValueError): parse_duration('')\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "heldout",
+    "idempotency_key": "h6-heldout-21-bounded_chunks",
+    "fixture": {
+      "goal": "Implement bounded_chunks in target.py. Split text into whitespace words packed into chunks no longer than limit; reject a word longer than limit. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def bounded_chunks(text, limit):\n    return None\n",
+        "tests/test_target.py": "from target import bounded_chunks\n\ndef test_contract():\n    assert bounded_chunks('one two three', 7) == ['one two', 'three']\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import bounded_chunks\n\ndef test_contract():\n    assert bounded_chunks('one two three', 7) == ['one two', 'three']\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import bounded_chunks\n\ndef test_hidden():\n    assert bounded_chunks('  a   bb c ', 4) == ['a bb', 'c']\n    with pytest.raises(ValueError): bounded_chunks('longword', 3)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-21-bounded_chunks",
+    "fixture": {
+      "goal": "Implement bounded_chunks in target.py. Split text into whitespace words packed into chunks no longer than limit; reject a word longer than limit. Do not modify tests.",
+      "files": {
+        "target.py": "def bounded_chunks(text, limit):\n    return None\n",
+        "tests/test_target.py": "from target import bounded_chunks\n\ndef test_contract():\n    assert bounded_chunks('one two three', 7) == ['one two', 'three']\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import bounded_chunks\n\ndef test_contract():\n    assert bounded_chunks('one two three', 7) == ['one two', 'three']\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import bounded_chunks\n\ndef test_hidden():\n    assert bounded_chunks('  a   bb c ', 4) == ['a bb', 'c']\n    with pytest.raises(ValueError): bounded_chunks('longword', 3)\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "heldout",
+    "idempotency_key": "h6-heldout-22-apply_patch_map",
+    "fixture": {
+      "goal": "Implement apply_patch_map in target.py. Return a copied mapping after applying updates where None deletes a key and other values set it. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def apply_patch_map(mapping, updates):\n    return None\n",
+        "tests/test_target.py": "from target import apply_patch_map\n\ndef test_contract():\n    assert apply_patch_map({'a': 1, 'b': 2}, {'a': None, 'c': 3}) == {'b': 2, 'c': 3}\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import apply_patch_map\n\ndef test_contract():\n    assert apply_patch_map({'a': 1, 'b': 2}, {'a': None, 'c': 3}) == {'b': 2, 'c': 3}\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import apply_patch_map\n\ndef test_hidden():\n    source, patch = {'x': 1}, {'missing': None, 'x': 2}\n    assert apply_patch_map(source, patch) == {'x': 2}\n    assert source == {'x': 1} and patch == {'missing': None, 'x': 2}\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-22-apply_patch_map",
+    "fixture": {
+      "goal": "Implement apply_patch_map in target.py. Return a copied mapping after applying updates where None deletes a key and other values set it. Do not modify tests.",
+      "files": {
+        "target.py": "def apply_patch_map(mapping, updates):\n    return None\n",
+        "tests/test_target.py": "from target import apply_patch_map\n\ndef test_contract():\n    assert apply_patch_map({'a': 1, 'b': 2}, {'a': None, 'c': 3}) == {'b': 2, 'c': 3}\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import apply_patch_map\n\ndef test_contract():\n    assert apply_patch_map({'a': 1, 'b': 2}, {'a': None, 'c': 3}) == {'b': 2, 'c': 3}\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import apply_patch_map\n\ndef test_hidden():\n    source, patch = {'x': 1}, {'missing': None, 'x': 2}\n    assert apply_patch_map(source, patch) == {'x': 2}\n    assert source == {'x': 1} and patch == {'missing': None, 'x': 2}\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "heldout",
+    "idempotency_key": "h6-heldout-23-resolve_dotted",
+    "fixture": {
+      "goal": "Implement resolve_dotted in target.py. Resolve a dotted attribute path on an object; return default only when an attribute is missing. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def resolve_dotted(obj, path, default=None):\n    return None\n",
+        "tests/test_target.py": "from target import resolve_dotted\n\ndef test_contract():\n    class X: pass\n    x=X(); x.child=X(); x.child.value=3\n    assert resolve_dotted(x, 'child.value') == 3\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import resolve_dotted\n\ndef test_contract():\n    class X: pass\n    x=X(); x.child=X(); x.child.value=3\n    assert resolve_dotted(x, 'child.value') == 3\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import resolve_dotted\n\nclass X: pass\ndef test_hidden():\n    x=X(); x.value=None\n    assert resolve_dotted(x, 'value', 4) is None\n    assert resolve_dotted(x, 'missing.more', 4) == 4\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-23-resolve_dotted",
+    "fixture": {
+      "goal": "Implement resolve_dotted in target.py. Resolve a dotted attribute path on an object; return default only when an attribute is missing. Do not modify tests.",
+      "files": {
+        "target.py": "def resolve_dotted(obj, path, default=None):\n    return None\n",
+        "tests/test_target.py": "from target import resolve_dotted\n\ndef test_contract():\n    class X: pass\n    x=X(); x.child=X(); x.child.value=3\n    assert resolve_dotted(x, 'child.value') == 3\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import resolve_dotted\n\ndef test_contract():\n    class X: pass\n    x=X(); x.child=X(); x.child.value=3\n    assert resolve_dotted(x, 'child.value') == 3\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import resolve_dotted\n\nclass X: pass\ndef test_hidden():\n    x=X(); x.value=None\n    assert resolve_dotted(x, 'value', 4) is None\n    assert resolve_dotted(x, 'missing.more', 4) == 4\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "heldout",
+    "idempotency_key": "h6-heldout-24-stable_sort_by",
+    "fixture": {
+      "goal": "Implement stable_sort_by in target.py. Return a stable ascending sort by key, placing key result None after all other values. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def stable_sort_by(values, key):\n    return None\n",
+        "tests/test_target.py": "from target import stable_sort_by\n\ndef test_contract():\n    assert stable_sort_by(['bbb', None, 'a', 'cc'], lambda x: None if x is None else len(x)) == ['a', 'cc', 'bbb', None]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import stable_sort_by\n\ndef test_contract():\n    assert stable_sort_by(['bbb', None, 'a', 'cc'], lambda x: None if x is None else len(x)) == ['a', 'cc', 'bbb', None]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import stable_sort_by\n\ndef test_hidden():\n    values = [('a', 1), ('b', 1), ('c', 0)]\n    assert stable_sort_by(values, lambda x: x[1]) == [('c', 0), ('a', 1), ('b', 1)]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-24-stable_sort_by",
+    "fixture": {
+      "goal": "Implement stable_sort_by in target.py. Return a stable ascending sort by key, placing key result None after all other values. Do not modify tests.",
+      "files": {
+        "target.py": "def stable_sort_by(values, key):\n    return None\n",
+        "tests/test_target.py": "from target import stable_sort_by\n\ndef test_contract():\n    assert stable_sort_by(['bbb', None, 'a', 'cc'], lambda x: None if x is None else len(x)) == ['a', 'cc', 'bbb', None]\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "from target import stable_sort_by\n\ndef test_contract():\n    assert stable_sort_by(['bbb', None, 'a', 'cc'], lambda x: None if x is None else len(x)) == ['a', 'cc', 'bbb', None]\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "from target import stable_sort_by\n\ndef test_hidden():\n    values = [('a', 1), ('b', 1), ('c', 0)]\n    assert stable_sort_by(values, lambda x: x[1]) == [('c', 0), ('a', 1), ('b', 1)]\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "heldout",
+    "idempotency_key": "h6-heldout-25-validate_slug",
+    "fixture": {
+      "goal": "Implement validate_slug in target.py. Return a lowercase slug unchanged when it uses letters, digits and single hyphens; otherwise raise ValueError. Evaluate and use the trial-admitted candidate method when it is applicable. Do not modify tests.",
+      "files": {
+        "target.py": "def validate_slug(value):\n    return None\n",
+        "tests/test_target.py": "import pytest\nfrom target import validate_slug\n\ndef test_contract():\n    import pytest\n    assert validate_slug('alpha-2') == 'alpha-2'\n    with pytest.raises(ValueError): validate_slug('Alpha')\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "import pytest\nfrom target import validate_slug\n\ndef test_contract():\n    import pytest\n    assert validate_slug('alpha-2') == 'alpha-2'\n    with pytest.raises(ValueError): validate_slug('Alpha')\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import validate_slug\n\ndef test_hidden():\n    for bad in ('', '-a', 'a-', 'a--b', 'a_b'):\n        with pytest.raises(ValueError): validate_slug(bad)\n    assert validate_slug('a0-b9') == 'a0-b9'\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  },
+  {
+    "cohort": "baseline",
+    "idempotency_key": "h6-baseline-25-validate_slug",
+    "fixture": {
+      "goal": "Implement validate_slug in target.py. Return a lowercase slug unchanged when it uses letters, digits and single hyphens; otherwise raise ValueError. Do not modify tests.",
+      "files": {
+        "target.py": "def validate_slug(value):\n    return None\n",
+        "tests/test_target.py": "import pytest\nfrom target import validate_slug\n\ndef test_contract():\n    import pytest\n    assert validate_slug('alpha-2') == 'alpha-2'\n    with pytest.raises(ValueError): validate_slug('Alpha')\n"
+      },
+      "goal_type": "code.fix-failing-test",
+      "failing_test": "tests/test_target.py::test_contract"
+    },
+    "oracle": {
+      "kind": "isolated_pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "immutable_files": {
+        "tests/test_target.py": "import pytest\nfrom target import validate_slug\n\ndef test_contract():\n    import pytest\n    assert validate_slug('alpha-2') == 'alpha-2'\n    with pytest.raises(ValueError): validate_slug('Alpha')\n"
+      },
+      "hidden_files": {
+        "tests/test_hidden.py": "import pytest\nfrom target import validate_slug\n\ndef test_hidden():\n    for bad in ('', '-a', 'a-', 'a--b', 'a_b'):\n        with pytest.raises(ValueError): validate_slug(bad)\n    assert validate_slug('a0-b9') == 'a0-b9'\n"
+      },
+      "test_paths": [
+        "tests/test_target.py",
+        "tests/test_hidden.py"
+      ],
+      "timeout_seconds": 30
+    }
+  }
+]

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/check-spec-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "checker_id",
+    "checker_version",
+    "implementation_hash",
+    "assertion_key",
+    "execution_kind",
+    "input_schema_ref",
+    "result_schema_ref",
+    "scope_rule_ref",
+    "environment_requirements",
+    "max_runtime_ms"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "checker_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "checker_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "implementation_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "assertion_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "execution_kind": {
+      "enum": [
+        "LOCAL_RECORDED",
+        "EXECUTOR"
+      ]
+    },
+    "input_schema_ref": {
+      "$ref": "common.schema.json#/$defs/pin"
+    },
+    "result_schema_ref": {
+      "$ref": "common.schema.json#/$defs/pin"
+    },
+    "scope_rule_ref": {
+      "$ref": "common.schema.json#/$defs/pin"
+    },
+    "environment_requirements": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      },
+      "uniqueItems": true
+    },
+    "max_runtime_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120000
+    }
+  }
+}

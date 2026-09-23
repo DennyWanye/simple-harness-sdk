@@ -796,6 +796,7 @@ def _check_root_coverage(
                         f"root occurrence {root!r} leaves criteria {', '.join(missing)} of "
                         f"obligation {spec.obligation_id!r} uncovered"
                     ),
+                    nodes=(str(root),),
                 )
             )
     return problems

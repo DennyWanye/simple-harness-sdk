@@ -92,6 +92,7 @@ from .resolution_commits import (
     ResolutionCommitRejected,
     ResolutionPrincipal,
 )
+from .scoped_content_review import uses_completion_protocol
 
 COMPOSITION_REVIEW_POLICY = "hierarchical-composition-review-v1"
 COMPOSITION_REVIEWER = "composition-reviewer"
@@ -132,14 +133,15 @@ class CompositionAcceptanceAssembly:
                 continue
             if spec.occurrence_id in view.resolved:
                 continue
-            if any(
+            if not uses_completion_protocol(self.store, mission_id) and any(
                 str(item.goal_task_id) == str(spec.task_id)
                 for item in self.semantics.list_goal_resolutions(mission_id)
             ):
                 continue
             children = {
-                binding.occurrence_id: view.outcomes.get(binding.occurrence_id)
+                binding.occurrence_id: view.outcomes[binding.occurrence_id]
                 for binding in view.network.adopted_children(spec.occurrence_id)
+                if binding.occurrence_id in view.outcomes
             }
             phase = next_compound_phase(
                 spec,
@@ -176,13 +178,25 @@ class CompositionAcceptanceAssembly:
             for binding in view.network.adopted_children(occurrence_id)
             if binding.requiredness in GATING_REQUIREDNESS
         ]
-        accepted = self._accepted_children(mission_id, gating)
+        accepted = self._accepted_children(
+            mission_id, (view.network.adopted_children(occurrence_id)
+                if uses_completion_protocol(self.store, mission_id) else gating)
+        )
         if any(str(binding.occurrence_id) not in accepted for binding in gating):
             return None
         binding = view.network.binding_for_occurrence(occurrence_id)
         now_ms = int(self.store.now * 1000)
         producers = self._producers(mission_id, accepted)
-        revision = self._requirements(mission_id, binding, occurrence_id)
+        projection = None
+        if uses_completion_protocol(self.store, mission_id):
+            from .scoped_composition_review import read_compound_projection
+
+            projection = read_compound_projection(
+                self.store, mission_id, str(occurrence_id), str(spec.task_id)
+            )
+            revision = projection.requirements
+        else:
+            revision = self._requirements(mission_id, binding, occurrence_id)
         manifest = self._manifest_hash(mission_id, str(spec.task_id))
         package = self._package(
             mission_id,
@@ -193,13 +207,18 @@ class CompositionAcceptanceAssembly:
             producers,
             manifest_hash=manifest,
             method_instance_id=instance_id,
+            criteria=None if projection is None else projection.criteria,
+            expression=None if projection is None else projection.expression,
         )
         record = self._record(mission_id, package, occurrence_id, accepted, gating)
         if record.verdict is not ReviewVerdict.ACCEPT:
             return None
         witness = self._witness(mission_id, str(spec.task_id), now_ms=now_ms)
         resolution = GoalResolution(
-            resolution_id=GoalResolutionId(f"res-{occurrence_id}"),
+            resolution_id=GoalResolutionId(
+                f"res-{occurrence_id}-{content_hash_of(str(package.package_id))[:16]}"
+                if projection is not None else f"res-{occurrence_id}"
+            ),
             mission_id=mission_id,
             obligation_id=str(spec.obligation_id),
             goal_task_id=str(spec.task_id),
@@ -208,7 +227,8 @@ class CompositionAcceptanceAssembly:
             method_instance_id=instance_id,
             input_manifest_hash=manifest,
             artifact_refs=(),
-            child_resolution_ids=(),
+            child_resolution_ids=tuple(ref.id for ref in package.candidate_refs
+                if ref.kind is TypedRefKind.RESOLUTION),
             criteria=tuple(
                 ResolutionCriterion(criterion_id=item.criterion_id, verdict=item.verdict)
                 for item in record.criteria
@@ -255,6 +275,10 @@ class CompositionAcceptanceAssembly:
         self, mission_id: str, gating: Sequence[Any]
     ) -> dict[str, tuple[str, ...]]:
         semantics = self.semantics
+        if uses_completion_protocol(self.store, mission_id):
+            from .completion_support import current_child_supports
+
+            return current_child_supports(self.store, mission_id, gating)
         view = self.dispatch.read(mission_id)
         found: dict[str, tuple[str, ...]] = {}
         for binding in gating:
@@ -276,6 +300,12 @@ class CompositionAcceptanceAssembly:
         agents: list[str] = []
         for ids in accepted.values():
             for acceptance_id in ids:
+                if uses_completion_protocol(self.store, mission_id):
+                    from .completion_support import read_completion_support
+
+                    support = read_completion_support(self.store, mission_id, acceptance_id)
+                    agents.extend(support.package.producer_agent_ids)
+                    continue
                 try:
                     acceptance = semantics.get_acceptance(acceptance_id)
                 except StoreError:
@@ -361,6 +391,8 @@ class CompositionAcceptanceAssembly:
         *,
         manifest_hash: str,
         method_instance_id: str,
+        criteria: tuple[Criterion, ...] | None = None,
+        expression: Any | None = None,
     ) -> ReviewPackage:
         child_refs = tuple(
             TypedRef(
@@ -373,9 +405,19 @@ class CompositionAcceptanceAssembly:
             for ids in accepted.values()
             for acceptance_id in ids
         )
-        digest = content_hash_of(
-            {"occ": str(spec.occurrence_id), "rev": revision.revision}
-        )[:32]
+        resolution_refs: tuple[TypedRef, ...] = ()
+        if uses_completion_protocol(self.store, mission_id):
+            from .completion_support import read_completion_support
+
+            supports = tuple(read_completion_support(self.store, mission_id, source_id)
+                for source_ids in accepted.values() for source_id in source_ids)
+            child_refs = tuple(item.ref for item in supports if item.ref.kind is TypedRefKind.ACCEPTANCE)
+            resolution_refs = tuple(item.ref for item in supports if item.ref.kind is TypedRefKind.RESOLUTION)
+        identity: dict[str, Any] = {"occ": str(spec.occurrence_id), "rev": revision.revision}
+        if uses_completion_protocol(self.store, mission_id):
+            identity.update(method_instance_id=method_instance_id, manifest_hash=manifest_hash,
+                supports=[ref.to_json() for ref in (*child_refs, *resolution_refs)])
+        digest = content_hash_of(identity)[:32]
         package = ReviewPackage(
             package_id=ReviewPackageId(f"pkg-compose-{digest}"),
             purpose=ReviewPurpose.COMPOSITION,
@@ -397,9 +439,10 @@ class CompositionAcceptanceAssembly:
                     content_hash=content_hash_of(COMPOSITION_REVIEW_POLICY),
                 ),
             ),
-            criteria=revision.criteria,
-            success_expression=revision.success_expression,
+            criteria=revision.criteria if criteria is None else criteria,
+            success_expression=revision.success_expression if expression is None else expression,
             child_acceptance_refs=child_refs,
+            candidate_refs=resolution_refs,
             producer_agent_ids=tuple(producers),
             reviewer_workspace_access=REVIEWER_ACCESS,
             requirements_content_hash=revision.content_hash(),
@@ -433,7 +476,10 @@ class CompositionAcceptanceAssembly:
             binding=package.binding,
             reviewer_agent_id=COMPOSITION_REVIEWER,
             reviewer_turn_id=f"compose-{occurrence_id}",
-            evidence_manifest_hash=content_hash_of(sorted(accepted)),
+            evidence_manifest_hash=content_hash_of(
+                {key: list(refs) for key, refs in accepted.items()} if uses_completion_protocol(self.store, mission_id)
+                else sorted(accepted)
+            ),
             criteria=outcomes,
             verdict=ReviewVerdict.ACCEPT if passed else ReviewVerdict.REJECTED,
         )
@@ -506,6 +552,14 @@ class CompositionAcceptanceAssembly:
     ) -> bool:
         semantics = self.semantics
         for acceptance_id in acceptance_ids:
+            if uses_completion_protocol(self.store, mission_id):
+                from .completion_support import read_completion_support
+
+                support = read_completion_support(self.store, mission_id, acceptance_id)
+                if any(item.criterion_id == leaf_criterion_id and item.verdict is CriterionVerdict.PASS
+                       for item in support.record.criteria):
+                    return True
+                continue
             try:
                 acceptance = semantics.get_acceptance(acceptance_id)
             except StoreError:

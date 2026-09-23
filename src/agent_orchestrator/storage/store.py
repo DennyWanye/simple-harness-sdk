@@ -183,6 +183,14 @@ class Store:
         self._times: dict[str, int] = {}
         self.fired: list[str] = []
         self._readonly = False
+        self._assurance_change_context: tuple[str, object | None] | None = None
+        self._assurance_offline_relocation: tuple[str, object | None] | None = None
+        from .assurance_changes import install_change_context
+
+        install_change_context(self)
+        from .assurance_upgrade import install_upgrade_functions
+
+        install_upgrade_functions(connection)
 
     # ---------------------------------------------------------------- lifecycle
     @classmethod
@@ -305,9 +313,17 @@ class Store:
     def _apply_migration(self, connection: sqlite3.Connection, migration: schema.Migration) -> None:
         if migration.version == 2:
             self._renumber_artifact_lineage(connection)  # P1-5: v1 libraries may hold duplicates
-        for statement in migration.ddl.split(";"):
-            if statement.strip():
-                connection.execute(statement)
+        # A trigger body (or a quoted value/comment) may contain semicolons.
+        # sqlite's parser identifies complete statements without executescript's
+        # implicit commit, so the encompassing migration transaction stays atomic.
+        pending = ""
+        for character in migration.ddl:
+            pending += character
+            if character == ";" and sqlite3.complete_statement(pending):
+                connection.execute(pending)
+                pending = ""
+        if pending.strip():
+            connection.execute(pending)
         if migration.version == 6:
             self._bind_legacy_missions(connection)
         connection.execute(
@@ -423,7 +439,14 @@ class Store:
                 self._connection.execute("ROLLBACK")
                 raise
             else:
-                self._connection.execute("COMMIT")
+                try:
+                    self._connection.execute("COMMIT")
+                except BaseException:
+                    # A deferred FK can fail at COMMIT, leaving SQLite's
+                    # transaction open. Do not release ownership over that UoW.
+                    if self._connection.in_transaction:
+                        self._connection.execute("ROLLBACK")
+                    raise
             finally:
                 self._depth = 0
                 self._holder = None

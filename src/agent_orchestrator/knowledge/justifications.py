@@ -28,10 +28,13 @@ persistence.  This module is pure, in-memory and imports no store.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
+
+if TYPE_CHECKING:
+    from .bounded_closure import ClosureLimits
 
 from ..contracts.evidence_state import (
     Availability,
@@ -831,7 +834,7 @@ class ClosureResult:
     def require_complete(self) -> None:
         if not self.is_complete:
             raise ContractError(
-                "EVALUATION_INCOMPLETE: the support closure hit its node budget; "
+                "EVALUATION_INCOMPLETE: the support closure hit an evaluation limit; "
                 "this blocks release and must not be read as an UNKNOWN world fact"
             )
 
@@ -878,6 +881,7 @@ def grounded_closure(
     *,
     node_budget: int = DEFAULT_NODE_BUDGET,
     assumptions: Mapping[str, bool] | None = None,
+    limits: ClosureLimits | None = None,
 ) -> ClosureResult:
     """The least fixpoint of polarised finite positive rules over this round's anchors.
 
@@ -888,6 +892,16 @@ def grounded_closure(
     no state that could keep it alive.
     """
 
+    if limits is not None:
+        from .bounded_closure import bounded_grounded_closure
+
+        return bounded_grounded_closure(
+            graph,
+            anchors,
+            limits=limits,
+            node_budget=node_budget,
+            assumptions=assumptions,
+        )
     if not isinstance(graph, SupportGraph):
         raise ContractError("grounded_closure expects a SupportGraph")
     budget = index(node_budget, "node_budget", minimum=1)
@@ -1021,6 +1035,8 @@ def _premises_satisfied(
 def _source_groups(
     witnesses: Mapping[Atom, tuple[SupportWitness, ...]],
     ref_groups: Mapping[EvidenceRef, set[str]],
+    *,
+    check: Callable[[], None] | None = None,
 ) -> dict[Atom, frozenset[str]]:
     groups: dict[Atom, set[str]] = {atom: set() for atom in witnesses}
     changed = True
@@ -1029,9 +1045,13 @@ def _source_groups(
         for atom, supports in witnesses.items():
             collected: set[str] = set()
             for support in supports:
+                if check is not None:
+                    check()
                 if support.source_group is not None:
                     collected.add(support.source_group)
                 for premise in support.premises:
+                    if check is not None:
+                        check()
                     if isinstance(premise, EvidencePremise):
                         collected |= ref_groups.get(premise.ref, set())
                     else:
@@ -1080,6 +1100,8 @@ def _path_groups(
     witnesses: Mapping[Atom, tuple[SupportWitness, ...]],
     atom_groups: Mapping[Atom, frozenset[str]],
     ref_groups: Mapping[EvidenceRef, set[str]],
+    *,
+    check: Callable[[], None] | None = None,
 ) -> dict[Atom, tuple[frozenset[str], ...]]:
     """Per-witness source sets.
 
@@ -1093,10 +1115,14 @@ def _path_groups(
     for atom, supports in witnesses.items():
         paths: list[frozenset[str]] = []
         for support in supports:
+            if check is not None:
+                check()
             collected: set[str] = set()
             if support.source_group is not None:
                 collected.add(support.source_group)
             for premise in support.premises:
+                if check is not None:
+                    check()
                 if isinstance(premise, EvidencePremise):
                     collected |= ref_groups.get(premise.ref, set())
                 else:
@@ -1108,6 +1134,8 @@ def _path_groups(
 
 def _assumption_backed(
     witnesses: Mapping[Atom, tuple[SupportWitness, ...]],
+    *,
+    check: Callable[[], None] | None = None,
 ) -> frozenset[Atom]:
     """Atoms whose *every* witness passes through an asserted assumption."""
 
@@ -1116,12 +1144,21 @@ def _assumption_backed(
     while changed:
         changed = False
         for atom, supports in witnesses.items():
+            if check is not None:
+                check()
             if atom in clean:
                 continue
             for support in supports:
+                if check is not None:
+                    check()
                 if support.assumptions:
                     continue
-                premises = [p for p in support.premises if isinstance(p, PropositionPremise)]
+                premises = []
+                for premise in support.premises:
+                    if check is not None:
+                        check()
+                    if isinstance(premise, PropositionPremise):
+                        premises.append(premise)
                 if all(premise.atom in clean for premise in premises):
                     clean.add(atom)
                     changed = True

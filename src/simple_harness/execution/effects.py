@@ -383,6 +383,8 @@ class EffectUnitOfWork(Protocol):
 
     def read_effect(self, effect_id: EffectId) -> EffectRecord | None: ...
 
+    def list_effects_for_run(self, run_id: str) -> tuple[EffectRecord, ...]: ...
+
     def mark_effect_handed_off(
         self,
         effect_id: EffectId,

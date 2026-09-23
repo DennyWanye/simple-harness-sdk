@@ -1,0 +1,185 @@
+{
+  "schema": "v1.4-h1h-stage-matrix-v1",
+  "cases": [
+    {
+      "case_id": "A01",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A02",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A03",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A04",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A05",
+      "nodeid": "tests/orchestrator/full_target/test_h1h_commit_guard.py::test_a05_expired_grant_is_rechecked_inside_commit_and_rolls_back",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A06",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A07",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "A08",
+      "nodeid": "tests/orchestrator/full_target/test_h1h_commit_guard.py::test_a08_replay_returns_original_receipt_after_revoke_without_new_revision",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O01",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O02",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O03",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O04",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O05",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O06",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O07",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O08",
+      "nodeid": "tests/orchestrator/full_target/test_h1h_commit_guard.py::test_o08_new_action_after_preview_is_detected_by_complete_set_reread",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O09",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "O10",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P01",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P02",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P03",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P04",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P05",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P06",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P07",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P08",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P09",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "P10",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I01",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I02",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I03",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I04",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I05",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I06",
+      "nodeid": "tests/orchestrator/full_target/test_h1h_commit_guard.py::test_i06_grant_change_between_preview_and_commit_is_stale",
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I07",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    },
+    {
+      "case_id": "I08",
+      "nodeid": null,
+      "status": "NOT_RUN"
+    }
+  ]
+}

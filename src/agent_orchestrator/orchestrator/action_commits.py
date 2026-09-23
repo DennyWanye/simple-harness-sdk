@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..contracts import ContractError, MissionStatus
-from ..governance.budgets import BudgetExhausted
+from ..governance.budgets import BudgetError, BudgetExhausted
 from ..governance.permissions import (
     Principal,
     binding_matches,
@@ -29,6 +29,8 @@ from ..governance.permissions import (
 )
 from ..governance.policies import ActionDecision, DeploymentPolicy, action_decision
 from ..runtime.connectors import Receipt, level_rank, params_hash
+from ..runtime.planning_operations import BoundPlanningOperationOrigin
+from ..storage.planning_admission_store import PlanningAdmissionStore
 
 if TYPE_CHECKING:
     from ..contracts import Event
@@ -266,6 +268,8 @@ class ActionCommitsMixin:
         artifact_hash: str,
         connectors: Mapping[str, Any],
         deployment: DeploymentPolicy,
+        planning_origin: BoundPlanningOperationOrigin | None = None,
+        operation_parameters: Any | None = None,
     ) -> dict[str, Any]:
         """Register one verified candidate (D7-2 / D7-2').  Policy and scope refusals raise
         ``CandidateRejected`` and write nothing; the ledger's own rules (in flight, already
@@ -282,6 +286,69 @@ class ActionCommitsMixin:
                 connectors=connectors,
                 deployment=deployment,
             )
+            if operation_parameters is not None:
+                from ..contracts.operation_payloads import OperationParametersV1
+                from ..storage.htn_store import HtnStore
+                from ..storage.operation_intent_store import OperationIntentStore
+
+                frozen = operation_parameters
+                if planning_origin is None or not isinstance(frozen, OperationParametersV1):
+                    raise CandidateRejected("operation_mapping_incomplete")
+                intent = OperationIntentStore(self._store).get(frozen.intent_id)
+                if intent is None or (
+                    intent["mission_id"],
+                    intent["source_result_id"],
+                    intent["source_attempt_id"],
+                    intent["candidate_artifact_id"],
+                    intent["candidate_file_hash"],
+                    intent["submission_receipt_id"],
+                    intent["parameters_content_hash"],
+                ) != (
+                    mission_id,
+                    result_id,
+                    attempt_id,
+                    artifact_id,
+                    artifact_hash,
+                    planning_origin.provenance_receipt_id,
+                    frozen.content_hash(),
+                ):
+                    raise CandidateRejected("operation_origin_identity_mismatch")
+                result = self._store.get_result(result_id)
+                if result is None:
+                    raise CandidateRejected("artifact_not_in_result")
+                accepted_pins = {
+                    (ref.id, ref.revision, ref.content_hash)
+                    for accepted in frozen.accepted_input_refs
+                    for ref in HtnStore(self._store).get_acceptance(accepted.id).artifact_refs
+                }
+                artifacts = {}
+                for output_id in result.artifacts:
+                    output = self._store.get_artifact(output_id)
+                    if (
+                        output is not None
+                        and (output.id, output.version, output.content_hash) in accepted_pins
+                    ):
+                        if output.path in artifacts:
+                            raise CandidateRejected(
+                                "artifact_not_in_result", "ambiguous accepted path"
+                            )
+                        artifacts[output.path] = output
+                effective = bind_artifact_params(cand["params"], artifacts)
+                if (
+                    cand["connector"],
+                    cand["operation"],
+                    cand["target"],
+                    effective,
+                    params_hash(effective),
+                ) != (
+                    frozen.connector_id,
+                    frozen.operation_name,
+                    frozen.normalized_target_ref,
+                    dict(frozen.effective_params),
+                    frozen.params_hash,
+                ):
+                    raise CandidateRejected("operation_payload_hash_mismatch")
+                cand["params"] = effective
             action_id = business_action_id(
                 mission_id, cand["connector"], cand["operation"], cand["target"]
             )
@@ -294,6 +361,17 @@ class ActionCommitsMixin:
                 and latest["params_hash"] == phash
                 and latest["artifact_hash"] == artifact_hash
             ):
+                if planning_origin is not None:
+                    marker = {
+                        "operation_id": planning_origin.operation_id,
+                        "operation_occurrence_id": planning_origin.operation_occurrence_id,
+                        "request_hash": planning_origin.request_hash,
+                        "envelope_hash": planning_origin.envelope_hash,
+                    }
+                    self._link_planning_origin(latest, planning_origin)
+                    if latest.get("planning_origin") != marker:
+                        latest["planning_origin"] = marker
+                        self._store.put_action(latest)
                 return latest  # the same candidate delivered again
             refused: str | None = None
             after: str | None = None
@@ -350,12 +428,98 @@ class ActionCommitsMixin:
                 return record
             if latest is not None and latest["state"] in OPEN_ACTION_STATES:
                 self._supersede_action(latest, by=record["action_key"])
-            return self._open_action(
+            opened = self._open_action(
                 record,
                 decision,
                 deployment=deployment,
                 payload={"artifact_hash": artifact_hash, "after": after},
             )
+            if planning_origin is not None:
+                opened["planning_origin"] = {
+                    "operation_id": planning_origin.operation_id,
+                    "operation_occurrence_id": planning_origin.operation_occurrence_id,
+                    "request_hash": planning_origin.request_hash,
+                    "envelope_hash": planning_origin.envelope_hash,
+                }
+                self._store.put_action(opened)
+                self._link_planning_origin(opened, planning_origin)
+            return opened
+
+    def _link_planning_origin(
+        self, action: Mapping[str, Any], origin: BoundPlanningOperationOrigin
+    ) -> dict[str, Any]:
+        """Persist an exact operation→action identity bridge in this Store transaction."""
+
+        if str(action.get("mission_id")) != origin.mission_id:
+            raise ActionCommitError("operation_origin_mission_mismatch")
+        adapter = PlanningAdmissionStore(self._store)
+        identity = adapter.get_operation_identity(origin.operation_id)
+        binding = adapter.get_operation_binding(origin.operation_occurrence_id)
+        if identity is None or binding is None:
+            raise ActionCommitError("operation_mapping_incomplete")
+        if (
+            str(identity["mission_id"]),
+            str(identity["request_hash"]),
+            str(identity["envelope_hash"]),
+        ) != (
+            origin.mission_id,
+            origin.request_hash,
+            origin.envelope_hash,
+        ):
+            raise ActionCommitError("operation_origin_identity_mismatch")
+        if (
+            str(binding["operation_id"]),
+            str(binding["request_hash"]),
+            str(binding["mission_id"]),
+            str(binding["operation_occurrence_id"]),
+        ) != (
+            origin.operation_id,
+            origin.request_hash,
+            origin.mission_id,
+            origin.operation_occurrence_id,
+        ):
+            raise ActionCommitError("operation_origin_binding_mismatch")
+        if (
+            str(binding["principal_id"]),
+            str(binding["scope_id"]),
+            str(binding["obligation_id"]),
+        ) != (origin.principal_id, origin.scope_id, origin.obligation_id) or str(
+            binding["envelope_hash"]
+        ) != origin.envelope_hash:
+            raise ActionCommitError("operation_origin_binding_mismatch")
+        link_body: dict[str, Any] = {
+            "operation_id": origin.operation_id,
+            "request_hash": origin.request_hash,
+            "operation_occurrence_id": origin.operation_occurrence_id,
+            "mission_id": origin.mission_id,
+            "envelope_hash": origin.envelope_hash,
+            "principal_id": origin.principal_id,
+            "scope_id": origin.scope_id,
+            "obligation_id": origin.obligation_id,
+            "producer_task_id": origin.producer_task_id,
+            "producer_htn_occurrence_id": origin.producer_htn_occurrence_id,
+            "producer_contract_revision": int(origin.producer_contract_revision),
+            "producer_plan_revision": int(origin.producer_plan_revision),
+            "action_key": str(action["action_key"]),
+            "action_id": str(action["action_id"]),
+            "action_version": int(action["version"]),
+            "params_hash": str(action["params_hash"]),
+            "idempotency_key": str(action.get("idempotency_key") or ""),
+            "provenance_receipt_id": origin.provenance_receipt_id,
+        }
+        from simple_harness.contracts import canonical_json  # local to keep old path light
+
+        link_body["link_hash"] = hashlib.sha256(
+            canonical_json(link_body).encode("utf-8")
+        ).hexdigest()
+        link_body["link_json"] = canonical_json({**link_body})
+        try:
+            PlanningAdmissionStore(self._store).put_operation_action_link(link_body)
+        except Exception as error:
+            if isinstance(error, ActionCommitError):
+                raise
+            raise ActionCommitError(str(error)) from error
+        return link_body
 
     def _open_action(
         self,
@@ -817,6 +981,7 @@ class ActionCommitsMixin:
         may now call the connector; ``(None, reason)`` = it may not."""
 
         from .commit_service import mission_account  # noqa: PLC0415 - import cycle
+        from .planning_protocol_binding import planning_protocol_for_mission
 
         with self._store.transaction():
             action = self._store.get_action(action_key)
@@ -825,6 +990,96 @@ class ActionCommitsMixin:
             reason = self._handoff_refusal(
                 action, connectors=connectors, deployment=deployment, rehandoff=rehandoff
             )
+            if reason is None and action.get("task_id"):
+                from .taskgraph_dispatch import require_taskgraph_unfenced
+                from ..storage.store import StoreConflict
+                try:
+                    require_taskgraph_unfenced(self._store, str(action["mission_id"]), str(action["task_id"]))
+                except StoreConflict:
+                    reason = "taskgraph_target_fenced"
+            protocol = planning_protocol_for_mission(self._store, str(action["mission_id"]))
+            needs_planning_link = (
+                protocol is not None and protocol["protocol_version"] == "planning-decision-v1"
+            ) or bool(action.get("planning_origin"))
+            if reason is None and needs_planning_link:
+                from .planning_repair_continuations import planning_repair_stop_gate
+
+                action_task_id = str(action.get("task_id") or "")
+                if action_task_id and planning_repair_stop_gate(
+                    self._store, str(action["mission_id"]), action_task_id
+                ):
+                    reason = "planning_repair_stop_gate"
+            if reason is None and needs_planning_link:
+                from ..storage.planning_admission_store import PlanningAdmissionStore
+
+                bridge = PlanningAdmissionStore(self._store).get_operation_action_link_for_action(
+                    str(action_key)
+                )
+                if bridge is None:
+                    reason = "operation_link_missing"
+                elif (
+                    str(bridge.get("mission_id")) != str(action.get("mission_id"))
+                    or str(bridge.get("action_key")) != str(action_key)
+                    or str(bridge.get("action_id")) != str(action.get("action_id"))
+                    or int(bridge.get("action_version", -1)) != int(action.get("version", -2))
+                    or str(bridge.get("params_hash")) != str(action.get("params_hash"))
+                    or str(bridge.get("idempotency_key")) != str(action.get("idempotency_key"))
+                ):
+                    reason = "operation_link_mismatch"
+                else:
+                    from ..runtime.planning_operations import (
+                        SourceUnavailable,
+                        StoreOperationReader,
+                        build_operation_snapshot,
+                    )
+
+                    # The marker is descriptive, never the switch that grants an
+                    # exemption. Re-read the exact frozen identities under this
+                    # handoff transaction before any reservation or outbox write.
+                    try:
+                        build_operation_snapshot(
+                            str(action["mission_id"]), reader=StoreOperationReader(self._store)
+                        )
+                    except SourceUnavailable:
+                        reason = "operation_link_mismatch"
+                    submission = self._store.get_receipt(
+                        str(bridge.get("provenance_receipt_id", ""))
+                    )
+                    from .scoped_content_review import uses_completion_protocol
+
+                    if reason is None and (
+                        uses_completion_protocol(self._store, str(action["mission_id"]))
+                        or (submission is not None
+                            and submission.get("kind") == "operation_intent_submitted")
+                    ):
+                        # T0 links are distinguished by their persisted submission receipt,
+                        # never by the descriptive action marker.  A legacy link remains on
+                        # its historical path; a broken T0 chain cannot reserve or send.
+                        from .operation_materialization_inputs import (
+                            OperationMaterializationInputError,
+                        )
+                        from ..runtime.operation_profiles import BuiltinOperationProfiles
+                        from ..runtime.operation_ref_resolver import (
+                            OperationReferenceResolver,
+                            OperationReferenceUnavailable,
+                        )
+
+                        try:
+                            resolver = OperationReferenceResolver(
+                                self._store,
+                                (self._operation_materialization_runtime.profiles
+                                 if getattr(self, "_operation_materialization_runtime", None) is not None
+                                 else BuiltinOperationProfiles(connectors)),
+                            )
+                            resolver.resolve_for_handoff(action, bridge)
+                        except (OperationReferenceUnavailable, OperationMaterializationInputError):
+                            reason = "operation_ref_unavailable"
+                    if (
+                        reason is None
+                        and rehandoff
+                        and not self._planning_rehandoff_proven(action, bridge)
+                    ):
+                        reason = "rehandoff_needs_authoritative_not_applied_proof"
             if reason is None:
                 reason = self.document_handoff_refusal(str(action["mission_id"]))
             # The executor knows physical deployment roots. Check them against the
@@ -855,8 +1110,14 @@ class ActionCommitsMixin:
                     task_id=action.get("task_id"),
                     payload={"action_key": action_key, "reason": reason, "rehandoff": rehandoff},
                 )
-                if rehandoff and action.get("reconcile") == "CONFIRMED_NOT_STARTED":
+                if (
+                    rehandoff
+                    and action.get("reconcile") == "CONFIRMED_NOT_STARTED"
+                    and not needs_planning_link
+                ):
                     # an authoritative "never happened" that may not run again ends as FAILED
+                    # on the legacy path. The new protocol requires complete negative
+                    # proof; a refused retry cannot resolve UNKNOWN or release its hold.
                     self._resolve_action(action, "FAILED", error=f"not_started:{reason}")
                 elif reason == "approval_expired":
                     request = self._store.get_approval(str(action["approval_request_id"]))
@@ -953,6 +1214,10 @@ class ActionCommitsMixin:
                 return "handoff_cap_reached"
         return None
 
+    def _planning_rehandoff_proven(self, action: Mapping[str, Any], bridge: Mapping[str, Any]) -> bool:
+        from ..runtime.operation_reconciliation import stored_negative_proof
+        return stored_negative_proof(self._store, action, bridge)
+
     def _update_action(self, action_key: str, **fields: Any) -> dict[str, Any]:
         action = self._store.get_action(action_key)
         if action is None:
@@ -984,9 +1249,18 @@ class ActionCommitsMixin:
         updated = self._set_action_state(key, state, **fields)
         if state in {"SUCCEEDED", "FAILED"}:
             if self._ledger.reservation(subject) is not None:
-                self._settle_subject(
-                    subject, mission_id, task_id=None, tool_calls=int(action.get("handoffs") or 0)
-                )
+                try:
+                    self._settle_subject(
+                        subject, mission_id, task_id=None, tool_calls=int(action.get("handoffs") or 0)
+                    )
+                except BudgetError:
+                    from .taskgraph_dispatch import taskgraph_enabled
+                    if not taskgraph_enabled(self._store, mission_id):
+                        raise
+                    # Persist the real outcome even while an earlier handoff or
+                    # incomplete negative proof prevents releasing its account.
+                    self.record_reservation_held(subject, mission_id, task_id=None,
+                        reason="taskgraph_action_physical_work_unresolved")
         else:
             self.record_reservation_held(
                 subject, mission_id, task_id=None, reason="action_outcome_unknown"

@@ -134,6 +134,21 @@ SCHEMA_LIMIT_MIRRORS: dict[str, int] = {
     "#/$defs/humanOption/properties/label/maxLength": MAX_TEXT,
     "#/$defs/requestHumanPayload/properties/question/maxLength": MAX_TEXT,
     "#/$defs/requestHumanPayload/properties/options/maxItems": MAX_PD_HUMAN_OPTIONS,
+    "#/$defs/repairRefineDeeperPayload/properties/bindings/maxProperties": MAX_PD_BINDINGS,
+    "#/$defs/repairRebindInputPayload/properties/requirement_id/maxLength": MAX_ID,
+    "#/$defs/repairRebindInputPayload/properties/expected_requirement_hash/maxLength": 64,
+    "#/$defs/repairRebindInputPayload/properties/output_port/maxLength": MAX_ID,
+    "#/$defs/repairCancelBranchPayload/properties/step/maxLength": MAX_ID,
+    "#/$defs/repairRetrySameMethodPayload/properties/failed_attempt_id/maxLength": MAX_ID,
+    "#/$defs/repairRuntimeBlockedPayload/properties/repair_request_id/maxLength": 64,
+    "#/$defs/repairRuntimeBlockedPayload/properties/blockers/minItems": 1,
+    "#/$defs/repairRuntimeBlockedPayload/properties/blockers/maxItems": MAX_PD_BLOCKERS,
+    "#/$defs/repairRuntimeBlockedPayload/properties/resumable_if/maxItems": MAX_LIST,
+    "#/$defs/repairEscalatePayload/properties/question/maxLength": MAX_TEXT,
+    "#/$defs/repairEscalatePayload/properties/options/maxItems": MAX_PD_HUMAN_OPTIONS,
+    "#/$defs/repairCompensationPayload/properties/action_key/maxLength": MAX_ID,
+    "#/$defs/repairCompensationPayload/properties/action_hash/maxLength": 64,
+    "#/$defs/repairCompensationPayload/properties/reason/maxLength": MAX_TEXT,
 }
 
 #: The only subschemas allowed to keep arbitrary extra keys (V2 §32: the codec never
@@ -144,6 +159,7 @@ OPEN_MAP_POINTERS = frozenset(
         "#/$defs/refinePayload/properties/bindings",
         "#/$defs/repairReplaceMethodPayload/properties/bindings",
         "#/$defs/repairProposeSuccessorPayload/properties/bindings",
+        "#/$defs/repairRefineDeeperPayload/properties/bindings",
         "#/$defs/evidenceQuestion/properties/arguments",
         "#/$defs/proposeMethodPayload/properties/method_proposal",
         "#/properties/payload",
@@ -162,12 +178,16 @@ PAYLOAD_DEF_BY_DECISION_TYPE = {
 }
 REPAIR_PAYLOAD_BY_KIND = {
     "REPLACE_METHOD": "#/$defs/repairReplaceMethodPayload",
+    "REFINE_DEEPER": "#/$defs/repairRefineDeeperPayload",
+    "REBIND_INPUT": "#/$defs/repairRebindInputPayload",
+    "CANCEL_BRANCH": "#/$defs/repairCancelBranchPayload",
+    "RETRY_SAME_METHOD": "#/$defs/repairRetrySameMethodPayload",
+    "DECLARE_RUNTIME_BLOCKED": "#/$defs/repairRuntimeBlockedPayload",
+    "ESCALATE": "#/$defs/repairEscalatePayload",
+    "REQUEST_COMPENSATION": "#/$defs/repairCompensationPayload",
     "PROPOSE_SUCCESSOR": "#/$defs/repairProposeSuccessorPayload",
 }
-REPAIR_PAYLOAD_REFS = (
-    "#/$defs/repairReplaceMethodPayload",
-    "#/$defs/repairProposeSuccessorPayload",
-)
+REPAIR_PAYLOAD_REFS = tuple(REPAIR_PAYLOAD_BY_KIND.values())
 
 #: Codes whose fixture is a case descriptor for the H1-C block scanner rather than a
 #: decodable envelope (model prose, not a wire object).
@@ -710,10 +730,8 @@ def test_every_object_def_rejects_missing_required_and_unknown_fields(
 def test_repair_payload_defs_are_discriminated_per_repair_kind() -> None:
     defs = _load_schema()["$defs"]
     assert defs["repairKind"]["enum"] == [member.value for member in RepairKind]
-    for name, const in (
-        ("repairReplaceMethodPayload", RepairKind.REPLACE_METHOD.value),
-        ("repairProposeSuccessorPayload", RepairKind.PROPOSE_SUCCESSOR.value),
-    ):
+    for const, reference in REPAIR_PAYLOAD_BY_KIND.items():
+        name = reference.rsplit("/", 1)[-1]
         node = defs[name]["properties"]["repair_kind"]
         assert node["$ref"] == "#/$defs/repairKind", name
         assert node["const"] == const, name
@@ -808,8 +826,7 @@ def test_valid_fixtures_number_at_least_eleven_and_cover_every_shape() -> None:
         covered.add((raw["decision_type"], kind))
     assert covered == {
         ("REFINE", None),
-        ("REPAIR", "REPLACE_METHOD"),
-        ("REPAIR", "PROPOSE_SUCCESSOR"),
+        *(("REPAIR", kind.value) for kind in RepairKind),
         ("BIND_EXISTING_GOAL", None),
         ("DECLARE_BLOCKED", None),
         ("WAIT", None),

@@ -17,7 +17,10 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .taskgraph_dispatch import TaskGraphDispatchBinding
 
 from simple_harness.agents import AgentTurnResult, AgentTurnState
 
@@ -126,6 +129,7 @@ from .plan_commits import (
     normalise_semantics,
     semantics_of,
 )
+from .planning_admission_commits import PlanningAdmissionCommitsMixin
 from .planning_protocol_binding import (
     bind_planning_protocol,
     checked_planning_protocol,
@@ -134,6 +138,9 @@ from .planning_protocol_binding import (
 from .policy_commits import PolicyCommitsMixin
 from .protected_tail_commits import ProtectedTailCommitsMixin
 from .resolution_commits import ResolutionCommitsMixin
+from .operation_completion import OperationCompletionCommitsMixin
+from .operation_reconciliation import OperationReconciliationCommitsMixin
+from .operation_materialization import OperationMaterializationCommitsMixin
 from .selection_commits import SelectionCommitsMixin
 from .source_commits import SourceCommitsMixin
 from .state_machine import next_attempt, next_claim, next_mission, next_task
@@ -357,7 +364,8 @@ def task_account(task_id: str) -> str:
 
 class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, SelectionCommitsMixin, FragmentCommitsMixin,
     ActionCommitsMixin, HumanCommitsMixin, PolicyCommitsMixin, SourceCommitsMixin, ObligationCommitsMixin,
-    PlanCommitsMixin, ResolutionCommitsMixin,
+    PlanningAdmissionCommitsMixin, PlanCommitsMixin, ResolutionCommitsMixin, OperationCompletionCommitsMixin,
+    OperationMaterializationCommitsMixin, OperationReconciliationCommitsMixin,
 ):  # step 7: the action ledger + approvals half; step 9: the policy registry half; P2.3a: the plan revision half; P2.3c: the accept half
     def __init__(
         self,
@@ -374,6 +382,14 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         task_floor_for: Callable[[str], TaskBudgetFloor] | None = None,
     ) -> None:
         self._store = store
+        self._assurance_factory: Any = None
+        self._assurance_root_gate: Any = None
+        self._assurance_read_authority: Any = None
+        self._assurance_check_importer: Any = None
+        self._assurance_review_handoff: Any = None
+        self._assurance_settlement: Any = None
+        self._taskgraph_dispatch: TaskGraphDispatchBinding | None = None
+        self._taskgraph_participant_factory: Any = None
         self._system_tail_factory = system_tail_factory
         self._mission_profile_validator = mission_profile_validator
         self._task_floor_for = task_floor_for
@@ -669,6 +685,34 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
     def store(self) -> Store:
         return self._store
 
+    def install_taskgraph_dispatch(self, binding: TaskGraphDispatchBinding) -> None:
+        """Called by fixed deployment assembly, never from model or Host JSON."""
+        from .taskgraph_dispatch import TaskGraphDispatchBinding
+        if not isinstance(binding, TaskGraphDispatchBinding) or binding.store is not self._store:
+            raise ValueError("TaskGraph dispatch binding must use this Commit Store")
+        if self._taskgraph_dispatch is not None and self._taskgraph_dispatch is not binding:
+            raise ValueError("TaskGraph dispatch assembly is already installed")
+        self._taskgraph_dispatch = binding
+
+    def taskgraph_attempt_context(self, mission_id: str, attempt_id: str) -> Any:
+        """System recovery/review path through the installed, validated history reader."""
+        self._require_mission(mission_id)
+        if self._taskgraph_dispatch is None:
+            raise CommitRejected("TASKGRAPH_EXECUTION_ASSEMBLY_REQUIRED")
+        return self._taskgraph_dispatch.read_attempt(mission_id, attempt_id)
+
+    def require_taskgraph_handoff(self, intent: DispatchIntent) -> None:
+        from .taskgraph_dispatch import taskgraph_enabled
+        if not taskgraph_enabled(self._store, intent.mission_id):
+            return
+        if self._taskgraph_dispatch is None:
+            raise StoreError("TASKGRAPH_EXECUTION_ASSEMBLY_REQUIRED")
+        from ..runtime.planning_operations import SourceUnavailable
+        try:
+            self._taskgraph_dispatch.require_handoff(intent)
+        except (SourceUnavailable, ContractError) as error:
+            raise StoreError("TASKGRAPH_CURRENT_EXECUTION_SOURCE_UNAVAILABLE") from error
+
     @property
     def ledger(self) -> BudgetLedger:
         return self._ledger
@@ -687,7 +731,26 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         actor_id: str = ORCHESTRATOR_ID,
     ) -> Event:
         idempotency_key = f"{event_type}:{key}"
-        return self._store.append_event(
+        from .taskgraph_terminal import TERMINAL_EVENTS, record_terminal_event
+        from .taskgraph_dispatch import taskgraph_enabled
+        bind_terminal = (event_type in TERMINAL_EVENTS and task_id is not None
+                         and taskgraph_enabled(self._store, mission_id))
+        if bind_terminal:
+            from ..storage.htn_store import HtnStore
+            semantic = HtnStore(self._store).task_semantics_of(mission_id, str(task_id))
+            if semantic is None:
+                member = self._store.connection.execute(
+                    "SELECT 1 FROM taskgraph_member_pins WHERE mission_id=? AND task_id=? LIMIT 1",
+                    (mission_id, task_id)).fetchone()
+                if member is not None:
+                    raise CommitRejected("TASKGRAPH_TERMINAL_BINDING_MISSING")
+                bind_terminal = False  # original auxiliary Task outside the semantic graph
+        if bind_terminal:
+            task = self._require_task(str(task_id))
+            # A later generation may reach the same terminal status. It must not
+            # replay an earlier Task-only event and borrow its conclusion.
+            idempotency_key += f":taskgraph:{task.version}"
+        event = self._store.append_event(
             Event(
                 id=ids.event_id(idempotency_key),
                 type=event_type,
@@ -702,8 +765,58 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 created_at=self._store.now,
             )
         )
+        if bind_terminal:
+            record_terminal_event(self._store, event)
+        return event
 
     # ------------------------------------------------------------- missions
+    def approve_assurance_check_policy(self, **command: Any):
+        from .assurance_check_policy import approve_check_policy
+
+        return approve_check_policy(self, **command)
+
+    def ensure_assurance_review_invocation(self, **command: Any):
+        from .assurance_review_transport import ensure_review_invocation
+
+        return ensure_review_invocation(self, **command)
+
+    def ensure_assurance_format_repair(self, *, tenant_id: str, prior_failure: Any):
+        from .assurance_review_transport import ensure_format_repair_invocation
+
+        return ensure_format_repair_invocation(self, tenant_id=tenant_id, prior_failure=prior_failure)
+
+    def import_assurance_check_locked(self, *, mission_id: str, execution_ref: Any,
+                                      completion_scope: Any):
+        from ..assurance.codec import AssuranceError
+
+        if self._assurance_check_importer is None:
+            raise AssuranceError("CHECK_IMPORTER_UNAVAILABLE")
+        return self._assurance_check_importer.import_check_locked(
+            mission_id=mission_id, execution_ref=execution_ref, completion_scope=completion_scope)
+
+    def install_assurance_root(self, *, principal: Any, tenant_id: str, command_id: str):
+        from .assurance_root_commits import install_native_root
+
+        if self._assurance_root_gate is None:
+            from ..assurance.codec import AssuranceError
+
+            raise AssuranceError("ASSURANCE_ROOT_GATE_UNBOUND")
+        return install_native_root(self, self._assurance_root_gate, principal=principal,
+                                   tenant_id=tenant_id, command_id=command_id)
+
+    def reauthorize_restored_read(self, *, principal: Any, tenant_id: str, **command: Any):
+        from .assurance_root_commits import reauthorize_restored_read
+        from ..assurance.codec import AssuranceError
+
+        if self._assurance_root_gate is None:
+            raise AssuranceError("ASSURANCE_ROOT_GATE_UNBOUND")
+        if self._assurance_read_authority is None:
+            raise AssuranceError("CURRENT_READ_AUTHORITY_UNAVAILABLE")
+        return reauthorize_restored_read(
+            self, self._assurance_root_gate, principal=principal, tenant_id=tenant_id,
+            authority=self._assurance_read_authority, **command,
+        )
+
     def create_mission(
         self,
         spec: MissionSpec,
@@ -731,7 +844,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             domain = resolve_domain(spec.domain)
         except KeyError as error:
             raise CommitRejected(f"unknown domain profile {spec.domain!r}") from error
-        with self._store.transaction():
+        from ..storage.assurance_work import atomic
+        with atomic(self._store):
             found = self._store.find_mission(spec.tenant_id, spec.idempotency_key)
             if found is not None:
                 mission, stored_hash = found
@@ -744,6 +858,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 )
                 if conflict is not None:
                     raise MissionConflict(conflict)
+                from .assurance_factory import validate_creation_replay
+                validate_creation_replay(self, mission)
                 return mission, False
             mission_id = ids.mission_id(spec.tenant_id, spec.idempotency_key)
             # review fix: with a Global Budget the Mission's unnamed dimensions are inherited, and
@@ -834,7 +950,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             if spec.planning_protocol_version == PLANNING_DECISION_V1:
                 bind_planning_protocol(self._store, mission_id, spec.planning_protocol_version)
             self._reserve_mission_system_pools(mission)
-            self._emit(
+            creation_event = self._emit(
                 "MissionCreated",
                 mission_id,
                 key=mission_id,
@@ -848,6 +964,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 actor_type="user",
                 actor_id=spec.tenant_id,
             )
+            from .assurance_factory import record_mission_creation
+            record_mission_creation(self, mission, spec, creation_event)
             return mission, True
 
     def begin_planning(self, mission_id: str) -> Mission:
@@ -881,6 +999,13 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             existing = self._store.get_intent_for_subject(subject_id)
             if existing is not None:
                 return existing
+            if task_id is not None:
+                from .planning_repair_continuations import planning_repair_stop_gate
+
+                if planning_repair_stop_gate(self._store, mission_id, task_id):
+                    raise CommitRejected(
+                        "planning repair stop gate blocks a new service intent for this Task"
+                    )
             self._selection_service_identity(kind=kind, mission_id=mission_id, task_id=task_id,
                 attempt_id=attempt_id, subject_id=subject_id, account_id=account_id)
             first_hold = (
@@ -1856,8 +1981,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         # collects it later (usage imported, late result kept as history, D3-6'); the
         # reservation is settled at that point, never before the turn's cost is known.
         reservation = self._ledger.reservation(attempt.id)
+        from .taskgraph_dispatch import taskgraph_enabled
         if (
             not turn_in_flight
+            and not taskgraph_enabled(self._store, attempt.mission_id)
             and reservation is not None
             and reservation["state"] != "SETTLED"
             and not self._ledger.has_unknown_usage(attempt.id)
@@ -2950,7 +3077,9 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         for intent in self._store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
             if intent.mission_id != mission_id:
                 continue
-            if intent.kind == "critic" and intent.state == "AGENT_CREATED":
+            from ..storage.assurance_store import AssuranceStore
+            assured = AssuranceStore(self._store).lane(mission_id) == "ASSURANCE_1_1"
+            if (intent.kind == "critic" or assured) and intent.state == "AGENT_CREATED":
                 # The SDK submit may already have happened before its receipt
                 # reached this database. Only the exact-turn collector can know
                 # whether there is a real invocation/cost; do not settle as zero.
@@ -2963,7 +3092,9 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     if ":attempt-" in intent.subject_id
                     else None
                 )
-                if not self._ledger.has_unknown_usage(intent.subject_id):
+                from .taskgraph_dispatch import taskgraph_enabled
+                if (not assured and not taskgraph_enabled(self._store, mission_id)
+                        and not self._ledger.has_unknown_usage(intent.subject_id)):
                     self._settle_subject(intent.subject_id, mission_id, task_id=task_id)
         # D7-4' / D7-5': open actions and requests end with the Mission; handed-off and
         # UNKNOWN actions are left to the reconciliation (reality may already have moved)
@@ -3045,6 +3176,19 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             )
             return True
 
+    def authorize_planning_retry(self, *, mission_id: str, task_id: str,
+                                 payload: Any, expected_plan_revision: int,
+                                 decision_id: str, canonical_hash: str, request_id: str) -> dict[str, Any]:
+        """Commit one retry permit; caller atomically records the admitted decision."""
+        from .planning_retry import RETRY_AUTHORIZED, retry_binding
+        with self._store.transaction():
+            binding = retry_binding(self._store, mission_id, task_id, payload,
+                                    expected_plan_revision=expected_plan_revision)
+            data = {**binding, "decision_id": decision_id, "canonical_hash": canonical_hash,
+                    "request_id": request_id}
+            self._emit(RETRY_AUTHORIZED, mission_id, key=decision_id, task_id=task_id, payload=data)
+            return data
+
     def create_attempt(
         self,
         task_id: str,
@@ -3079,10 +3223,28 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
 
         with self._store.transaction():
             task = self._require_task(task_id)
+            from .scoped_content_review import uses_completion_protocol
+            if uses_completion_protocol(self._store, task.mission_id) and task.accepted_result_id:
+                raise CommitRejected("accepted preparation waits for completion, not another Worker")
+            from .planning_repair_continuations import planning_repair_stop_gate
+
+            if planning_repair_stop_gate(self._store, task.mission_id, task.id):
+                raise CommitRejected(
+                    "planning repair stop gate blocks a new Attempt for this Task"
+                )
             if task.status not in {TaskStatus.READY, TaskStatus.ACTIVE, TaskStatus.VERIFYING}:
                 raise CommitRejected(f"task {task_id} is {task.status}; no new Attempt")
             if task.paused and task.pause_reason == "provider_admission:usage_unresolved":
                 raise CommitRejected("provider admission is waiting for unresolved usage")
+            from .planning_runtime_block import pending_block
+            if pending_block(self._store, task.mission_id) is not None:
+                raise CommitRejected("H4 runtime block prevents new Attempts")
+            from .planning_retry import pending_retry_permit, retry_decision_required
+            if retry_decision_required(self._store, task.mission_id, task.id):
+                permit = pending_retry_permit(self._store, task.mission_id, task.id)
+                if permit is None or permit["failed_attempt_id"] != retry_of:
+                    raise CommitRejected("H4 retry needs a current committed RETRY_SAME_METHOD decision")
+                intent_config = {**dict(intent_config), "planning_retry_decision_id": permit["decision_id"]}
             domain = self.domain_for(task.mission_id)
             if supports_document_assessments(domain):
                 mission = self._require_mission(task.mission_id)
@@ -3101,6 +3263,24 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 limit = self._inconclusive_retry_limit(domain)
                 if count > limit:
                     raise InconclusiveRetryExhausted(task_id, count, limit)
+            from .taskgraph_dispatch import taskgraph_enabled
+            graph_prepared = None
+            if taskgraph_enabled(self._store, task.mission_id):
+                if self._taskgraph_dispatch is None:
+                    raise CommitRejected("TASKGRAPH_EXECUTION_ASSEMBLY_REQUIRED")
+                from ..artifacts.store import ArtifactStoreError
+                from ..artifacts.versioning import ArtifactConflict
+                from ..runtime.planning_operations import SourceUnavailable
+                try:
+                    graph_prepared = self._taskgraph_dispatch.prepare(
+                        task_id, intent_config=intent_config, inputs=inputs, input_hash=input_hash,
+                        selection_decision_id=selection_decision_id,
+                    )
+                except (StoreError, ContractError, ArtifactStoreError, ArtifactConflict, SourceUnavailable) as error:
+                    # A named per-Mission refusal stays in the original admission
+                    # path; it must not abort scheduling for unrelated Missions.
+                    raise CommitRejected(str(error)) from error
+                intent_config = {**dict(intent_config), "taskgraph_inputs": graph_prepared.intent_binding()}
             selection = self._admit_selection_attempt(
                 task, decision_id=selection_decision_id, owner=selection_owner, reservation=reservation,
             )
@@ -3138,17 +3318,44 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     )
             ordinal = len(existing) + 1
             attempt_id = ids.attempt_id(task_id, ordinal)
+            from ..artifacts.versioning import UpstreamInput
+            selected_artifacts = (
+                [] if selection_decision_id is None
+                else self.selection_input_artifacts(selection_decision_id)
+            )
+            from .completion_inputs import freeze_attempt_completion_inputs
+            frozen_completion = freeze_attempt_completion_inputs(
+                self._store, self, task, inputs,
+                attempt_id=attempt_id, request_id=ids.intent_id("attempt", attempt_id),
+                selection_inputs=[
+                    UpstreamInput(a.task_id, a.path, a.content_hash, a.id)
+                    for a in selected_artifacts
+                ],
+            )
             if self._source_artifact_store is not None:
                 from ..planning.fragments import freeze_fragment_execution
 
                 mounted = (None if selection_decision_id is None else {
                     artifact.id: artifact.path
-                    for artifact in self.selection_input_artifacts(selection_decision_id)
+                    for artifact in selected_artifacts
                 })
+                if frozen_completion is not None:
+                    # The completion freezer just reconstructed and compared every
+                    # input against adopted DATA plus separately verified Selection
+                    # material. Neither namespace may override the other.
+                    exact_mounts = {str(item["artifact_id"]): str(item["path"]) for item in inputs}
+                    if len(exact_mounts) != len(inputs) or any(
+                        exact_mounts.get(artifact_id) != path
+                        for artifact_id, path in (mounted or {}).items()
+                    ):
+                        raise CommitRejected("completion input mount identities are ambiguous")
+                    mounted = exact_mounts
                 execution = freeze_fragment_execution(
                     self._store, self._source_artifact_store, task=task,
                     intent_config=intent_config, inputs=inputs, retry_of=retry_of,
-                    validated_input_paths=mounted,
+                    validated_input_paths=mounted if graph_prepared is None else None,
+                    validated_input_identities=(None if graph_prepared is None else frozenset(
+                        (str(item["artifact_id"]), str(item["path"]), str(item["content_hash"])) for item in inputs)),
                 )
                 if ("fragment_execution" in intent_config
                         and sha256_hex(intent_config["fragment_execution"]) != sha256_hex(execution)):
@@ -3239,6 +3446,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                         "selection_deadline_at": selection["deadline_at"]} if selection else {}),
                     "attempt_id": attempt_id,  # authoritative (P1-7): never the caller's guess
                     "inputs": [dict(item) for item in inputs],
+                    **({"completion_inputs": frozen_completion.to_json()}
+                       if frozen_completion is not None else {}),
                 },
                 expected_turn_id=None,
                 agent_id=None,
@@ -3249,6 +3458,9 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 created_at=self._store.now,
             )
             self._store.insert_intent(intent)
+            if graph_prepared is not None:
+                assert self._taskgraph_dispatch is not None
+                self._taskgraph_dispatch.record(graph_prepared, attempt, intent)
             if task.status is TaskStatus.READY:
                 self._store.update_task(
                     next_task(task, TaskStatus.ACTIVE, attempt_count=task.attempt_count + 1),
@@ -3448,10 +3660,14 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             intent = self._require_intent(intent_id)
             if intent.kind == "attempt":
                 raise CommitRejected("a Worker intent is not re-handed off by this path")
+            from ..storage.assurance_store import AssuranceStore
+            if AssuranceStore(self._store).lane(intent.mission_id) == "ASSURANCE_1_1":
+                raise CommitRejected("Assurance unknown outcomes require original-call reconciliation")
             if intent.state != "SUBMITTED":
                 raise CommitRejected(
                     f"intent {intent_id} is {intent.state}; only a SUBMITTED turn is re-handed off"
                 )
+            from .taskgraph_dispatch import taskgraph_enabled
             ordinal = self.rehandoffs_of(intent.subject_id, intent.mission_id) + 1
             now = self._store.now
             updated = DispatchIntent(
@@ -3481,6 +3697,12 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     "rehandoff": ordinal,
                     "previous_agent_id": intent.agent_id,
                     "previous_turn_id": intent.expected_turn_id,
+                    **({"previous_creation_key": intent.creation_key,
+                        "next_creation_key": updated.creation_key,
+                        "input_id": intent.input_id, "input_hash": intent.input_hash,
+                        "config_hash": sha256_hex(intent.config)}
+                       if self._taskgraph_dispatch is not None
+                       and taskgraph_enabled(self._store, intent.mission_id) else {}),
                     "reason": reason,
                     "detail": dict(detail),
                 },
@@ -3490,6 +3712,14 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
     def rehandoffs_of(self, subject_id: str, mission_id: str) -> int:
         """How many times this subject's turn was re-handed off (read off the log)."""
 
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self._store, mission_id):
+            # The generic list_events default is one page. A long-lived Mission
+            # must not reuse a previous handoff ordinal after that page fills.
+            return sum(1 for row in self._store.connection.execute(
+                "SELECT payload_json FROM events WHERE mission_id=? AND type=? ORDER BY seq",
+                (mission_id, SERVICE_INTENT_REHANDED_OFF))
+                if json.loads(row[0]).get("subject_id") == subject_id)
         return sum(
             1
             for event in self._store.list_events(mission_id)
@@ -3631,7 +3861,12 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 return attempt
             updated = next_attempt(attempt, AttemptStatus.LOST, failure={"reason": reason})
             self._store.update_attempt(updated, expected_version=attempt.version)
-            if not self._ledger.has_unknown_usage(attempt.id):
+            from .taskgraph_dispatch import taskgraph_enabled
+            # Loss is a control-plane observation, not proof that the SDK call
+            # stopped. Preserve the transition even when physical settlement is
+            # unavailable; the original late-accounting scanner owns that hold.
+            if (not taskgraph_enabled(self._store, attempt.mission_id)
+                    and not self._ledger.has_unknown_usage(attempt.id)):
                 self._settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
             self._emit(
                 "AttemptLost",
@@ -3657,7 +3892,12 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 attempt, AttemptStatus.TIMED_OUT, failure={"reason": reason, **dict(detail)}
             )
             self._store.update_attempt(updated, expected_version=attempt.version)
-            if not self._ledger.has_unknown_usage(attempt.id):
+            from .taskgraph_dispatch import taskgraph_enabled
+            # A stalled live turn must first lose execution rights and receive
+            # cancellation. Trying to settle it here would reject the whole
+            # timeout transaction and prevent the caller from cancelling it.
+            if (not taskgraph_enabled(self._store, attempt.mission_id)
+                    and not self._ledger.has_unknown_usage(attempt.id)):
                 self._settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
             self._emit(
                 "AttemptTimedOut",
@@ -3717,6 +3957,21 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         tool_calls: int | None = None,
         known_only: bool = False,
     ) -> Mapping[str, Any]:
+        from ..storage.assurance_store import AssuranceStore
+        if AssuranceStore(self._store).lane(mission_id) == "ASSURANCE_1_1":
+            # A terminal business state cannot downgrade UNKNOWN to known-only
+            # zero. Keep the original ledger's strict settlement check in force.
+            known_only = False
+            if self._assurance_settlement is None:
+                raise BudgetError("Assurance physical settlement reader is not installed; reservation held")
+            self._assurance_settlement.require_settled_locked(subject_id, mission_id)
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self._store, mission_id):
+            if self._taskgraph_dispatch is None:
+                raise CommitRejected("TASKGRAPH_SETTLEMENT_ASSEMBLY_REQUIRED")
+            # A terminal business state and even a known-only accounting request
+            # cannot erase a live historical executor or an unresolved tool effect.
+            self._taskgraph_dispatch.recheck_settlement(self._store, subject_id, mission_id)
         if tool_calls is None:
             tool_calls = 0 if self.tool_calls_for is None else int(self.tool_calls_for(subject_id))
         prior_reservation = self._ledger.reservation(subject_id)
@@ -3780,6 +4035,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         turn_id: str,
         artifacts: Sequence[Artifact],
         usage_refs: Sequence[str],
+        port_claims: Sequence[Any] = (),
     ) -> StoredResult:
         """ResultSubmitted (§16.2): Attempt RUNNING → SUBMITTED, Task ACTIVE → VERIFYING.
 
@@ -3789,8 +4045,15 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
 
         with self._store.transaction():
             attempt = self._require_attempt(attempt_id)
+            from .scoped_content_review import uses_completion_protocol
+            completion_protocol = uses_completion_protocol(self._store, attempt.mission_id)
             existing = self._store.find_result_for_attempt(attempt_id)
             if existing is not None and existing.turn_id == turn_id:
+                if completion_protocol:
+                    from .completion_inputs import load_completion_result_inputs
+                    frozen = load_completion_result_inputs(self._store, existing)
+                    if tuple(port_claims) != tuple(frozen.port_claims):
+                        raise CommitRejected("result replay changed its frozen output claims")
                 return existing
             if attempt.status is not AttemptStatus.RUNNING:
                 raise CommitRejected(
@@ -3822,6 +4085,14 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 self._store.upsert_artifact(artifact)
                 registered.append(artifact)
             stored = replace(stored, artifacts=tuple(artifact.id for artifact in registered))
+            completion_claims = None
+            if completion_protocol:
+                from .completion_inputs import validate_result_port_claims
+                completion_claims = validate_result_port_claims(
+                    self._store, commit=self, mission=self._require_mission(attempt.mission_id),
+                    task=self._require_task(attempt.task_id), result=stored,
+                    artifacts=registered, port_claims=port_claims,
+                )
             self._store.insert_result(stored)
             self._store.fault("mid_commit", "attempt")
             for index, proposal in enumerate(envelope.claims, start=1):
@@ -3871,6 +4142,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     "outcome": str(envelope.outcome),
                     "artifacts": list(stored.artifacts),
                     "claims": len(envelope.claims),
+                    **({"completion_port_claims": list(completion_claims)}
+                       if completion_claims is not None else {}),
                 },
                 actor_type="agent",
                 actor_id=attempt.agent_id or attempt_id,
@@ -4820,12 +5093,28 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
 
         with self._store.transaction():
             stored = self._require_result(result_id)
+            from .scoped_content_review import uses_completion_protocol
+            completion_protocol = uses_completion_protocol(self._store, stored.envelope.mission_id)
             if stored.verification_state == "DONE" and stored.verdict == "PASS":
+                if completion_protocol:
+                    from ..storage.operation_completion_store import OperationCompletionStore
+                    from .leaf_acceptance import content_hash_of
+                    acceptance_id = "acc-" + content_hash_of({
+                        "task": stored.envelope.task_id, "result": result_id,
+                    })[:32]
+                    if OperationCompletionStore(self._store).get_acceptance_scope_exact(
+                        stored.envelope.mission_id, acceptance_id
+                    ) is None:
+                        raise CommitRejected("verified result has no atomic scoped Acceptance")
                 return self._require_task(stored.envelope.task_id)
             attempt = self._require_attempt(stored.envelope.attempt_id)
             self._require_lease(attempt, owner)
             task = self._require_task(stored.envelope.task_id)
             mission = self._require_mission(stored.envelope.mission_id)
+            frozen_completion = None
+            if completion_protocol:
+                from .completion_inputs import load_completion_result_inputs
+                frozen_completion = load_completion_result_inputs(self._store, stored)
             materials = self._acceptance_materials(
                 stored, task, attempt, mission, verifier_results=verifier_results, owner=owner,
                 connectors=connectors, deployment=deployment,
@@ -4862,7 +5151,9 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             )
             completed = next_task(
                 task,
-                TaskStatus.COMPLETED,
+                (TaskStatus.VERIFYING
+                 if frozen_completion is not None and frozen_completion.scope.required_effect_keys
+                 else TaskStatus.COMPLETED),
                 accepted_result_id=result_id,
                 accepted_artifacts=stored.artifacts,
             )
@@ -4874,7 +5165,21 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             self.refuse_policy_files(
                 stored, mission_id=mission.id, task_id=task.id, result_id=result_id
             )
-            for artifact, candidate in candidates:  # D7-2: registered in the accept transaction
+            if frozen_completion is not None:
+                from .leaf_acceptance import LeafAcceptanceAssembly
+                # Preparation, its accepted bytes and contribution share the result
+                # transaction. No effect proposal is inferred from a Worker file.
+                LeafAcceptanceAssembly(self._store, self).accept(
+                    mission.id, task.id, result_id=result_id,
+                    layers=self._store.list_verifications(result_id),
+                    artifacts=tuple(self._store.get_artifact(key) for key in stored.artifacts),
+                    producer_agent_ids=(attempt.agent_id,),
+                    reviewer_agent_id=f"critic:{attempt.id}",
+                    now_ms=int(self._store.now * 1000),
+                    input_manifest_hash=frozen_completion.frozen.manifest_hash,
+                    port_claims=frozen_completion.port_claims,
+                )
+            for artifact, candidate in (() if completion_protocol else candidates):
                 self.propose_action(
                     candidate,
                     mission_id=mission.id,
@@ -4906,10 +5211,11 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 if other.id != attempt.id and other.status in OPEN_ATTEMPT_STATES:
                     self._close_attempt(other, AttemptStatus.SUPERSEDED, reason="sibling_accepted")
                     superseded.append(other.id)
-            unblocked = self._unblock(mission.id, unblocked_by=task.id)
+            unblocked = (self._unblock(mission.id, unblocked_by=task.id)
+                         if completed.status is TaskStatus.COMPLETED else [])
             refresh_summaries(self._store, mission.id)  # D4-13: Summaries layer, same transaction
             self._emit(
-                "TaskCompleted",
+                "TaskCompleted" if completed.status is TaskStatus.COMPLETED else "PreparationAccepted",
                 mission.id,
                 key=task.id,
                 task_id=task.id,
@@ -5213,7 +5519,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         if not is_hierarchical(mission):
             return None
         try:
-            return HierarchicalDispatch(self._store, self).network(mission.id)
+            return HierarchicalDispatch.for_commit(self, mission.id).network(mission.id)
         except GraphIntegrityError as error:
             raise CommitRejected(
                 f"mission {mission.id} cannot be judged: its committed plan does not read back "
@@ -5317,6 +5623,12 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         network = self._judgment_network(mission)
         if network is None:
             return
+        from .scoped_content_review import uses_completion_protocol
+        if uses_completion_protocol(self._store, mission_id):
+            from .completion_status import read_occurrence_completion
+            if not all(read_occurrence_completion(self._store, mission_id, str(root)).complete
+                       for root in network.root_occurrence_ids):
+                raise CommitRejected("approved completion Scope still has unmet content or effects")
         semantics = HtnStore(self._store)
         unresolved = sorted(
             str(duty)

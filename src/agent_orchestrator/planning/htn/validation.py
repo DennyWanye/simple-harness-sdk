@@ -141,6 +141,9 @@ class DeltaReport:
     preconditions: tuple[PreconditionVerdict, ...] = ()
     unbound_ports: tuple[tuple[str, str], ...] = ()
     irreducible_occurrences: tuple[OccurrenceId, ...] = ()
+    pending_compounds: tuple[str, ...] = ()
+    structural_check_complete: bool = False
+    decomposition_complete: bool = False
 
     @property
     def ok(self) -> bool:
@@ -222,6 +225,7 @@ def validate_delta(
     snapshot: EvidenceSnapshot | None = None,
     predicates: PredicateRegistry | None = None,
     now_ms: int | None = None,
+    taskgraph_contract: bool = False,
 ) -> DeltaReport:
     """Reducibility, port bindability, precondition class, root coverage and size.
 
@@ -239,10 +243,16 @@ def validate_delta(
     projection = merged.execution_projection()
     projection_report = validate_execution_projection(projection, budget)
     refinement_report = validate_refinement_acyclic(merged)
+    if type(taskgraph_contract) is not bool:
+        raise ContractError("taskgraph_contract must be a boolean")
+    from ...graph.taskgraph_validation import pending_compounds, taskgraph_projection_report
+    pending = pending_compounds(merged)
+    if taskgraph_contract:
+        projection_report = taskgraph_projection_report(merged, projection_report)
 
     problems: list[DeltaProblem] = []
     for problem in projection_report.problems:
-        if problem.kind is ProblemKind.PARTIAL_CHECK:
+        if problem.kind is ProblemKind.PARTIAL_CHECK and not taskgraph_contract:
             continue
         kind = DeltaProblemKind.PROJECTION_DEFECT
         if problem.kind is ProblemKind.BOUND_REACHED:
@@ -272,7 +282,7 @@ def validate_delta(
     irreducible = _check_reducibility(delta, merged, registry, problems)
     unbound = _check_ports(delta, merged, problems)
     verdicts = _check_preconditions(delta, methods, snapshot, predicates, problems, now_ms=now_ms)
-    _check_coverage(delta, merged, problems)
+    _check_coverage(delta, merged, problems, pending_roots=frozenset(pending) if taskgraph_contract else frozenset())
     del catalog
     return DeltaReport(
         problems=tuple(sorted(problems, key=lambda item: (str(item.kind), item.detail))),
@@ -281,6 +291,10 @@ def validate_delta(
         preconditions=verdicts,
         unbound_ports=unbound,
         irreducible_occurrences=irreducible,
+        pending_compounds=pending,
+        structural_check_complete=not any(problem.kind in {ProblemKind.PARTIAL_CHECK, ProblemKind.BOUND_REACHED}
+            for problem in (*projection_report.problems, *refinement_report.problems)),
+        decomposition_complete=not pending,
     )
 
 
@@ -478,11 +492,14 @@ def _check_coverage(
     delta: ProposedPlanDelta,
     merged: TaskNetworkSnapshot,
     problems: list[DeltaProblem],
+    *, pending_roots: frozenset[str] = frozenset(),
 ) -> None:
     """Every root criterion must be claimed by an occurrence this plan contains."""
 
     projected = merged.execution_projection().projected_occurrences
     for root in merged.root_occurrence_ids:
+        if str(root) in pending_roots:
+            continue  # only the explicit not-yet-decomposed root; not materialized coverage
         spec = merged.occurrence(root)
         wanted = set(merged.binding_for_task(spec.task_id).goal_signature.coverage_criteria)
         if not wanted:

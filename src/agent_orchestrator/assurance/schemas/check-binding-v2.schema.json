@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/check-binding-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mission_id",
+    "check_spec_ref",
+    "subject_hash",
+    "input_manifest_hash",
+    "output_manifest_hash",
+    "assertion_key",
+    "execution_ref",
+    "adapter_ref",
+    "environment_hash",
+    "scope_hash",
+    "execution_state",
+    "verdict",
+    "evidence_refs",
+    "observed_at_ms",
+    "not_after_ms"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "check_spec_ref": {
+      "allOf": [
+        {
+          "$ref": "common.schema.json#/$defs/ref"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "check_spec"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "subject_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "input_manifest_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "output_manifest_hash": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      ]
+    },
+    "assertion_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "execution_ref": {
+      "allOf": [
+        {
+          "$ref": "common.schema.json#/$defs/ref"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "execution_receipt",
+                "local_check_receipt"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "adapter_ref": {
+      "$ref": "common.schema.json#/$defs/pin"
+    },
+    "environment_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "scope_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "execution_state": {
+      "enum": [
+        "SUCCEEDED",
+        "ERROR",
+        "CANCELLED"
+      ]
+    },
+    "verdict": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNKNOWN"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 256,
+      "items": {
+        "$ref": "common.schema.json#/$defs/ref"
+      },
+      "uniqueItems": true
+    },
+    "observed_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "not_after_ms": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "PASS"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "execution_state": {
+            "const": "SUCCEEDED"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "formula": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "criterion"
+          ],
+          "properties": {
+            "criterion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "all"
+          ],
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "$ref": "#/$defs/formula"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "any"
+          ],
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "$ref": "#/$defs/formula"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

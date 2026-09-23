@@ -1,0 +1,210 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Authenticated, immutable check-policy approval on the original Commit Store."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+from ..assurance.checks import CriterionPolicy
+from ..assurance.codec import AssuranceError, canonical, decode, fingerprint, text
+from ..assurance.refs import AssuranceRef, Pin
+from ..contracts.htn import TaskForm
+from ..contracts.operation_completion import OccurrenceCompletionScopeV1
+from ..contracts.resolution import EvaluationKind, RequirementsRevision
+from ..governance.permissions import Principal
+from ..storage.assurance_reads import AssuranceReader
+from ..storage.assurance_store import AssuranceStore
+from ..storage.assurance_work import atomic
+from ..storage.htn_store import HtnStore
+from .operation_completion import OperationCompletionReader
+
+if TYPE_CHECKING:
+    from .commit_service import CommitService
+
+ADAPTER_VERSION = "assurance-check-policy-v1"
+
+
+def approve_check_policy(
+    commit: CommitService,
+    *,
+    tenant_id: str,
+    mission_id: str,
+    command_id: str,
+    principal: Principal,
+    requirements_ref: AssuranceRef,
+    completion_scope: AssuranceRef,
+    candidate_mapping: Sequence[CriterionPolicy],
+    result_ref: AssuranceRef | None = None,
+) -> AssuranceRef:
+    """Human caller explicitly approves the exact mapping; no inferred authorization.
+
+    Alternative check groups require this new approval. Every retained group must
+    preserve original mandatory checks; missing deployments are never removed.
+    """
+    if (
+        not isinstance(principal, Principal)
+        or requirements_ref.kind != "requirements"
+        or completion_scope.kind != "completion_scope"
+    ):
+        raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID")
+    text(tenant_id)
+    text(mission_id)
+    text(command_id)
+    if (
+        not 1 <= len(candidate_mapping) <= 256
+        or any(not isinstance(row, CriterionPolicy) for row in candidate_mapping)
+        or len({r.criterion_id for r in candidate_mapping}) != len(candidate_mapping)
+    ):
+        raise AssuranceError("POLICY_CRITERIA_INVALID")
+    criteria = tuple(sorted(candidate_mapping, key=lambda c: c.criterion_id))
+    request = {
+        "schema_version": 1,
+        "tenant_id": tenant_id,
+        "mission_id": mission_id,
+        "principal_id": principal.principal_id,
+        "command_id": command_id,
+        "requirements_ref": requirements_ref.to_json(),
+        "completion_scope": completion_scope.to_json(),
+        "result_ref": None if result_ref is None else result_ref.to_json(),
+        "criteria": [row.to_json() for row in criteria],
+        "adapter_version": ADAPTER_VERSION,
+    }
+    canonical(request)
+    receipt_id = "assurance-check-policy-approval:" + fingerprint(
+        {
+            "mission": mission_id,
+            "tenant": tenant_id,
+            "principal": principal.principal_id,
+            "command": command_id,
+        }
+    )
+    with atomic(commit.store):
+        gate = commit._assurance_root_gate
+        if gate is None:
+            raise AssuranceError("ROOT_AUTHORITY_UNAVAILABLE")
+        gate.require_execution()
+        reader = AssuranceReader(commit.store, tenant_id=tenant_id, mission_id=mission_id)
+        reader._mission_locked(commit.store.connection)
+        side = AssuranceStore(commit.store)
+        if side.lane(mission_id) != "ASSURANCE_1_1":
+            raise AssuranceError("ASSURANCE_PROFILE_REQUIRED")
+        requirements = RequirementsRevision.from_json(
+            decode(reader.read_exact_metadata(requirements_ref).body_json)
+        )
+        scope = OccurrenceCompletionScopeV1.from_json(
+            decode(reader.read_exact_metadata(completion_scope).body_json)
+        )
+        if (
+            scope.requirements_ref.to_json() != requirements_ref.pin.to_json()
+            or OperationCompletionReader(commit.store).read_scope(
+                mission_id, scope.plan_ref, scope.occurrence_id
+            )
+            != scope
+        ):
+            raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+        binding = HtnStore(commit.store).task_semantics_of(mission_id, scope.task_ref.id)
+        if binding is None:
+            raise AssuranceError("CHECK_POLICY_UNRESOLVED")
+        if binding.form is TaskForm.PRIMITIVE:
+            # This reader supplies the original local criteria/evidence policy.
+            # Its absence does not authorize replacing them with root criteria.
+            if result_ref is not None:
+                if result_ref.kind != "result":
+                    raise AssuranceError("CHECK_POLICY_RESULT_REQUIRED")
+                result = decode(reader.read_exact_metadata(result_ref).body_json)
+                if result["task_id"] != scope.task_ref.id:
+                    raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+            from .scoped_content_review import read_task_check_policy_projection
+
+            projection = read_task_check_policy_projection(
+                commit.store, mission_id, scope.task_ref.id
+            )
+        else:
+            if result_ref is not None:
+                raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+            from .scoped_composition_review import read_compound_projection
+
+            projection = read_compound_projection(
+                commit.store, mission_id, scope.occurrence_id, scope.task_ref.id
+            )
+        if projection.scope != scope or projection.requirements != requirements:
+            raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+        originals = {row.criterion_id: row for row in projection.criteria}
+        if set(originals) != {row.criterion_id for row in criteria}:
+            raise AssuranceError("POLICY_CATALOGUE_MISMATCH")
+        importer = commit._assurance_check_importer
+        registry = {}
+        if any(row.mode == "CHECKED" for row in criteria):
+            if importer is None or importer.tenant_id != tenant_id:
+                raise AssuranceError("CHECKER_UNAVAILABLE")
+            importer._require_deployment()
+            registry = importer._registry(mission_id)
+        deployed = {entry.binding.spec_ref for entry in registry.values()}
+        for row in criteria:
+            source = originals[row.criterion_id]
+            required_ids = source.required_evidence_policy.required_check_ids
+            if not required_ids and row.mode != "SEMANTIC":
+                # A human mapping is not a native assertion adapter. Amend the
+                # original requirement's check contract before assigning a checker.
+                raise AssuranceError("CHECK_POLICY_UNRESOLVED", row.criterion_id)
+            if row.mode == "SEMANTIC":
+                if required_ids or source.evaluation_kind is not EvaluationKind.SEMANTIC:
+                    raise AssuranceError("CHECK_POLICY_UNRESOLVED", row.criterion_id)
+                continue
+            required = set()
+            for name in required_ids:
+                entry = registry.get(name)
+                if entry is None:
+                    raise AssuranceError("CHECK_POLICY_UNRESOLVED", name)
+                required.add(entry.binding.spec_ref)
+            for group in row.any_check_sets:
+                if not required <= set(group) or not set(group) <= deployed:
+                    raise AssuranceError("CHECK_POLICY_REQUIREMENT_DROPPED", row.criterion_id)
+                for ref in group:
+                    reader.read_exact_metadata(ref)
+        policy_id = "assurance-check-policy:" + fingerprint(
+            {
+                "mission": mission_id,
+                "requirements": requirements_ref.to_json(),
+                "scope": completion_scope.pin.content_hash,
+            }
+        )
+        receipt_body = {
+            **request,
+            "policy_id": policy_id,
+            "projection_hash": fingerprint([c.to_json() for c in projection.criteria]),
+        }
+        old = commit.store.get_receipt(receipt_id)
+        if old is not None and dict(old) != receipt_body:
+            raise AssuranceError("IMMUTABLE_IDENTITY_CONFLICT")
+        if old is None:
+            commit.store.insert_receipt(
+                commit_id=receipt_id,
+                kind="AssuranceCheckPolicyApproved",
+                subject_id=policy_id,
+                base_version=requirements.revision,
+                proposal_hash=fingerprint(receipt_body),
+                receipt=receipt_body,
+            )
+        ref = side.record_criterion_policy(
+            policy_id,
+            mission_id=mission_id,
+            requirements=requirements_ref.pin,
+            scope_hash=scope.content_hash(),
+            criteria=criteria,
+            approval_receipt=AssuranceRef(
+                "commit_receipt", Pin(receipt_id, 0, fingerprint(receipt_body))
+            ),
+            adapter_version=ADAPTER_VERSION,
+        )
+        if old is None:
+            commit._emit(
+                "AssuranceCheckPolicyApproved",
+                mission_id,
+                key=receipt_id,
+                actor_type="human",
+                actor_id=principal.principal_id,
+                payload={"check_policy_ref": ref.to_json(), "approval_receipt_id": receipt_id},
+            )
+        return ref

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..artifacts.workspace import Workspace
 from ..contracts import Artifact, ContractError, Mission, ResultEnvelope, Task
@@ -43,6 +43,9 @@ from .deterministic_checks import (
 from .domain_handlers import handler_for
 from .evidence_resolver import EvidenceResolver
 from .human_review import NEEDS_HUMAN, SUSPENDED, human_layer
+
+if TYPE_CHECKING:
+    from .assurance_local import LocalVerificationRecorder
 
 CriticRunner = Callable[[str | None], Awaitable[CriticVerdict]]
 VERIFIER_VERSION = "verifier-v1"  # step 6 (S6-09): recorded on every layer result
@@ -106,10 +109,32 @@ class VerifierRouter:
         domain: DomainProfileV1 | None = None,
         assessment_binding: AssessmentBindingV1 | None = None,
         evidence_resolver: EvidenceResolver | None = None,
+        local_check_recorder_factory: Callable[[dict[str, Any]], LocalVerificationRecorder] | None = None,
     ) -> Verdict:
         actual_domain = domain if domain is not None else self._domain
         handler = handler_for(actual_domain)
         document = handler.document_assessments
+        local_check_recorder = None
+        frozen_input_hash = None
+
+        def actual_local_inputs() -> dict[str, Any]:
+            from .assurance_local import freeze_verifier_inputs
+
+            return freeze_verifier_inputs(
+                mission=mission, task=task, envelope=envelope, artifacts=artifacts,
+                verification_copy=verification_copy, client_result_id=client_result_id,
+                tampered=tampered, knowledge=knowledge,
+                require_synthesis_knowledge=require_synthesis_knowledge,
+                action_problems=action_problems, local_code_execution=self._local_code_execution,
+                domain=actual_domain, assessment_binding=assessment_binding,
+            )
+
+        if local_check_recorder_factory is not None:
+            from ..assurance.codec import fingerprint
+
+            actual_inputs = actual_local_inputs()
+            frozen_input_hash = fingerprint(actual_inputs)
+            local_check_recorder = local_check_recorder_factory(actual_inputs)
         required = set(task.verification_policy)
         if action_problems is not None:  # D7-2'': a result carrying actions/ is always rule-checked
             required.add("rule_check")
@@ -138,6 +163,45 @@ class VerifierRouter:
             layers.append(result)
             if recorder is not None:
                 await recorder(result)
+
+        def local(layer: str, execute: Callable[[], LayerResult]) -> LayerResult:
+            if local_check_recorder is None:
+                return execute()
+
+            def bound_execute() -> LayerResult:
+                from ..assurance.codec import AssuranceError, fingerprint
+
+                if fingerprint(actual_local_inputs()) != frozen_input_hash:
+                    raise AssuranceError("CHECK_INPUT_CHANGED")
+                result = execute()
+                if fingerprint(actual_local_inputs()) != frozen_input_hash:
+                    raise AssuranceError("CHECK_INPUT_CHANGED")
+                return result
+
+            return local_check_recorder.run(layer, bound_execute)
+
+        def run_rules() -> LayerResult:
+            result = handler.rules(
+                envelope, task, artifacts=artifacts, verification_copy=verification_copy,
+                tampered=tampered, knowledge=knowledge,
+                require_synthesis_knowledge=require_synthesis_knowledge,
+                extra_problems=action_problems or (),
+                local_code_execution=self._local_code_execution, domain=actual_domain,
+            )
+            if not document:
+                return result
+            if assessment_binding is None or evidence_resolver is None:
+                return LayerResult(
+                    "rule_check", ERROR, "document assessment binding/resolver unavailable",
+                    {**dict(result.detail), "assessment_error": "missing_binding_or_resolver"},
+                )
+            try:
+                return citation_integrity(
+                    binding=assessment_binding, envelope=envelope,
+                    resolver=evidence_resolver, structural_result=result,
+                )
+            except ContractError as error:
+                return LayerResult("rule_check", ERROR, str(error), {"assessment_error": str(error)})
 
         for layer in VERIFICATION_LAYERS:
             if layer == "human_review" and escalated:
@@ -186,6 +250,10 @@ class VerifierRouter:
                 )
                 continue
             reusable = reuse is not None and layer in reuse
+            if local_check_recorder is not None and layer in {"format_check", "rule_check"}:
+                # Until a persisted exact local receipt is revalidated, perform
+                # the side-effect-free check again. Old layer cache is not proof.
+                reusable = False
             if reusable and reuse is not None and document and layer == "rule_check":
                 reusable = assessment_binding is not None and doc_rule_reusable(
                     reuse[layer], binding=assessment_binding
@@ -195,43 +263,9 @@ class VerifierRouter:
                 if layer == "critic_review":
                     critic = CriticVerdict.from_json(result.detail)
             elif layer == "format_check":
-                result = format_check(envelope, client_result_id=client_result_id)
+                result = local(layer, lambda: format_check(envelope, client_result_id=client_result_id))
             elif layer == "rule_check":
-                result = handler.rules(
-                    envelope,
-                    task,
-                    artifacts=artifacts,
-                    verification_copy=verification_copy,
-                    tampered=tampered,
-                    knowledge=knowledge,
-                    require_synthesis_knowledge=require_synthesis_knowledge,
-                    extra_problems=action_problems or (),
-                    local_code_execution=self._local_code_execution,
-                    domain=actual_domain,
-                )
-                if document:
-                    if assessment_binding is None or evidence_resolver is None:
-                        result = LayerResult(
-                            layer,
-                            ERROR,
-                            "document assessment binding/resolver unavailable",
-                            {
-                                **dict(result.detail),
-                                "assessment_error": "missing_binding_or_resolver",
-                            },
-                        )
-                    else:
-                        try:
-                            result = citation_integrity(
-                                binding=assessment_binding,
-                                envelope=envelope,
-                                resolver=evidence_resolver,
-                                structural_result=result,
-                            )
-                        except ContractError as error:
-                            result = LayerResult(
-                                layer, ERROR, str(error), {"assessment_error": str(error)}
-                            )
+                result = local(layer, run_rules)
             elif layer == "critic_review":
                 # The recorded layer order is a durable contract. Execute the required
                 # test here, after format/rule passed, but record it in its usual slot.

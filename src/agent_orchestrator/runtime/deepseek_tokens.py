@@ -33,9 +33,10 @@ TOKENIZER_URL = (
 class DeepSeekV41TokenEstimator:
     """Official text tokenizer and request renderer; no credentials or HTTP client.
 
-    A deployment must bind this only to api.deepseek.com / deepseek-flash, keep
+    A deployment must bind this only to an explicitly configured V4.1 Flash endpoint, keep
     the fingerprint with its requests, and stop on any observed reservation
-    overrun. Other model aliases and multimodal input require separate profiles.
+    overrun. Only the two explicit Flash wire names below are accepted; multimodal input and
+    other aliases require separate profiles. The wire name is fingerprinted.
     """
 
     requires_prior_output_reserve = True
@@ -47,7 +48,7 @@ class DeepSeekV41TokenEstimator:
     ) -> None:
         if tool_schema_mode not in {"legacy", "deepseek-strict-v1"}:
             raise ValueError("unsupported DeepSeek tool schema mode")
-        if model != "deepseek-flash":
+        if model not in {"deepseek-flash", "deepseek-v4.1-flash"}:
             raise ValueError("unsupported model for the pinned DeepSeek V4.1 counter")
         if version("deepseek-recipe") != RECIPE_VERSION:
             raise ValueError("DeepSeek recipe version differs from the pinned counting profile")

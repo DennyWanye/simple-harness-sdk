@@ -13,9 +13,12 @@ from typing import Any
 from uuid import uuid4
 
 from .appworld_api_observations import PUBLIC_READ_APIS, project
+from .appworld_api_observations import digest
+from .appworld_state_observations import AppWorldStatePolicy, load_state_policies
 
 
-def install_public_observation_route(environment: Any) -> None:
+def install_public_observation_route(environment: Any, *,
+                                     state_policies: dict[str, AppWorldStatePolicy] | None = None) -> None:
     """Install once on the independent environment service, never upstream."""
     fastapi: Any = import_module("fastapi")
     Body, HTTPException = fastapi.Body, fastapi.HTTPException
@@ -29,6 +32,14 @@ def install_public_observation_route(environment: Any) -> None:
     revision: list[int] = [0]
     inflight_mutations: list[int] = [0]
     state_lock = Lock()
+    registered_states = dict(state_policies or {})
+    if any(key != policy.content_hash for key, policy in registered_states.items()):
+        raise ValueError("state policy registration hash differs")
+
+    @environment.app.get("/host_state_policy_registry")
+    def host_state_policy_registry() -> dict[str, Any]:
+        hashes = sorted(registered_states)
+        return {"policy_hashes": hashes, "registry_hash": digest(hashes)}
 
     @environment.app.middleware("http")
     async def track_external_world_mutations(request: Any, call_next: Any) -> Any:
@@ -68,6 +79,23 @@ def install_public_observation_route(environment: Any) -> None:
             raise HTTPException(status_code=409, detail="active world changed")
         return {"identity": observed_identity}
 
+    @environment.app.get("/host_dataset_identity")
+    def host_dataset_identity(task_id: str, experiment_name: str) -> dict[str, str]:
+        from pathlib import Path
+        from .appworld_state_observations import task_dataset_hash
+        active = environment.world
+        if (active is None or active.task_id != task_id or active.experiment_name != experiment_name):
+            raise HTTPException(status_code=409, detail="active world identity differs")
+        observed_identity = identity(active)
+        try:
+            data_root = Path(active.task.models_from_db_home_path).resolve().parents[2]
+            dataset_hash = task_dataset_hash(data_root, task_id)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="actual task inputs are unavailable") from exc
+        if environment.world is not active or identity(active) != observed_identity:
+            raise HTTPException(status_code=409, detail="active world changed")
+        return {"identity": observed_identity, "dataset_hash": dataset_hash}
+
     @environment.app.post("/host_public_observation")
     def host_public_observation(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         # Fail closed before Requester sees an app, API or any parameters.
@@ -96,8 +124,29 @@ def install_public_observation_route(environment: Any) -> None:
                 "app": app, "api": api, "response": selected,
                 "identity": observed_identity}
 
+    @environment.app.post("/host_state_observation")
+    def host_state_observation(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        if (set(body) != {"task_id", "experiment_name", "policy_hash"}
+                or any(not isinstance(value, str) for value in body.values())):
+            raise HTTPException(status_code=400, detail="invalid state observation request")
+        policy = registered_states.get(body["policy_hash"])
+        if policy is None:
+            raise HTTPException(status_code=403, detail="state policy is not registered")
+        active = environment.world
+        if (active is None or active.task_id != body["task_id"]
+                or active.experiment_name != body["experiment_name"]):
+            raise HTTPException(status_code=409, detail="active world identity differs")
+        observed_identity = identity(active)
+        try:
+            result = policy.observe(active)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="registered state observation failed") from exc
+        if environment.world is not active or identity(active) != observed_identity:
+            raise HTTPException(status_code=409, detail="active world changed")
+        return {**body, "identity": observed_identity, "result": result}
 
-def serve(root: str, *, port: int = 18244) -> None:
+
+def serve(root: str, *, port: int = 18244, state_policy_file: str | None = None) -> None:
     from importlib import import_module
     from importlib.metadata import version
 
@@ -116,7 +165,7 @@ def serve(root: str, *, port: int = 18244) -> None:
 
     appworld.update_root(root)
     environment.AppWorld = CheckpointClockWorld
-    install_public_observation_route(environment)
+    install_public_observation_route(environment, state_policies=dict(load_state_policies(state_policy_file)))
     uvicorn.run(environment.app, host="127.0.0.1", port=port, log_level="warning")
 
 
@@ -126,5 +175,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
     parser.add_argument("--port", type=int, default=18244)
+    parser.add_argument("--state-policy-file")
     args = parser.parse_args()
-    serve(args.root, port=args.port)
+    serve(args.root, port=args.port, state_policy_file=args.state_policy_file)

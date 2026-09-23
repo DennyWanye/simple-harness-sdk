@@ -41,6 +41,8 @@ from ..scheduling.backpressure import BackpressureLimits
 from .agent_worker import AgentBridge
 from .model_router import DEFAULT_PROFILE, RuntimeProfile
 from .tool_gateway import TOOL_NAMES, WorkspaceToolGateway, read_tool_schemas
+from .domain_tools import DomainTool
+from ..planning.htn.backend_port import PlanningBackend, PlanningLimits
 
 CONSUMER_PRICING_KEY = "consumer"
 OWNER_SCOPE = "agent-orchestrator"  # D3-10': one scope shared by every orchestrator instance
@@ -143,7 +145,12 @@ class OrchestratorConfig:
         default=None, repr=False, compare=False, kw_only=True
     )
     are_tool_schemas: Mapping[str, dict[str, Any]] = field(default_factory=dict, kw_only=True)
+    domain_tools: Mapping[str, DomainTool] = field(default_factory=dict, kw_only=True, repr=False, compare=False)
     # step 5 (D5-2 / D5-6 / D5-7 / D5-8 / D5-15)
+    planning_backend: PlanningBackend | None = field(default=None, repr=False, compare=False, kw_only=True)
+    planning_backend_limits: PlanningLimits | None = field(default=None, kw_only=True)
+    hierarchical_repair_enabled: bool = field(default=True, kw_only=True)
+    method_selection_policy: str = field(default="MODEL_ON_MULTIPLE", kw_only=True)
     dynamic_graph: bool = True  # False: no Manager decisions; non-candidate outcomes just retry
     max_graph_depth: int = 6
     max_proposals_per_agent: int = 3
@@ -277,6 +284,12 @@ class OrchestratorConfig:
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "planning": {
+                "method_selection_policy": self.method_selection_policy,
+                "repair_enabled": self.hierarchical_repair_enabled,
+                "backend_id": None if self.planning_backend is None else self.planning_backend.backend_id,
+                "limits": None if self.planning_backend_limits is None else self.planning_backend_limits.to_json(),
+            },
             "model": self.model,
             "owner_id": self.owner_id,
             "max_concurrency": self.max_concurrency,
@@ -557,6 +570,7 @@ def assemble_orchestrator_runtime(
         agentdojo_tool_schemas=config.agentdojo_tool_schemas,
         are_invoke=config.are_invoke,
         are_tool_schemas=config.are_tool_schemas,
+        domain_tools=config.domain_tools,
     )
     pools: dict[str, RuntimePool] = {}
     if provider_admissions is not None and (
@@ -579,9 +593,10 @@ def assemble_orchestrator_runtime(
             authorization=AllowAllAuthorization(),
             database_path=str(database),
             tool_executor=gateway,
-            tool_names=(*TOOL_NAMES, *config.agentdojo_tool_schemas, *config.are_tool_schemas),
+            tool_names=(*TOOL_NAMES, *config.agentdojo_tool_schemas, *config.are_tool_schemas, *config.domain_tools),
             tool_schemas={**read_tool_schemas(large=profile.context_policy is not None),
-                          **config.agentdojo_tool_schemas, **config.are_tool_schemas},
+                          **config.agentdojo_tool_schemas, **config.are_tool_schemas,
+                          **{name: tool.schema for name, tool in config.domain_tools.items()}},
             context_policy=profile.context_policy or ContextPolicy(),
             tokenizer=profile.tokenizer,
             model=profile.model,

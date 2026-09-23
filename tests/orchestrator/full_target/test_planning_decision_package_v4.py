@@ -148,6 +148,7 @@ class _Mission:
 class _Network:
     """The smallest thing the packager reads: a plan with nothing on it."""
 
+    mission_id = _Mission.id
     plan_revision = 0
     root_occurrence_ids: tuple[str, ...] = ()
     required_obligations: tuple[str, ...] = ()
@@ -272,6 +273,7 @@ class _Occurrence:
 class _WideNetwork:
     """A network with ``count`` compound goals, so the 128 cap is reachable."""
 
+    mission_id = _Mission.id
     plan_revision = 0
     root_occurrence_ids: tuple[str, ...] = ()
     required_obligations: tuple[str, ...] = ()
@@ -428,7 +430,7 @@ def test_the_decision_package_switches_the_output_contract_and_its_label() -> No
     package = decision_package()
     assert package["output_contract"] == "<planning_decision>{json}</planning_decision>"
     assert package["package_version"] == HIERARCHICAL_DECISION_PACKAGE_VERSION
-    assert HIERARCHICAL_DECISION_PACKAGE_VERSION == "planner-package-hierarchical-v5"
+    assert HIERARCHICAL_DECISION_PACKAGE_VERSION == "planner-package-hierarchical-v6"
 
 
 def test_the_decision_limits_are_the_section_16_constants() -> None:
@@ -898,6 +900,31 @@ def test_an_authority_row_with_only_one_kind_does_not_answer_for_the_other() -> 
     )
     authorities = [authority("task", "shared", 1, "a" * 64)]
     assert [item["kind"] for item in refs_of(package, authorities)] == ["task"]
+
+
+def test_rejected_method_instance_uses_collector_authority_without_changing_legacy_shape() -> None:
+    """The new decision package exposes the instance ref from a side authority row."""
+
+    package = empty_package(
+        rejected_refinements=[
+            {
+                "rejected_method_instance_id": "mi-1",
+                "plan_revision": 2,
+                "rejected_method_ref": {
+                    "method_id": "plan.outer",
+                    "version": 1,
+                    "content_hash": "a" * 64,
+                },
+            }
+        ]
+    )
+    refs = by_key(package, [authority("method_instance", "mi-1", 2, "b" * 64)])
+    assert refs[("method_instance", "mi-1")] == {
+        "kind": "method_instance",
+        "id": "mi-1",
+        "semantic_revision": 2,
+        "content_hash": "b" * 64,
+    }
 
 
 def test_the_authority_sidecar_order_does_not_change_the_refs() -> None:

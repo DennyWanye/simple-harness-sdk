@@ -841,11 +841,12 @@ def test_an_output_of_an_occurrence_the_plan_dropped_is_not_offered(world: World
 
 
 def test_migration_seventeen_is_additive_and_eighteen_is_still_present() -> None:
-    assert schema.SCHEMA_VERSION == 19
+    assert schema.SCHEMA_VERSION == 24
     assert schema.MIGRATIONS[16].ddl is acceptance_receipt_schema.DDL
     assert "ALTER TABLE" not in acceptance_receipt_schema.DDL.upper()
     assert schema.MIGRATIONS[17].version == 18
     assert schema.MIGRATIONS[18].version == 19
+    assert schema.MIGRATIONS[19].version == 20
 
 
 def test_the_three_new_tables_exist_and_are_strict(world: World) -> None:
@@ -1124,7 +1125,7 @@ def test_the_event_handler_chooses_the_hierarchical_prompt_with_the_package() ->
 
     from agent_orchestrator.orchestrator import event_handler
 
-    source = inspect.getsource(event_handler.Orchestrator._create_planner_intent)
+    source = inspect.getsource(event_handler.Orchestrator._create_planner_intent_now)
     assert "_hierarchical_planner_package" in source
     assert "_hierarchical_planner_template" in source
 
@@ -1137,11 +1138,42 @@ class _Pinned:
     stub that supplies exactly those runs the **real** chooser against a real pin.
     """
 
-    def __init__(self, pin: str | None) -> None:
+    def __init__(self, pin: str | None, *, package_version: int | None = None) -> None:
         from agent_orchestrator.governance.domains import resolve_domain
 
         self._domain = resolve_domain(None)
         self._pin = pin
+        self.store = self._Store(package_version)
+
+    class _Store:
+        def __init__(self, package_version: int | None) -> None:
+            self._package_version = package_version
+
+        class _Result:
+            def __init__(self, row: dict[str, Any] | None) -> None:
+                self._row = row
+
+            def fetchone(self) -> dict[str, Any] | None:
+                return self._row
+
+        @property
+        def connection(self) -> Any:
+            return self
+
+        def execute(self, query: str, params: tuple[str, ...]) -> "_Pinned._Store._Result":
+            del query, params
+            if self._package_version is None:
+                return self._Result(None)
+            return self._Result(
+                {
+                    "mission_id": "m-1",
+                    "protocol_version": "planning-decision-v1",
+                    "package_version": self._package_version,
+                    "prompt_version": "planner-hierarchical-v8",
+                    "binding_hash": "a" * 64,
+                    "created_at": 0.0,
+                }
+            )
 
     class _Commit:
         def __init__(self, domain: Any) -> None:
@@ -1244,6 +1276,19 @@ def test_a_pin_from_an_older_package_version_does_not_apply_to_this_package() ->
         == HIERARCHICAL_PLANNER_VERSIONS
     )
     assert HIERARCHICAL_PLANNER_PACKAGE_VERSION in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE
+
+
+def test_new_planning_decision_mission_selects_v8_even_when_legacy_pin_is_frozen() -> None:
+    """A package-4 Mission must never receive the legacy proposal wire prompt."""
+
+    from agent_orchestrator.runtime.role_templates import (
+        PLANNER_HIERARCHICAL_V8,
+        PLANNER_HIERARCHICAL_V7,
+    )
+
+    assert _Pinned(PLANNER_HIERARCHICAL_V7.prompt_version, package_version=4).choose() is (
+        PLANNER_HIERARCHICAL_V8
+    )
 
 
 # ======================================================================================

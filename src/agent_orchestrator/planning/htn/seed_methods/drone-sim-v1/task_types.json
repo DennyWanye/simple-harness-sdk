@@ -1,0 +1,357 @@
+[
+  {
+    "task_type_ref": {
+      "id": "drone-sim.survey",
+      "version": 1
+    },
+    "form": "compound",
+    "goal_signature": {
+      "signature_id": "drone-sim.survey",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "drone-sim.route-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "drone-sim.outputs",
+        "version": 1
+      },
+      "statement": "Capture the requested coordinates in the local simulator and land safely.",
+      "coverage_criteria": [
+        "c-captured",
+        "c-landed"
+      ]
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "domain": "drone-sim-v1"
+  },
+  {
+    "task_type_ref": {
+      "id": "drone-sim.takeoff",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "drone-sim.takeoff",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "drone-sim.route-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "drone-sim.outputs",
+        "version": 1
+      },
+      "statement": "Read drone_sim_telemetry then call drone_sim_command takeoff with the exact telemetry expected_version.",
+      "coverage_criteria": [
+        "c-takeoff"
+      ]
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "domain": "drone-sim-v1",
+    "operator_ref": {
+      "id": "drone-sim.op-takeoff",
+      "version": 1
+    },
+    "required_capabilities": [
+      "drone-sim.command"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "resource_reads": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ],
+    "resource_writes": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "drone-sim.move",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "drone-sim.move",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "drone-sim.route-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "drone-sim.outputs",
+        "version": 1
+      },
+      "statement": "Read drone_sim_telemetry then move to the bound x/y/z with exact expected_version.",
+      "coverage_criteria": [
+        "c-move"
+      ]
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "domain": "drone-sim-v1",
+    "operator_ref": {
+      "id": "drone-sim.op-move",
+      "version": 1
+    },
+    "required_capabilities": [
+      "drone-sim.command"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "resource_reads": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ],
+    "resource_writes": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "drone-sim.capture",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "drone-sim.capture",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "drone-sim.route-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "drone-sim.outputs",
+        "version": 1
+      },
+      "statement": "Read drone_sim_telemetry, confirm bound x/y/z, then capture with exact expected_version.",
+      "coverage_criteria": [
+        "c-captured"
+      ]
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "domain": "drone-sim-v1",
+    "operator_ref": {
+      "id": "drone-sim.op-capture",
+      "version": 1
+    },
+    "required_capabilities": [
+      "drone-sim.command"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "resource_reads": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ],
+    "resource_writes": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "drone-sim.land",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "drone-sim.land",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "drone-sim.route-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "drone-sim.outputs",
+        "version": 1
+      },
+      "statement": "Read drone_sim_telemetry then land; confirm z=0 and airborne=false.",
+      "coverage_criteria": [
+        "c-landed"
+      ]
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "domain": "drone-sim-v1",
+    "operator_ref": {
+      "id": "drone-sim.op-land",
+      "version": 1
+    },
+    "required_capabilities": [
+      "drone-sim.command"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "resource_reads": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ],
+    "resource_writes": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "drone-sim.preflight",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "drone-sim.preflight",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "drone-sim.route-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "drone-sim.outputs",
+        "version": 1
+      },
+      "statement": "Read telemetry and report connected, battery>=25 and clear flight zone; do not command the vehicle.",
+      "coverage_criteria": [
+        "c-ready"
+      ]
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "domain": "drone-sim-v1",
+    "operator_ref": {
+      "id": "drone-sim.op-preflight",
+      "version": 1
+    },
+    "required_capabilities": [
+      "drone-sim.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "resource_reads": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "drone-sim.observe",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "drone-sim.observe",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "drone-sim.route-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "drone-sim.outputs",
+        "version": 1
+      },
+      "statement": "Read the local simulator telemetry and report the registered predicate.",
+      "coverage_criteria": []
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "domain": "drone-sim-v1",
+    "operator_ref": {
+      "id": "drone-sim.op-observe",
+      "version": 1
+    },
+    "required_capabilities": [
+      "drone-sim.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "resource_reads": [
+      {
+        "namespace": "drone-sim",
+        "object_id": "vehicle"
+      }
+    ],
+    "observes": [
+      {
+        "id": "drone-sim.connected",
+        "version": 1
+      },
+      {
+        "id": "drone-sim.battery-safe",
+        "version": 1
+      },
+      {
+        "id": "drone-sim.zone-clear",
+        "version": 1
+      },
+      {
+        "id": "drone-sim.airborne",
+        "version": 1
+      },
+      {
+        "id": "drone-sim.landed",
+        "version": 1
+      },
+      {
+        "id": "drone-sim.capture-exists",
+        "version": 1
+      }
+    ]
+  }
+]

@@ -86,6 +86,10 @@ class GroundingError(ContractError):
     """
 
 
+class ParameterBindingsError(GroundingError):
+    """The candidate bindings fail the registered method parameter schema."""
+
+
 def derive_id(role: str, *parts: object) -> str:
     """A stable, collision-free derived identity.
 
@@ -635,7 +639,7 @@ def _grounded_parameters(
     scoped = {name: merged[name] for name in merged if name not in surplus}
     check = schema.check(scoped)
     if not check.ok:
-        raise GroundingError(
+        raise ParameterBindingsError(
             f"method {method.method_id!r} parameters do not type-check: "
             + "; ".join(check.messages())
         )
@@ -838,6 +842,7 @@ def describe_draft(draft: MethodInstanceDraft) -> str:
 
 __all__ = (
     "GroundingError",
+    "ParameterBindingsError",
     "ShareDecision",
     "ShareSuggestion",
     "ShareVerdict",

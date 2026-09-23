@@ -205,7 +205,7 @@ def test_replace_method_is_retire_then_refine_and_requests_stop_then_reconcile()
     )
 
 
-def test_decode_only_existing_goal_binding_is_a_programming_error_if_admitted() -> None:
+def test_h4_admitted_existing_goal_binding_keeps_exact_shared_goal() -> None:
     decision = _envelope(
         PlanningDecisionType.BIND_EXISTING_GOAL,
         BindExistingGoalDecision(
@@ -216,11 +216,16 @@ def test_decode_only_existing_goal_binding_is_a_programming_error_if_admitted() 
             resolution_ref=None,
         ),
     )
-    with pytest.raises(ContractError, match="not enabled"):
-        adapt_admitted_decision(_admitted(decision), context=_context())
+    outcome = adapt_admitted_decision(_admitted(decision), context=_context())
+    assert outcome.proposal is not None
+    assert outcome.proposal.operations[0].to_json() == {
+        "op": "bind_shared_goal", "consumer_method_instance_id": "mi-consumer",
+        "step": "inspect", "goal_id": "goal-shared", "resolution_id": None,
+    }
+    assert outcome.proposal.running_work_policy is RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE
 
 
-def test_decode_only_successor_is_a_programming_error_if_admitted() -> None:
+def test_h4_admitted_successor_keeps_goal_and_stop_policy() -> None:
     decision = _envelope(
         PlanningDecisionType.REPAIR,
         RepairProposeSuccessorDecision(
@@ -231,8 +236,14 @@ def test_decode_only_successor_is_a_programming_error_if_admitted() -> None:
             bindings={},
         ),
     )
-    with pytest.raises(ContractError, match="not enabled"):
-        adapt_admitted_decision(_admitted(decision), context=_context())
+    outcome = adapt_admitted_decision(_admitted(decision), context=_context())
+    assert outcome.proposal is not None
+    assert outcome.proposal.operations[0].to_json() == {
+        "op": "propose_successor", "old_task_id": "task-old", "obligation_id": "obl-root",
+        "goal_type_ref": {"id": "goal.next", "version": 1, "content_hash": HASH_A},
+        "bindings": {},
+    }
+    assert outcome.proposal.running_work_policy is RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE
 
 
 def test_wait_and_no_change_are_durable_only_and_never_proposals() -> None:

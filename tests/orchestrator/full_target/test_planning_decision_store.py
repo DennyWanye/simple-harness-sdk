@@ -37,7 +37,7 @@ from agent_orchestrator.contracts.planning_decisions import (
     PlanningRequestBinding,
     compute_decision_id,
 )
-from agent_orchestrator.storage import planning_decision_schema, schema
+from agent_orchestrator.storage import admission_seams_schema, planning_decision_schema, schema
 from agent_orchestrator.storage.planning_decision_store import PlanningDecisionStore
 from agent_orchestrator.storage.store import InjectedCrash, Store, StoreConflict
 
@@ -197,11 +197,13 @@ def _decision_rows(store: Store) -> list[tuple[Any, ...]]:
 
 
 def test_migration_nineteen_is_the_new_head() -> None:
-    assert schema.SCHEMA_VERSION == 19
-    assert schema.SCHEMA_NAME == "orchestrator-planning-decision-v1"
-    assert schema.MIGRATIONS[-1].ddl is planning_decision_schema.DDL
+    assert schema.SCHEMA_VERSION == 24
+    assert schema.MIGRATIONS[18].name == "orchestrator-planning-decision-v1"
+    assert schema.MIGRATIONS[18].ddl is planning_decision_schema.DDL
     assert schema.MIGRATIONS[18].checksum == MIGRATION_19_CHECKSUM
-    assert schema.checksum() == MIGRATION_19_CHECKSUM
+    assert schema.MIGRATIONS[19].ddl is admission_seams_schema.DDL
+    assert schema.MIGRATIONS[23].name == "orchestrator-planning-human-requests"
+    assert schema.checksum() == schema.MIGRATIONS[-1].checksum
 
 
 def test_a_fresh_library_has_the_three_strict_tables(store: Store) -> None:
@@ -714,10 +716,16 @@ def test_an_upgrade_from_eighteen_keeps_every_old_row(
                 "SELECT version,name,checksum FROM orch_schema_migrations ORDER BY version"
             )
         ]
-        assert [row[0] for row in applied] == list(range(1, 20))
-        assert applied[-1] == (19, schema.SCHEMA_NAME, schema.MIGRATIONS[-1].checksum)
-        assert applied[-2] == (18, "orchestrator-full-target-witness-subject", FROZEN_18_CHECKSUM)
-        assert (tmp_path / "deployed.db.pre-schema-19.backup").is_file()
+        assert [row[0] for row in applied] == list(range(1, schema.SCHEMA_VERSION + 1))
+        assert applied[18] == (19, "orchestrator-planning-decision-v1", MIGRATION_19_CHECKSUM)
+        assert applied[19] == (20, schema.MIGRATIONS[19].name, schema.MIGRATIONS[19].checksum)
+        assert applied[-1] == (
+            schema.SCHEMA_VERSION,
+            schema.SCHEMA_NAME,
+            schema.MIGRATIONS[-1].checksum,
+        )
+        assert applied[17] == (18, "orchestrator-full-target-witness-subject", FROZEN_18_CHECKSUM)
+        assert (tmp_path / "deployed.db.pre-schema-24.backup").is_file()
         rows = _tables(upgraded)
         for table in NEW_TABLES:
             assert table in rows and "STRICT" in rows[table].upper(), table

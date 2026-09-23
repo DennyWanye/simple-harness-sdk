@@ -42,6 +42,7 @@ from ..governance.promotion import (
 )
 from ..observability.secrets import find_secrets
 from ..scheduling.backpressure import STATE_KEY, BackpressureState
+from ..storage.assurance_changes import original_source_mutation
 
 if TYPE_CHECKING:
     from ..contracts import Event
@@ -144,7 +145,7 @@ class PolicyCommitsMixin:
         """The first ACTIVE version of a production library: the resolved built-in
         policy (plan D9-3').  A library that already has an ACTIVE version keeps it."""
 
-        with self._store.transaction():
+        with original_source_mutation(self._store, writer="PolicyCommitsMixin.seed_policy"):
             active = self._store.active_policy()
             if active is not None:
                 return active
@@ -179,7 +180,7 @@ class PolicyCommitsMixin:
         """The deployment configuration names whitelisted values that differ from the
         ACTIVE version: recorded, and the ACTIVE version still governs (plan D9-3')."""
 
-        with self._store.transaction():
+        with original_source_mutation(self._store, writer="PolicyCommitsMixin.record_policy_drift"):
             active = self._store.active_policy()
             seq = len(self._store.list_policy_activations())
             self._policy_event(
@@ -204,7 +205,7 @@ class PolicyCommitsMixin:
         """Bind a new Mission to a version in its creation transaction (plan D9-3'):
         the ACTIVE one, or — only in an evaluation library — the pinned one."""
 
-        with self._store.transaction():
+        with original_source_mutation(self._store, writer="PolicyCommitsMixin.bind_policy"):
             existing = self._store.get_mission_policy(mission_id)
             if existing is not None:
                 return existing
@@ -257,7 +258,7 @@ class PolicyCommitsMixin:
         problems = selection_policy_problems(params)
         if problems:
             raise PolicyCommitError("; ".join(problems))
-        with self._store.transaction():
+        with original_source_mutation(self._store, writer="PolicyCommitsMixin.propose_policy"):
             record = self._version_record(params, source=source, status="NEVER_ACTIVE", detail=None)
             self._store.insert_policy_version(record)  # a known version keeps its status
             version_id = record["version_id"]
@@ -300,7 +301,9 @@ class PolicyCommitsMixin:
         request = (
             "refusal-" + sha256_hex({"manifest": dict(manifest), "reasons": list(reasons)})[:16]
         )
-        with self._store.transaction():
+        with original_source_mutation(
+            self._store, writer="PolicyCommitsMixin.refuse_policy_proposal"
+        ):
             self._policy_event(
                 "PolicyProposalRefused",
                 request,
@@ -325,7 +328,9 @@ class PolicyCommitsMixin:
             raise PolicyCommitError(f"an evaluation verdict is one of {VERDICTS}, not {verdict!r}")
         if evidence_kind not in EVIDENCE_KINDS:
             raise PolicyCommitError(f"evidence_kind is one of {EVIDENCE_KINDS}")
-        with self._store.transaction():
+        with original_source_mutation(
+            self._store, writer="PolicyCommitsMixin.record_policy_evaluation"
+        ):
             proposal = self._require_proposal(proposal_id)
             if verdict not in PROPOSAL_TRANSITIONS[str(proposal["state"])]:
                 raise PolicyCommitError(
@@ -383,7 +388,7 @@ class PolicyCommitsMixin:
         if not str(nonce).strip():
             raise PolicyCommitError("a decision needs a nonce")
         self._refuse_secret_text(note)
-        with self._store.transaction():
+        with original_source_mutation(self._store, writer="PolicyCommitsMixin.decide_policy"):
             proposal = self._require_proposal(proposal_id)
             if proposal["state"] != "PASSED":
                 raise PolicyCommitError(
@@ -450,7 +455,7 @@ class PolicyCommitsMixin:
         after the cooldown, and never widening concurrency under backpressure."""
 
         person = self._require_principal(principal)
-        with self._store.transaction():
+        with original_source_mutation(self._store, writer="PolicyCommitsMixin.promote_policy"):
             proposal = self._require_proposal(proposal_id)
             if proposal["state"] != "APPROVED":
                 raise PolicyCommitError(
@@ -540,7 +545,7 @@ class PolicyCommitsMixin:
 
         person = self._require_principal(principal)
         self._refuse_secret_text(reason)
-        with self._store.transaction():
+        with original_source_mutation(self._store, writer="PolicyCommitsMixin.rollback_policy"):
             active = self._store.active_policy()
             if active is None:
                 raise PolicyCommitError("this library has no ACTIVE policy to roll back")
@@ -596,7 +601,7 @@ class PolicyCommitsMixin:
 
         if role not in {"production", "evaluation"}:
             raise PolicyCommitError(f"a library is production or evaluation, not {role!r}")
-        with self._store.transaction():
+        with original_source_mutation(self._store, writer="PolicyCommitsMixin.set_library_role"):
             current = self.library_role()
             if current is not None and current != role:
                 raise PolicyCommitError(f"this is a {current} library; it cannot become {role}")
@@ -610,7 +615,9 @@ class PolicyCommitsMixin:
         under (plan D9-4'): said once, on the Mission's own timeline — never silent."""
 
         rows = [dict(d) for d in differences]
-        with self._store.transaction():
+        with original_source_mutation(
+            self._store, writer="PolicyCommitsMixin.record_interpreter_drift"
+        ):
             self._emit(
                 "PolicyInterpreterDrift",
                 mission_id,
@@ -631,7 +638,9 @@ class PolicyCommitsMixin:
         """A bound routing override names a profile this deployment does not have: that
         item falls back to the deployment's routing, on record (plan D9-4')."""
 
-        with self._store.transaction():
+        with original_source_mutation(
+            self._store, writer="PolicyCommitsMixin.record_policy_route_unavailable"
+        ):
             self._emit(
                 "PolicyRouteUnavailable",
                 mission_id,
@@ -655,7 +664,9 @@ class PolicyCommitsMixin:
 
         named = sorted({str(k) for k in keys})
         digest = sha256_hex({"keys": named, "detail": dict(detail or {})})[:16]
-        with self._store.transaction():
+        with original_source_mutation(
+            self._store, writer="PolicyCommitsMixin.record_policy_suggestion_refused"
+        ):
             self._emit(
                 "PolicySuggestionRefused",
                 mission_id,

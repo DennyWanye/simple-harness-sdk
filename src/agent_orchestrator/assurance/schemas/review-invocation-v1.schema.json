@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/review-invocation-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mission_id",
+    "review_key",
+    "ordinal",
+    "reason",
+    "prior_failure_receipt_ref",
+    "dispatch_intent_id",
+    "subject_id",
+    "creation_key",
+    "input_id",
+    "input_hash",
+    "catalogue_hash",
+    "reservation_fact_ref",
+    "source_receipt_ref"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "review_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "ordinal": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2
+    },
+    "reason": {
+      "enum": [
+        "INITIAL",
+        "FORMAT_REPAIR"
+      ]
+    },
+    "prior_failure_receipt_ref": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "common.schema.json#/$defs/ref"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "commit_receipt"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "dispatch_intent_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "subject_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "creation_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "input_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "input_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "catalogue_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "reservation_fact_ref": {
+      "allOf": [
+        {
+          "$ref": "common.schema.json#/$defs/ref"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "reservation_fact"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "source_receipt_ref": {
+      "allOf": [
+        {
+          "$ref": "common.schema.json#/$defs/ref"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "commit_receipt"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

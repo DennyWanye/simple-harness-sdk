@@ -170,7 +170,16 @@ def test_the_example_ref_is_a_valid_four_tuple_the_merged_core_accepts() -> None
 
 
 def test_package_four_is_new_and_the_default_package_stays_three() -> None:
-    assert role_templates.PLANNING_DECISION_PACKAGE_VERSION == 4
+    assert role_templates.PLANNING_DECISION_PACKAGE_VERSION == 7
+    assert role_templates.HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[7] == frozenset(
+        {"planner-hierarchical-v10"}
+    )
+    assert role_templates.HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[6] == frozenset(
+        {"planner-hierarchical-v9"}
+    )
+    assert role_templates.HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[5] == frozenset(
+        {"planner-hierarchical-v8"}
+    )
     assert role_templates.HIERARCHICAL_PLANNER_PACKAGE_VERSION == 3
     assert role_templates.HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[4] == frozenset(
         {"planner-hierarchical-v8"}
@@ -229,7 +238,7 @@ def test_the_three_h0_freeze_gaps_are_now_closed() -> None:
         sha["planner-hierarchical-v2"],
     )
     assert root_review_user_goal.FROZEN_ROOT_REVIEWER_V3 == sha["root-reviewer-v3"]
-    assert _digest(role_templates.ROOT_REVIEWER) == root_review_user_goal.FROZEN_ROOT_REVIEWER_V3
+    assert _digest(role_templates.ROOT_REVIEWER_V3) == root_review_user_goal.FROZEN_ROOT_REVIEWER_V3
 
 
 def test_v8_itself_is_in_the_frozen_table_with_its_live_digest() -> None:

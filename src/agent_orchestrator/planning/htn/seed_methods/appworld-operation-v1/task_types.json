@@ -1,0 +1,577 @@
+[
+  {
+    "task_type_ref": {
+      "id": "appworld.availability-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.availability-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.app-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe whether the application answers",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.app-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-availability-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.app-reachable",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.credential-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.credential-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.app-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe whether the stored credentials are accepted",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.app-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-credential-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.credentials-valid",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.api-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.api-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.app-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe which operations the API covers",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.app-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-api-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.api-supports-request",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.entity-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.entity-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.entity-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe how many records the named entity matches",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.entity-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-entity-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.entity-ambiguous",
+        "version": 1
+      },
+      {
+        "id": "appworld.entity-unique",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.receipt-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.receipt-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.app-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe the receipts the application issued, with complete coverage",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.app-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-receipt-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.action-confirmed",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.account-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.account-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.account-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe whether the application serves the named account",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.account-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-account-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.account-exists",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.list-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.list-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.list-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe the contents and size of a public list, with complete coverage",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.list-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-list-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.list-contains",
+        "version": 1
+      },
+      {
+        "id": "appworld.list-size",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.amount-observer",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.amount-observer",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.transfer-only",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "observe the amount and currency a transfer records",
+      "coverage_criteria": []
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "observation",
+        "schema_ref": {
+          "id": "appworld.observation",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.transfer-only",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-amount-observer",
+      "version": 1
+    },
+    "required_capabilities": [
+      "appworld.read"
+    ],
+    "side_effect_kind": "external_read",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "observes": [
+      {
+        "id": "appworld.amount-equals",
+        "version": 1
+      }
+    ]
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.fulfil-request",
+      "version": 2
+    },
+    "form": "compound",
+    "goal_signature": {
+      "signature_id": "appworld.fulfil-request",
+      "version": 2,
+      "parameter_schema_ref": {
+        "id": "appworld.operation-request-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "carry out the user's request in the named application",
+      "coverage_criteria": [
+        "c-request-satisfied",
+        "c-actions-confirmed"
+      ]
+    },
+    "input_ports": [],
+    "output_ports": [],
+    "parameter_schema_ref": {
+      "id": "appworld.operation-request-params",
+      "version": 1
+    },
+    "domain": "appworld"
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.prepare-action",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.prepare-action",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.operation-request-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "Prepare an executable Python program for the requested AppWorld application operation, without executing it. Write the program to appworld-program.py and an action candidate to actions/appworld-request.json: connector=appworld_sandbox, operation=execute, target=the exact target parameter, params={artifact_path:appworld-program.py}, reason=the user request. Return both accepted artifacts and a program output JSON with script_path and candidate_path. Execution and state confirmation belong to the root Operation after independent review.",
+      "coverage_criteria": [
+        "c-program-prepared"
+      ]
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "program",
+        "schema_ref": {
+          "id": "appworld.program",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.operation-request-params",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-prepare-action",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.write"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "preconditions": [],
+    "resource_writes": []
+  },
+  {
+    "task_type_ref": {
+      "id": "appworld.prepare-search-action",
+      "version": 1
+    },
+    "form": "primitive",
+    "goal_signature": {
+      "signature_id": "appworld.prepare-search-action",
+      "version": 1,
+      "parameter_schema_ref": {
+        "id": "appworld.operation-request-params",
+        "version": 1
+      },
+      "output_schema_ref": {
+        "id": "appworld.outputs",
+        "version": 1
+      },
+      "statement": "Prepare an executable Python program for the requested AppWorld application operation, without executing it. Write the program to appworld-program.py and an action candidate to actions/appworld-request.json: connector=appworld_sandbox, operation=execute, target=the exact target parameter, params={artifact_path:appworld-program.py}, reason=the user request. Return both accepted artifacts and a program output JSON with script_path and candidate_path. Execution and state confirmation belong to the root Operation after independent review. Resolve named entities by search and require a unique match before any mutation; refuse ambiguous matches in the prepared program.",
+      "coverage_criteria": [
+        "c-program-prepared"
+      ]
+    },
+    "input_ports": [],
+    "output_ports": [
+      {
+        "port_key": "program",
+        "schema_ref": {
+          "id": "appworld.program",
+          "version": 1
+        },
+        "cardinality": "single",
+        "required": true
+      }
+    ],
+    "parameter_schema_ref": {
+      "id": "appworld.operation-request-params",
+      "version": 1
+    },
+    "operator_ref": {
+      "id": "appworld.op-prepare-search-action",
+      "version": 1
+    },
+    "required_capabilities": [
+      "repo.write"
+    ],
+    "side_effect_kind": "local_write",
+    "reversible": true,
+    "reuse_policy": "new_work",
+    "domain": "appworld",
+    "preconditions": [],
+    "resource_writes": []
+  }
+]

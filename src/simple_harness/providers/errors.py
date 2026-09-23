@@ -32,6 +32,12 @@ class ProviderError(HarnessError):
             private_cause=private_cause,
         )
 
+    def to_dict(self) -> dict[str, bool | int | str]:
+        result = super().to_dict()
+        if self.status_code is not None:
+            result["status_code"] = self.status_code
+        return result
+
 
 class ProviderAuthenticationError(ProviderError):
     __slots__ = ()
@@ -73,10 +79,31 @@ class ProviderCancelledError(ProviderError):
 
 
 class ProviderTransportError(ProviderError):
-    __slots__ = ()
+    __slots__ = ("transport_error_type",)
     error_code = "provider_transport_error"
     default_message = "Provider transport failed."
     default_retryable = True
+
+    def __init__(
+        self, *, transport_error_type: str | None = None,
+        public_message: str | None = None, retryable: bool | None = None,
+        status_code: int | None = None, private_cause: BaseException | None = None,
+    ) -> None:
+        if transport_error_type not in {
+            None, "ConnectError", "ReadError", "WriteError", "CloseError",
+            "LocalProtocolError", "RemoteProtocolError", "ProxyError",
+            "UnsupportedProtocol", "RequestError",
+        }:
+            raise ValueError("unsupported transport error category")
+        self.transport_error_type = transport_error_type
+        super().__init__(public_message=public_message, retryable=retryable,
+                         status_code=status_code, private_cause=private_cause)
+
+    def to_dict(self) -> dict[str, bool | int | str]:
+        result = super().to_dict()
+        if self.transport_error_type is not None:
+            result["transport_error_type"] = self.transport_error_type
+        return result
 
 
 class ProviderRequestRejectedError(ProviderError):

@@ -70,6 +70,9 @@ def citation_page(
     offset: int = 0,
     limit: int = MAX_PAGE_CHARS,
 ) -> dict[str, Any]:
+    gate = getattr(store, "_assurance_root_gate", None)
+    if gate is not None:
+        gate.require_execution()
     if (
         any(
             not isinstance(value, str) or not value for value in (mission_id, result_id, receipt_id)

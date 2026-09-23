@@ -188,6 +188,27 @@ def output_ports_in_revision(
 
     covered = criterion_linked_occurrences(coverage_in_revision(semantics, mission_id, revision))
     binding = semantics.task_semantics_of(mission_id, str(task_id)) if producer in covered else None
+    # The completion protocol explicitly freezes even preparation-only and single
+    # primitive Task contracts. Their required ports remain declared without a
+    # Method criterion link or a downstream consumer.
+    from .scoped_content_review import uses_completion_protocol
+
+    if uses_completion_protocol(semantics._store, mission_id):
+        from ..contracts.operation_completion import PlanRevisionPinV1
+        from .operation_completion import OperationCompletionReader
+
+        active = semantics.active_plan_revision(mission_id)
+        if active is None or int(active.revision) != int(revision):
+            raise ContractError("declared completion ports require the current plan")
+        scope = OperationCompletionReader(semantics._store).read_scope(
+            mission_id,
+            PlanRevisionPinV1(revision=revision, snapshot_hash=active.snapshot_hash),
+            str(producer),
+        )
+        if scope.task_ref.id != str(task_id):
+            raise ContractError("declared completion ports belong to another Task")
+        binding = semantics.task_semantics_of(mission_id, str(task_id))
+        covered = covered | {producer}
     return declared_ports_in_revision(
         semantics.list_data_requirements(mission_id, revision),
         producer,

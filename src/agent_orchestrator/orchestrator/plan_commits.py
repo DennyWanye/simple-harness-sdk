@@ -40,7 +40,7 @@ repairs, and collapsing them would tell the proposer nothing about what to do ne
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -98,6 +98,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..contracts import Event, Mission
     from ..governance.budgets import BudgetLedger
     from ..storage.store import Store
+    from .taskgraph_plan_commit import TaskGraphPlanCommitParticipant
 
 #: The one event type this module appends.  It is *new*, which is the whole point:
 #: §18.5 rule 3 allows the hierarchical mode to add event types and forbids it to
@@ -291,7 +292,12 @@ class PlanCommitsMixin:
 
     # ------------------------------------------------------------------ public entry
     def commit_plan_revision(
-        self, command: CommitPlanCommand, principal: PlanPrincipal
+        self,
+        command: CommitPlanCommand,
+        principal: PlanPrincipal,
+        *,
+        precommit_guard: Callable[[], None] | None = None,
+        taskgraph: TaskGraphPlanCommitParticipant | None = None,
     ) -> PlanCommitReceipt:
         """Apply one plan revision atomically; return the receipt (§9.4, TG §7.4)."""
 
@@ -322,6 +328,23 @@ class PlanCommitsMixin:
             replayed = self._replayed_receipt(semantics, command, intent)
             if replayed is not None:
                 return replayed
+            if precommit_guard is not None:
+                precommit_guard()
+            graph_binding = self._store.connection.execute(
+                "SELECT kernel_version FROM taskgraph_policy_bindings WHERE mission_id=?",
+                (command.mission_id,),
+            ).fetchone()
+            graph_impact = None
+            if graph_binding is not None:
+                from .taskgraph_plan_commit import TaskGraphPlanCommitParticipant
+                if (not isinstance(taskgraph, TaskGraphPlanCommitParticipant)
+                        or taskgraph.store is not self._store
+                        or taskgraph.history.store is not self._store):
+                    raise PlanCommitRejected("TASKGRAPH_COMMIT_PARTICIPANT_REQUIRED",
+                                             "enabled TaskGraph requires the installed same-Store commit participant")
+                graph_impact = taskgraph.prepare(command, principal)
+            elif taskgraph is not None:
+                raise PlanCommitRejected("TASKGRAPH_POLICY_UNAVAILABLE", "TaskGraph is not enabled for this Mission")
             if mission.status in TERMINAL_MISSION:
                 raise PlanCommitRejected(
                     "MISSION_NOT_WRITABLE",
@@ -333,11 +356,17 @@ class PlanCommitsMixin:
             self._check_read_set(semantics, command, read_set)
             base, new_revision = self._check_plan_revision(semantics, command)
             self._check_structure(semantics, command)
+            self._check_binding_rewrites(semantics, command)
+            self._check_resolution_reuses(command)
             obligations = ObligationStore(self._store)
             self._check_commit_ready(obligations, command)
             self._check_budget(semantics, obligations, command)
-            revoked = self._revoke_running_work(semantics, command)
-            return self._write(
+            revoked = self._revoke_running_work(
+                semantics, command,
+                revocation_targets=(frozenset(item.occurrence_id for item in graph_impact.targets)
+                                    if graph_impact is not None else (frozenset() if taskgraph is not None else None)),
+            )
+            receipt = self._write(
                 semantics,
                 obligations,
                 command,
@@ -347,6 +376,83 @@ class PlanCommitsMixin:
                 intent=intent,
                 revoked=revoked,
             )
+            if taskgraph is not None:
+                taskgraph.record_applied(command, receipt)
+            return receipt
+
+    def _check_resolution_reuses(self, command: CommitPlanCommand) -> None:
+        if not command.delta.resolution_reuses:
+            return
+        from .planning_graph_repairs import graph_repair_sources
+        sources = {row["resolution_ref"]["id"]: row["resolution_ref"]
+                   for row in graph_repair_sources(self._store, command.network) if row["resolution_ref"] is not None}
+        for ref in command.delta.resolution_reuses:
+            current = sources.get(ref.id)
+            if current is None or current["semantic_revision"] != ref.revision or current["content_hash"] != ref.content_hash:
+                raise PlanCommitRejected("REQUEST_BINDING_STALE", "reused GoalResolution is no longer CURRENT and adopted")
+
+    def _check_binding_rewrites(self, semantics: HtnStore, command: CommitPlanCommand) -> None:
+        """H4 rewires lineage/input control; Task meaning and duty stay immutable."""
+        if not command.delta.binding_rewrites:
+            return
+        from ..storage.planning_decision_store import PlanningDecisionStore
+        protocol = PlanningDecisionStore(self._store).get_mission_protocol(command.mission_id)
+        if protocol is None or protocol["protocol_version"] != "planning-decision-v1" or int(protocol["package_version"]) < 7:
+            raise PlanCommitRejected("DECISION_NOT_ENABLED_IN_PHASE", "binding rewrites require H4")
+        revoked = {str(item) for item in command.superseded_occurrences} | self._retired_children(semantics, command)
+        control_fields = {"contract_revision", "occurrence_binding", "adopted_method_instance_id", "input_binding_revision", "dispatch_generation"}
+        # Accepted work keeps its immutable Task/result lineage. Changing its
+        # input requires a successor, never clearing accepted_result_id in place.
+        input_changes = [item.binding for item in command.delta.binding_rewrites
+                         if (old := semantics.task_semantics_of(command.mission_id, str(item.binding.task_id))) is not None
+                         and int(item.binding.input_binding_revision) != int(old.input_binding_revision)]
+        for changed in input_changes:
+            task = self._store.get_task(str(changed.task_id))
+            if task is None or task.mission_id != command.mission_id or task.accepted_result_id:
+                raise PlanCommitRejected("REPAIR_NOT_ALLOWED", "accepted or missing dependent requires an explicit successor")
+            if any(str(row.task_id) == str(changed.task_id) and str(row.validity) == "CURRENT"
+                   for row in semantics.list_acceptances(command.mission_id)):
+                raise PlanCommitRejected("REPAIR_NOT_ALLOWED", "accepted dependent requires an explicit successor")
+            if any(str(row.goal_task_id) == str(changed.task_id) and str(row.validity) == "CURRENT"
+                   for row in semantics.list_goal_resolutions(command.mission_id)):
+                raise PlanCommitRejected("REPAIR_NOT_ALLOWED", "resolved dependent requires an explicit successor")
+        if input_changes:
+            from ..planning.htn.graph_repair import affected_occurrences
+            from .repair_impact import read_repair_impact_indexes
+            indexes = read_repair_impact_indexes(self._store, command.network, command.mission_id)
+            required = {str(item) for item in affected_occurrences(command.network,
+                tuple(str(item.task_id) for item in input_changes), indexes)}
+            if not required.issubset({str(item) for item in command.superseded_occurrences}):
+                raise PlanCommitRejected("REQUEST_BINDING_STALE", "repair impact grew after preview")
+        for rewrite in command.delta.binding_rewrites:
+            new = rewrite.binding
+            old = semantics.task_semantics_of(command.mission_id, str(new.task_id))
+            if old is None or content_hash_of(old.to_json()) != rewrite.expected_hash:
+                raise PlanCommitRejected("REQUEST_BINDING_STALE", "rewritten Task binding changed")
+            before, after = old.to_json(), new.to_json()
+            if {k: v for k, v in before.items() if k not in control_fields} != {k: v for k, v in after.items() if k not in control_fields}:
+                raise PlanCommitRejected("STRUCTURE_INVALID", "a binding rewrite cannot change Task meaning or Obligation")
+            specs = [spec for spec in command.network.occurrences if spec.task_id == new.task_id]
+            if not specs or not {str(spec.occurrence_id) for spec in specs}.issubset(revoked):
+                raise PlanCommitRejected("RUNNING_WORK_NOT_RECONCILED", "rewritten Task needs explicit execution-right revocation")
+            if (int(new.contract_revision) != int(old.contract_revision) + 1
+                    or int(new.dispatch_generation) != int(old.dispatch_generation) + 1
+                    or int(new.input_binding_revision) not in {int(old.input_binding_revision), int(old.input_binding_revision) + 1}):
+                raise PlanCommitRejected("STRUCTURE_INVALID", "binding control revisions must advance without resetting")
+            if command.network.binding_for_task(new.task_id) != new:
+                raise PlanCommitRejected("STRUCTURE_INVALID", "binding rewrite differs from the validated candidate network")
+            owner = new.occurrence_binding
+            if owner is not None:
+                try:
+                    instance = command.network.instance(owner.method_instance_id)
+                except KeyError as error:
+                    raise PlanCommitRejected("STRUCTURE_INVALID", "rewritten owner is absent from candidate") from error
+                if (not command.network.is_adopted(instance.instance_id)
+                        or not any(child.slot_key == owner.slot_key
+                                   and (child.goal_occurrence_id or child.occurrence_id) == owner.occurrence_id
+                                   and owner.occurrence_id in {spec.occurrence_id for spec in specs}
+                                   for child in instance.child_bindings)):
+                    raise PlanCommitRejected("STRUCTURE_INVALID", "rewritten Task is not owned by the exact adopted slot")
 
     # ------------------------------------------------------- the proposer's own side
     def read_item_for(self, mission_id: str, kind: ReadItemKind, subject_id: str) -> ReadItem:
@@ -643,6 +749,10 @@ class PlanCommitsMixin:
         projection = validate_execution_projection(
             network.execution_projection(), command.structure_budget
         )
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self._store, command.mission_id):
+            from ..graph.taskgraph_validation import taskgraph_projection_report
+            projection = taskgraph_projection_report(network, projection)
         refinement = validate_refinement_acyclic(network)
         problems = [*projection.problems, *refinement.problems]
         if problems:
@@ -847,7 +957,8 @@ class PlanCommitsMixin:
 
     # ------------------------------------------------ gate 10: work already in flight
     def _revoke_running_work(
-        self, semantics: HtnStore, command: CommitPlanCommand
+        self, semantics: HtnStore, command: CommitPlanCommand,
+        *, revocation_targets: frozenset[str] | None = None,
     ) -> dict[str, int]:
         """Take away the execution right of everything this delta replaces (§9.4).
 
@@ -857,8 +968,9 @@ class PlanCommitsMixin:
         so the reconciliation is somebody's job rather than a hope.
         """
 
-        retired = self._retired_children(semantics, command)
-        listed = {str(item) for item in command.superseded_occurrences}
+        retired = self._retired_children(semantics, command) if revocation_targets is None else set()
+        listed = ({str(item) for item in command.superseded_occurrences}
+                  if revocation_targets is None else set(revocation_targets))
         policy = command.running_work_policy
         if policy is RunningWorkPolicy.RETAIN_IF_BINDINGS_UNCHANGED and retired - listed:
             raise PlanCommitRejected(
@@ -879,6 +991,7 @@ class PlanCommitsMixin:
         by_occurrence = self._occurrence_tasks(semantics, command)
         epoch = semantics.epoch(command.mission_id, command.scope_id)
         revoked: dict[str, int] = {}
+        rewrites = {str(item.binding.task_id): item.binding for item in command.delta.binding_rewrites}
         for occurrence in targets:
             task_id = by_occurrence.get(occurrence)
             if task_id is None:
@@ -894,8 +1007,12 @@ class PlanCommitsMixin:
                     f"task {task_id} has no semantic binding; in the hierarchical mode a "
                     "missing binding is corruption, not a legacy fallback (§18.5)",
                 )
-            superseded = _superseded(binding)
-            semantics.put_task_semantics(command.mission_id, superseded)
+            # A Task may have multiple occurrences. Its generation is global,
+            # so revoke it once, while marking every affected occurrence dirty.
+            superseded = binding if task_id in revoked else rewrites.get(task_id, _superseded(binding))
+            if task_id not in revoked:
+                semantics.put_task_semantics(command.mission_id, superseded)
+            generation = int(superseded.dispatch_generation)
             semantics.mark_dirty(
                 command.mission_id,
                 subject_kind="occurrence",
@@ -904,7 +1021,7 @@ class PlanCommitsMixin:
                 epoch=epoch,
                 reason="dispatch_generation_revoked",
             )
-            revoked[task_id] = int(superseded.dispatch_generation)
+            revoked[task_id] = generation
         return revoked
 
     def _held_by_retired_row(self, task: Any) -> int:
@@ -935,6 +1052,13 @@ class PlanCommitsMixin:
             except StoreError:  # pragma: no cover - list never raises today
                 continue
             found.update(str(child.occurrence_id) for child in bindings)
+        if command.delta.binding_rewrites:
+            # A membership rewrite preserves unchanged shared work. Only dropped
+            # memberships or explicitly rewritten bindings lose execution rights.
+            retained = {str(spec.occurrence_id) for spec in command.network.occurrences}
+            rewritten = {item.binding.task_id for item in command.delta.binding_rewrites}
+            changed = {str(spec.occurrence_id) for spec in command.network.occurrences if spec.task_id in rewritten}
+            found = (found - retained) | (found & changed)
         return found
 
     def _withdraw_retired_demands(
@@ -984,6 +1108,15 @@ class PlanCommitsMixin:
             orphaned -= {str(binding.obligation_id) for binding in draft.child_bindings}
         for draft in command.delta.method_instances:
             orphaned -= {str(binding.obligation_id) for binding in draft.child_bindings}
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self._store, command.mission_id):
+            from .taskgraph_demands import read_independent_demands
+            accounts = tuple(obligations.account(command.mission_id, identity)
+                             for identity in obligations.obligation_ids(command.mission_id))
+            independent = read_independent_demands(self._store, command.mission_id, accounts)
+            # This is the obligation ledger, not an occurrence identity lookup:
+            # a retiring method cannot withdraw somebody else's independent duty.
+            orphaned -= {item.obligation_id for item in independent}
         released: list[str] = []
         for duty in sorted(orphaned):
             account = obligations.account(command.mission_id, ObligationId(duty))
@@ -1086,6 +1219,9 @@ class PlanCommitsMixin:
             if semantics.task_semantics_of(command.mission_id, str(binding.task_id)) is None:
                 semantics.put_task_semantics(command.mission_id, binding)
 
+        # Binding rewrites were appended exactly once by _revoke_running_work,
+        # together with their new generation, in this same transaction.
+
         semantics.insert_plan_revision(
             command.mission_id,
             new_revision,
@@ -1172,7 +1308,7 @@ class PlanCommitsMixin:
             key=f"{command.mission_id}:plan-{new_revision}",
             payload=payload,
         )
-        return semantics.record_commit_receipt(
+        receipt = semantics.record_commit_receipt(
             command.mission_id,
             command_id=command.command_id,
             delta_id=delta.delta_id,
@@ -1201,6 +1337,20 @@ class PlanCommitsMixin:
                 "source": dict(command.source),
             },
         )
+
+        from ..contracts.operation_completion import PlanRevisionPinV1
+        from .operation_completion import freeze_plan_completion_scopes
+
+        freeze_plan_completion_scopes(
+            self._store,
+            mission_id=command.mission_id,
+            plan=network,
+            plan_ref=PlanRevisionPinV1(
+                revision=new_revision, snapshot_hash=content_hash_of(_network_identity(network))
+            ),
+            plan_receipt_id=receipt.command_id,
+        )
+        return receipt
 
     # --------------------------------------------- P2.3c: occurrences become work
     def _materialise_occurrences(
@@ -1310,6 +1460,10 @@ class PlanCommitsMixin:
         from .accepted_outputs import criterion_linked_occurrences
 
         linked = criterion_linked_occurrences(network.obligation_coverage)
+        from .scoped_content_review import uses_completion_protocol
+        requires_content_review = uses_completion_protocol(self._store, mission.id)
+        if requires_content_review and funded_now and "critic_review" not in self._deployed_layers:
+            raise PlanCommitRejected("VERIFIER_UNAVAILABLE", "scoped content requires a deployed Critic")
         for spec, binding in pending:
             ordinal += 1
             tokens = COMPOUND_TOKENS if spec.form is TaskForm.COMPOUND else share
@@ -1319,13 +1473,15 @@ class PlanCommitsMixin:
                     spec,
                     binding,
                     criterion_linked=spec.occurrence_id in linked,
+                    require_content_review=requires_content_review,
                     plan_revision=plan_revision,
                     budget=inherit_limits(
                         Budget(max_tokens=tokens, max_attempts=mission.budget.max_attempts),
                         mission.budget,
                     ),
                     ordinal=ordinal,
-                    deployed=frozenset(self._deployed_layers),
+                    deployed=frozenset(self._deployed_layers).intersection(
+                        self.domain_for(mission.id).runs_layers),
                     requirements=requirements,
                     now=self._store.now,
                 )

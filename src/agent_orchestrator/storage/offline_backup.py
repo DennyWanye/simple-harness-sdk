@@ -28,6 +28,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from simple_harness.execution.sqlite.schema import accepted_descriptor_rows
 
@@ -683,6 +684,35 @@ def restore_offline(bundle: Path, *, destination: Path, expected_manifest_sha256
                     if required_sources != manifest.get("required_source_cas", []):
                         raise OfflineBackupError("required_source_cas_inventory_differs")
                     _check_source_cas(stage, required_sources, files)
+                root_incarnation_id = "root-" + uuid4().hex
+                receipt = {
+                    "protocol": PROTOCOL,
+                    "backup_manifest_sha256": expected_manifest_sha256,
+                    "source_identity": manifest["source_identity"],
+                    "formal_fingerprints": manifest["formal_fingerprints"],
+                    "derived_paths": manifest["derived_paths"],
+                    "immutable_source_references": manifest["immutable_source_references"],
+                    "pending_reconciliation": manifest["pending_reconciliation"],
+                    "external_effects_rolled_back": False,
+                    "runtime_started": False,
+                    "root_incarnation_id": root_incarnation_id,
+                    "assurance_state": "QUARANTINED",
+                    "database_inventory": [item["path"] for item in manifest["databases"]],
+                    "context_sidecars": {
+                        name: item["sha256"] for name, item in manifest["files"].items()
+                        if name.endswith(".db.context.json")
+                    },
+                }
+                restore_hash = _write(stage / "restore-manifest.json", receipt)
+                _write(
+                    stage / "restore-quarantine.json",
+                    {
+                        "schema_version": 1,
+                        "root_incarnation_id": root_incarnation_id,
+                        "restore_manifest_hash": restore_hash,
+                        "state": "QUARANTINED",
+                    },
+                )
                 store = Store.open(stage / "orchestrator.db")
                 try:
                     changes = []
@@ -698,25 +728,18 @@ def restore_offline(bundle: Path, *, destination: Path, expected_manifest_sha256
                         if _digest(stage / rel) != artifact.content_hash:
                             raise OfflineBackupError("artifact_hash_differs")
                         changes.append((artifact.id, str(target / rel)))
-                    store.update_artifact_storage(changes)
+                    from .assurance_changes import relocating_restored_artifacts
+
+                    with relocating_restored_artifacts(
+                        store, root_incarnation_id=root_incarnation_id
+                    ):
+                        store.update_artifact_storage(changes)
                     fingerprints, _ = _formal(store.connection, source_root=manifest["source_root"])
                     if fingerprints != manifest["formal_fingerprints"]["orchestrator.db"]:
                         raise OfflineBackupError("restore_changed_formal_rows")
                     store.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 finally:
                     store.close()
-                receipt = {
-                    "protocol": PROTOCOL,
-                    "backup_manifest_sha256": expected_manifest_sha256,
-                    "source_identity": manifest["source_identity"],
-                    "formal_fingerprints": manifest["formal_fingerprints"],
-                    "derived_paths": manifest["derived_paths"],
-                    "immutable_source_references": manifest["immutable_source_references"],
-                    "pending_reconciliation": manifest["pending_reconciliation"],
-                    "external_effects_rolled_back": False,
-                    "runtime_started": False,
-                }
-                _write(stage / "restore-manifest.json", receipt)
                 _publish(stage, target)
                 return receipt
     except (OfflineBackupError, KeyboardInterrupt, SystemExit):

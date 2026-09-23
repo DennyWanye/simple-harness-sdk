@@ -1,0 +1,14 @@
+{"manifest_version":2,"codecs":[
+{"component":"OccurrenceSpec.to_json/from_json","kind":"occurrence","source_path":"agent_orchestrator/contracts/htn.py","source_sha256":"3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+{"component":"TaskSemanticBindingV1.to_json/from_json","kind":"task_semantics","source_path":"agent_orchestrator/contracts/htn.py","source_sha256":"3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+{"component":"MethodInstanceDraft.to_json/from_json","kind":"method_instance","source_path":"agent_orchestrator/contracts/htn.py","source_sha256":"3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+{"component":"OrderConstraint.to_json/from_json","kind":"order_constraint","source_path":"agent_orchestrator/contracts/htn.py","source_sha256":"3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+{"component":"DataRequirement.to_json/from_json","kind":"data_requirement","source_path":"agent_orchestrator/contracts/htn.py","source_sha256":"3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+{"component":"TypedEdge.to_json/from_json","kind":"typed_edge","source_path":"agent_orchestrator/contracts/htn.py","source_sha256":"3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+{"component":"ObligationCoverage.to_json/from_json","kind":"obligation_coverage","source_path":"agent_orchestrator/contracts/htn.py","source_sha256":"3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"}
+],"supporting_sources":[
+{"component":"canonical_json and validate_json_value","source_path":"simple_harness/contracts/json.py","source_sha256":"07be368843c6de6c001feee4cc99eacdaa8f8fe4cc3c67896b5621c4579b895f"},
+{"component":"TypedRef and TypedRefKind","source_path":"agent_orchestrator/contracts/semantic_base.py","source_sha256":"e60c139c9c2f372a5a0aab1bd7a0d7f9ce7e96d4fa1be07a116661395db56363"},
+{"component":"ContractError","source_path":"agent_orchestrator/contracts/models.py","source_sha256":"ca16ec7c103bbeed6e2cfd43c8cf847f2604b275b9b997b62550b4431708b582"},
+{"component":"TaskNetworkSnapshot.constructor","source_path":"agent_orchestrator/graph/task_network.py","source_sha256":"5399dd8d43a1621ce37170fa5490e5ab7b58571e7212af98bf473cf87801d370"}
+]}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "decision_type": "REPAIR",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "repair_kind": "DECLARE_RUNTIME_BLOCKED",
+    "repair_request_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "blockers": [
+      {
+        "code": "OTHER",
+        "detail": "runtime unavailable"
+      }
+    ],
+    "resumable_if": [
+      "evidence_updated"
+    ]
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

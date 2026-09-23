@@ -47,6 +47,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, NoReturn, SupportsIndex
+from .settlement import SettledTerminalOccurrence
 
 from ..artifacts.input_bindings import (
     InputManifest,
@@ -478,6 +479,7 @@ class _Context:
     evidence: EvidenceView
     input_result: ResolutionResult | None
     now_ms: int
+    settlements: Mapping[OccurrenceId, SettledTerminalOccurrence] | None
 
 
 def _refused(reason: ReadinessReason, *details: ReadinessDetail) -> _GateResult:
@@ -664,6 +666,19 @@ def _order_gate(context: _Context) -> _GateResult:
                 )
             )
             continue
+        if (constraint.release_condition is ReleaseCondition.SETTLED_TERMINAL
+                and context.settlements is not None):
+            fact = context.settlements.get(constraint.before)
+            binding = context.plan.snapshot.binding_for_occurrence(constraint.before)
+            if (fact is None or fact.mission_id != str(context.plan.mission_id)
+                    or fact.plan_revision != int(context.plan.plan_revision)
+                    or fact.occurrence_id != str(constraint.before)
+                    or fact.contract_revision != int(binding.contract_revision)
+                    or fact.dispatch_generation != int(binding.dispatch_generation)
+                    or fact.outcome != str(outcome)):
+                problems.append(ReadinessDetail(code="order_settlement_pending", subject=str(constraint.before),
+                    message="the predecessor lacks complete original runtime, Operation and accounting settlement"))
+                continue
         if order_released(outcome, constraint.release_condition):
             continue
         code = (
@@ -1061,22 +1076,20 @@ READINESS_PRECEDENCE: tuple[ReadinessReason, ...] = gate_precedence()
 # --------------------------------------------------------------------------------------
 
 
+def _current_method_owners(plan: ActivePlanView, binding: TaskSemanticBindingV1) -> tuple[Any, ...]:
+    """Live memberships, including retained goals whose creation owner retired."""
+    occurrences = {spec.occurrence_id for spec in plan.snapshot.occurrences
+                   if spec.task_id == binding.task_id}
+    return tuple(sorted((draft for draft in plan.snapshot.method_instances
+        if plan.snapshot.is_adopted(draft.instance_id) and any(
+            (child.goal_occurrence_id or child.occurrence_id) in occurrences
+            for child in draft.child_bindings)), key=lambda draft: str(draft.instance_id)))
+
+
 def _method_read(plan: ActivePlanView, binding: TaskSemanticBindingV1) -> tuple[ReadItem, ...]:
-    occurrence_binding = binding.occurrence_binding
-    if occurrence_binding is None:
-        return ()
-    try:
-        draft = plan.snapshot.instance(occurrence_binding.method_instance_id)
-    except KeyError:
-        return ()
-    return (
-        ReadItem(
-            kind=ReadItemKind.METHOD,
-            id=str(draft.instance_id),
-            semantic_revision=int(draft.plan_revision),
-            content_hash=content_hash_of(draft.to_json()),
-        ),
-    )
+    return tuple(ReadItem(kind=ReadItemKind.METHOD, id=str(draft.instance_id),
+        semantic_revision=int(draft.plan_revision), content_hash=content_hash_of(draft.to_json()))
+        for draft in _current_method_owners(plan, binding))
 
 
 def _acceptance_reads(manifest: InputManifest | None) -> tuple[ReadItem, ...]:
@@ -1277,6 +1290,7 @@ def evaluate_readiness(
     input_result: ResolutionResult | None,
     *,
     now_ms: int,
+    settlements: Mapping[OccurrenceId, SettledTerminalOccurrence] | None = None,
 ) -> ReadinessReport:
     """TG §8.2: one structured reason, no model call, no ledger write, no state change.
 
@@ -1295,6 +1309,7 @@ def evaluate_readiness(
         evidence=evidence,
         input_result=input_result,
         now_ms=index(now_ms, "now_ms"),
+        settlements=settlements,
     )
     read_set = build_read_set(view, plan, evidence, input_result)
 
@@ -1565,7 +1580,7 @@ def admit_for_dispatch(
         raise NotEligible(
             f"the manifest belongs to {manifest.consumer_task_ref!s}, not {view.task_id!s}"
         )
-    occurrence_binding = binding.occurrence_binding
+    owners = _current_method_owners(plan, binding)
     # Hash the manifest *before* opening the admission window, so an unfrozen
     # manifest raises ManifestNotFrozen without the guard ever being lifted.
     manifest_hash = manifest.manifest_hash()
@@ -1583,7 +1598,7 @@ def admit_for_dispatch(
             input_binding_revision=binding.input_binding_revision,
             input_manifest_hash=manifest_hash,
             method_instance_id=(
-                None if occurrence_binding is None else occurrence_binding.method_instance_id
+                None if not owners else owners[0].instance_id
             ),
             requirement_refs=binding.requirement_refs,
             acceptance_ids=tuple(item.id for item in _acceptance_reads(manifest)),

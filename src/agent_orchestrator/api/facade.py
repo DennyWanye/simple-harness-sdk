@@ -27,6 +27,7 @@ envelope or a request field).
 from __future__ import annotations
 
 import hashlib
+from functools import wraps
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,8 @@ OPEN_FIELDS = frozenset(
         "conflict_reserve_tokens",
         "search_policy_version_id",
         "runtime_profile_id",
+        "orchestration_semantics_version",
+        "planning_protocol_version",
         "workspace_seed",
         "domain",  # P3.3 (D1): which domain profile this Mission freezes
     }
@@ -98,6 +101,14 @@ class FacadeError(ValueError):
         self.code = code
 
 
+def _native_root(method):
+    @wraps(method)
+    def checked(self, *args, **kwargs):
+        self._require_native_root()
+        return method(self, *args, **kwargs)
+    return checked
+
+
 class MissionControlV1:
     def __init__(self, orchestrator: Any, *, tenant_id: str, principal: Principal) -> None:
         if not str(tenant_id).strip():
@@ -114,7 +125,80 @@ class MissionControlV1:
         return self._orchestrator.store
 
     # ------------------------------------------------------------ ownership
+    def _require_native_root(self) -> None:
+        from ..assurance.codec import AssuranceError
+
+        gate = self._orchestrator.commit._assurance_root_gate
+        if gate is not None:
+            try:
+                gate.require_execution()
+            except AssuranceError as error:
+                raise FacadeError(error.code, "root requires current authorization") from error
+
+    def assurance_root_diagnostic(self) -> dict[str, Any]:
+        gate = self._orchestrator.commit._assurance_root_gate
+        return ({"state": "NOT_INSTALLED", "execution_allowed": False,
+                 "current_authentication_required": True} if gate is None else gate.diagnostic())
+
+    @_native_root
+    def approve_assurance_check_policy(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        from ..assurance.checks import CriterionPolicy
+        from ..assurance.codec import AssuranceError, array, fields
+        from ..assurance.refs import AssuranceRef
+
+        try:
+            body = fields(dict(command), {"mission_id", "command_id", "requirements_ref",
+                "completion_scope", "candidate_mapping"}, {"result_ref"})
+            self._mission(body["mission_id"])
+            ref = self._orchestrator.commit.approve_assurance_check_policy(
+                tenant_id=self._tenant, principal=self._principal,
+                mission_id=body["mission_id"], command_id=body["command_id"],
+                requirements_ref=AssuranceRef.from_json(body["requirements_ref"], kinds={"requirements"}),
+                completion_scope=AssuranceRef.from_json(body["completion_scope"], kinds={"completion_scope"}),
+                candidate_mapping=tuple(CriterionPolicy.from_json(row)
+                    for row in array(body["candidate_mapping"], minimum=1)),
+                result_ref=None if body.get("result_ref") is None else
+                    AssuranceRef.from_json(body["result_ref"], kinds={"result"}),
+            )
+            return {"check_policy_ref": ref.to_json()}
+        except AssuranceError as error:
+            raise FacadeError(error.code, "check policy approval refused") from error
+
+    def install_assurance_root(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        """Authenticated native installation; caller identity never comes from the body."""
+        from ..assurance.codec import AssuranceError, fields
+
+        try:
+            body = fields(dict(command), {"command_id"})
+            ref = self._orchestrator.commit.install_assurance_root(
+                principal=self._principal, tenant_id=self._tenant, command_id=body["command_id"],
+            )
+            return {"state": "NATIVE", "receipt_ref": ref.to_json(), "restart_required": True}
+        except AssuranceError as error:
+            raise FacadeError(error.code, "native root installation refused") from error
+
+    def reauthorize_restored_read(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        from ..assurance.codec import AssuranceError, array, fields
+        from ..assurance.refs import AssuranceRef
+
+        try:
+            body = fields(dict(command), {"command_id", "root_incarnation_id", "restore_manifest_hash",
+                                         "targets"}, {"ttl_ms"})
+            targets = []
+            for value in array(body["targets"], minimum=1):
+                row = fields(value, {"mission_id", "ref", "purpose"})
+                targets.append((row["mission_id"], AssuranceRef.from_json(row["ref"]), row["purpose"]))
+            ref = self._orchestrator.commit.reauthorize_restored_read(
+                principal=self._principal, tenant_id=self._tenant,
+                **{key: value for key, value in body.items() if key != "targets"}, targets=targets,
+            )
+            return {"state": "READ_ONLY_REAUTHORIZED", "execution_allowed": False,
+                    "receipt_ref": ref.to_json()}
+        except AssuranceError as error:
+            raise FacadeError(error.code, "restored read authorization refused") from error
+
     def _mission(self, mission_id: object) -> Any:
+        self._require_native_root()
         mission = self._store.get_mission(str(mission_id))
         if mission is None or mission.tenant_id != self._tenant:
             raise FacadeError("not_found", NOT_FOUND)
@@ -140,6 +224,98 @@ class MissionControlV1:
                 raise FacadeError("secret_rejected", "the text looks like it contains a secret")
 
     # ------------------------------------------------------------ commands
+    @_native_root
+    def planning_authorization(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        """Explicit Host commands over the existing authenticated grant issuer.
+
+        The caller supplies no principal, tenant, decision allowlist or policy;
+        those remain fixed by this facade and the original issuer API.
+        """
+        from .planning_authorization import PlanningAuthorizationApi
+        operation = command.get("operation")
+        fields = {
+            "issue": {"mission_id", "request_id", "command_id"},
+            "bind": {"request_id", "grant_id"},
+            "renew": {"grant_id", "expected_revision", "command_id"},
+            "revoke": {"grant_id", "expected_revision", "command_id", "reason"},
+        }
+        if not isinstance(operation, str) or operation not in fields or set(command) != fields[operation] | {"operation"}:
+            raise FacadeError("invalid_request", "unknown planning authorization command or fields")
+        body = {key: command[key] for key in fields[operation]}
+        for key, value in body.items():
+            if key == "expected_revision":
+                if type(value) is not int or value < 1:
+                    raise FacadeError("invalid_request", "expected_revision must be a positive integer")
+            elif not isinstance(value, str) or not value.strip():
+                raise FacadeError("invalid_request", "planning authorization identifiers must be nonempty strings")
+        self._clean(*(v for v in body.values() if isinstance(v, str)))
+        api = PlanningAuthorizationApi(self._orchestrator.commit, tenant_id=self._tenant,
+            principal=self._principal, deployment=self._orchestrator.config.deployment_policy)
+        try:
+            if operation == "bind":
+                return api.bind_request(**body)
+            receipt = getattr(api, operation)(**body)
+            return receipt.to_json()
+        except (ContractError, ValueError, StoreError) as error:
+            raise FacadeError("refused", str(error)) from error
+
+    @_native_root
+    def answer_planning_question(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        from ..storage.planning_human_store import PlanningHumanStore
+        if set(command) != {"decision_id", "answer", "expected_version", "nonce"}:
+            raise FacadeError("invalid_request", "answer requires decision_id, answer, expected_version and nonce")
+        if not all(isinstance(command[k], str) for k in ("decision_id", "answer", "nonce")):
+            raise FacadeError("invalid_request", "answer fields must be strings")
+        if type(command["expected_version"]) is not int:
+            raise FacadeError("invalid_request", "expected_version must be an integer")
+        self._clean(command["answer"])
+        try:
+            return PlanningHumanStore(self._store).answer(
+                **dict(command), tenant_id=self._tenant, principal=self._principal)
+        except (ValueError, StoreError) as error:
+            raise FacadeError("invalid_request", str(error)) from error
+
+    @_native_root
+    def submit_operation_intent(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        from .operation_intents import OperationIntentApi
+
+        try:
+            return OperationIntentApi(
+                self._orchestrator, tenant_id=self._tenant, principal=self._principal,
+            ).submit(command)
+        except (ContractError, ValueError, StoreError) as error:
+            raise FacadeError(getattr(error, "code", "invalid_request"), str(error)) from error
+
+    @_native_root
+    def operation_intent_status(self, intent_id: str) -> dict[str, Any]:
+        from .operation_intents import OperationIntentApi
+
+        try:
+            return OperationIntentApi(
+                self._orchestrator, tenant_id=self._tenant, principal=self._principal,
+            ).status(intent_id)
+        except (ContractError, ValueError, StoreError) as error:
+            raise FacadeError(getattr(error, "code", "invalid_request"), str(error)) from error
+
+    @_native_root
+    def approve_operation_completion_spec(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        """Confirm the exact completion mapping using this facade's fixed caller."""
+        from .operation_completion import OperationCompletionApi
+        from ..orchestrator.operation_completion import OperationCompletionError
+
+        try:
+            receipt = OperationCompletionApi(
+                self._orchestrator.commit, tenant_id=self._tenant, principal=self._principal,
+            ).approve(command)
+        except OperationCompletionError as error:
+            raise FacadeError(error.code, str(error)) from error
+        except ContractError as error:
+            raise FacadeError("invalid_request", str(error)) from error
+        except StoreError as error:
+            raise FacadeError("conflict", str(error)) from error
+        return receipt.to_json()
+
+    @_native_root
     def create(self, command: Mapping[str, Any]) -> dict[str, Any]:
         request = self._strict(command)
         self._clean(*self._texts(request))
@@ -164,6 +340,7 @@ class MissionControlV1:
             "facade": FACADE_VERSION,
         }
 
+    @_native_root
     def create_with_sources(self, command: Mapping[str, Any]) -> dict[str, Any]:
         """Create the Mission and all initial source registrations before Host wake."""
         if not isinstance(command, Mapping) or set(command) != {"mission", "sources"}:
@@ -480,6 +657,7 @@ class MissionControlV1:
             raise FacadeError("refused", str(error)) from error
 
     # ------------------------------------------------------------ reads
+    @_native_root
     def missions(self, *, limit: int = 50) -> list[dict[str, Any]]:
         store = self._store
         with store.read_view():
@@ -502,6 +680,19 @@ class MissionControlV1:
         with store.read_view():  # the snapshot and its cursor come from one read
             mission = self._mission(mission_id)
             snapshot = store.snapshot(mission.id)
+            from ..storage.planning_human_store import PlanningHumanStore
+            snapshot["planning_questions"] = PlanningHumanStore(store).list(mission.id)
+            from ..orchestrator.planning_selection import awaits_authority
+            from ..storage.planning_decision_store import PlanningDecisionStore
+            planning = PlanningDecisionStore(store)
+            snapshot["planning_authorization_requests"] = [
+                {"mission_id": mission.id, "request_id": request.request_id,
+                 "intent_id": intent.intent_id, "state": "AUTHORIZATION_REQUIRED"}
+                for intent in store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED")
+                if intent.mission_id == mission.id and awaits_authority(store, intent)
+                and (request := planning.get_planning_request_for_intent(intent.intent_id)) is not None]
+            from .operation_workspace import operation_workspace
+            snapshot["operation_workspace"] = operation_workspace(self._orchestrator, mission, principal=self._principal)
             through = store.last_event_seq(mission.id)
         report = dict(mission.final_report or {})
         return {
@@ -535,6 +726,7 @@ class MissionControlV1:
             "has_more": has_more,
         }
 
+    @_native_root
     def approvals(self, mission_id: str | None = None) -> list[dict[str, Any]]:
         if mission_id is not None:
             self._mission(mission_id)
@@ -542,6 +734,7 @@ class MissionControlV1:
         mine = {m.id for m in self._store.list_missions() if m.tenant_id == self._tenant}
         return [item for item in self._approvals.list(None) if item.get("mission_id") in mine]
 
+    @_native_root
     def citation_read(
         self,
         mission_id: str,
@@ -572,6 +765,36 @@ class MissionControlV1:
         except StoreError as error:
             raise FacadeError("refused", "citation storage is unavailable") from error
 
+    def _authorize_artifact_read(self, artifact: Any):
+        from ..assurance.codec import AssuranceError
+        from ..assurance.refs import AssuranceRef, Pin
+
+        commit = self._orchestrator.commit
+        gate = commit._assurance_root_gate
+        if gate is None:
+            return None
+        try:
+            try:
+                gate.require_execution()
+                return None  # Native-root ownership remains the original tenant check.
+            except AssuranceError:
+                pass
+            authority = commit._assurance_read_authority
+            if authority is None:
+                raise AssuranceError("CURRENT_READ_AUTHORITY_UNAVAILABLE")
+            ref = AssuranceRef("artifact", Pin(artifact.id, artifact.version, artifact.content_hash))
+            current = authority(self._principal, self._tenant, artifact.mission_id, ref, "DISCLOSE")
+            from ..orchestrator.assurance_clock import observe_assurance_clock
+
+            now_ms = int(self._store.now * 1000)
+            if observe_assurance_clock(commit, now_ms=now_ms).state != "STABLE":
+                raise AssuranceError("TIME_DISCONTINUITY")
+            return gate.require_read(principal=self._principal, tenant_id=self._tenant,
+                mission_id=artifact.mission_id, ref=ref, purpose="DISCLOSE", current=current,
+                now_ms=now_ms)
+        except AssuranceError as error:
+            raise FacadeError(error.code, "artifact needs current read authorization") from error
+
     def artifact_read(self, artifact_id: str) -> dict[str, Any]:
         identifier = str(artifact_id)
         artifact = None
@@ -579,7 +802,10 @@ class MissionControlV1:
             artifact = self._store.get_artifact(identifier)
         if artifact is None:
             raise FacadeError("not_found", NOT_FOUND)
-        self._mission(artifact.mission_id)
+        mission = self._store.get_mission(artifact.mission_id)
+        if mission is None or mission.tenant_id != self._tenant:
+            raise FacadeError("not_found", NOT_FOUND)
+        access = self._authorize_artifact_read(artifact)
         # review round 2 P2-2: one streaming read hashes everything and keeps the head, so
         # the returned content is exactly the bytes whose hash was checked
         digest = hashlib.sha256()
@@ -602,6 +828,9 @@ class MissionControlV1:
             raise FacadeError(
                 "integrity_error", "the artifact's content no longer matches its recorded hash"
             )
+        current_artifact = self._store.get_artifact(identifier)
+        if current_artifact != artifact or self._authorize_artifact_read(artifact) != access:
+            raise FacadeError("RECHECK_REQUIRED", "artifact authorization changed while reading")
         truncated = size > MAX_ARTIFACT_BYTES
         body = bytes(head[:MAX_ARTIFACT_BYTES])
         content: str | None

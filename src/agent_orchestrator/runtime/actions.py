@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -78,11 +78,13 @@ class ActionExecutor:
         owner: str,
         lease_seconds: float | None = None,
         source_storage_roots: Sequence[Path | str] | None = None,
+        require_execution_root: Callable[[], None] | None = None,
     ) -> None:
         self._commit = commit
         self._connectors = dict(connectors)
         self._deployment = deployment
         self._owner = owner
+        self._execution_root_check = require_execution_root
         # The assembly supplies the actual CAS/workspace roots. A custom/embedded
         # deployment must not silently guess their location from the SQLite filename.
         self._source_storage_roots = (
@@ -93,6 +95,18 @@ class ActionExecutor:
         self._lease = float(lease_seconds) if lease_seconds is not None else 2 * self._timeout + 5.0
         self._inflight: set[str] = set()
         self.last_refusal: dict[str, str] = {}  # action_key -> why begin_handoff said no
+
+    def _require_execution_root(self) -> None:
+        gate = self._commit._assurance_root_gate
+        if gate is not None:
+            gate.require_execution()
+        if self._execution_root_check is not None:
+            self._execution_root_check()
+
+    def _external_call(self, callback, *args, **kwargs):
+        # Check in the actual worker thread, after the asynchronous handoff gap.
+        self._require_execution_root()
+        return callback(*args, **kwargs)
 
     @property
     def inflight(self) -> frozenset[str]:
@@ -132,6 +146,7 @@ class ActionExecutor:
         return "source_publish_root_overlap" if overlaps else None
 
     async def hand_off(self, action_key: str, *, rehandoff: bool = False) -> dict[str, Any] | None:
+        self._require_execution_root()
         action, _reason = self._commit.begin_handoff(
             action_key,
             owner=self._owner,
@@ -148,6 +163,7 @@ class ActionExecutor:
         self._inflight.add(action_key)
         call = asyncio.ensure_future(
             asyncio.to_thread(
+                self._external_call,
                 connector.execute,
                 str(action["operation"]),
                 str(action["target"]),
@@ -192,42 +208,125 @@ class ActionExecutor:
         else:
             call.add_done_callback(finished)
 
-    async def reconcile(self, mission_id: str | None = None) -> list[dict[str, Any]]:
-        """UNKNOWN actions, and hand-offs whose lease lapsed without an outcome, of every
-        Mission — an ended one included (review P1-4 ⑤): reality does not stop with it."""
+    async def _rehandoff_scoped(self, key: str, runtime: Any) -> dict[str, Any]:
+        again = await self.hand_off(key, rehandoff=True)
+        if again is not None:
+            return again
+        return self._commit.finish_proven_nonapplication(
+            key,
+            reason=self.last_refusal.get(key, "current_gate_refused"),
+            service_authority=runtime.service_authority,
+        )
 
-        settled: list[dict[str, Any]] = []
-        now = self._commit.store.now
+    async def reconcile(self, mission_id: str | None = None) -> list[dict[str, Any]]:
+        """Use the original scoped reconciliation protocol for every live action."""
+        settled = []
         for action in self._commit.store.list_actions(mission_id, "UNKNOWN", "HANDED_OFF"):
-            key = str(action["action_key"])
-            if key in self._inflight:
-                continue
-            if action["state"] == "HANDED_OFF" and float(action.get("lease_expires_at") or 0) > now:
-                continue  # a live hand-off may still be on its way
-            connector = self._connectors.get(str(action["connector"]))
-            receipt: Receipt | None = None
-            if connector is None or not getattr(connector, "supports_reconciliation", False):
+            updated = await self.reconcile_one(str(action["action_key"]), allow_rehandoff=True)
+            if updated is not None:
+                settled.append(updated)
+        return settled
+
+    async def reconcile_one(self, action_key: str, *, allow_rehandoff: bool = False) -> dict[str, Any] | None:
+        """Observe one exact Action; TaskGraph convergence never re-sends it."""
+        self._require_execution_root()
+        from ..orchestrator.action_commits import ActionCommitError
+        store = self._commit.store
+        if store.connection.in_transaction:
+            raise ActionCommitError("action reconciliation cannot run inside a Store transaction")
+        action = store.get_action(action_key)
+        if action is None:
+            raise ActionCommitError("action reconciliation source is unavailable")
+        if action["state"] not in {"UNKNOWN", "HANDED_OFF"}:
+            return action
+        def require_current() -> None:
+            current = store.get_action(action_key)
+            fields = ("mission_id", "action_id", "version", "params_hash", "idempotency_key", "handoffs")
+            if current is None or any(current.get(field) != action.get(field) for field in fields):
+                raise ActionCommitError("action changed during reconciliation")
+        key = str(action["action_key"])
+        if key in self._inflight:
+            return None
+        if action["state"] == "HANDED_OFF" and float(action.get("lease_expires_at") or 0) > store.now:
+            return None  # a live hand-off may still be on its way
+        runtime = getattr(self._commit, "_operation_materialization_runtime", None)
+        if runtime is not None:
+            from .operation_reconciliation import stored_negative_proof
+
+            if stored_negative_proof(self._commit.store, action):
+                return await self._rehandoff_scoped(key, runtime) if allow_rehandoff else action
+        connector = self._connectors.get(str(action["connector"]))
+        receipt: Receipt | None = None
+        if connector is None or not getattr(connector, "supports_reconciliation", False):
+            verdict = "STILL_UNKNOWN"
+        else:
+            try:
+                found = await asyncio.wait_for(
+                    asyncio.to_thread(self._external_call, connector.lookup, str(action["idempotency_key"])),
+                    timeout=self._timeout,
+                )
+            except Exception:  # noqa: BLE001 - the service cannot answer: still unknown
                 verdict = "STILL_UNKNOWN"
             else:
+                receipt = found if isinstance(found, Receipt) else None
+                verdict = lookup_verdict(connector, receipt)
+        # New Operation links require a scoped, registered proof. Empty lookup,
+        # timeout and an expired local lease cannot establish nonapplication.
+        from ..storage.planning_admission_store import PlanningAdmissionStore
+
+        link = PlanningAdmissionStore(self._commit.store).get_operation_action_link_for_action(
+            key
+        )
+        runtime = getattr(self._commit, "_operation_materialization_runtime", None)
+        if link is not None and verdict != "COMPLETED":
+            verdict = "STILL_UNKNOWN"
+            if runtime is not None:
+                from .operation_reconciliation import context
+
                 try:
-                    found = await asyncio.wait_for(
-                        asyncio.to_thread(connector.lookup, str(action["idempotency_key"])),
+                    with self._commit.store.read_view():
+                        resolved, _profile, adapter, events = context(
+                            self._commit.store, runtime, action
+                        )
+                    evidence = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._external_call,
+                            adapter.observe,
+                            action=action,
+                            resolved=resolved,
+                            handoff_events=events,
+                            now_ms=int(self._commit.store.now * 1000),
+                        ),
                         timeout=self._timeout,
                     )
-                except Exception:  # noqa: BLE001 - the service cannot answer: still unknown
-                    verdict = "STILL_UNKNOWN"
+                    with store.transaction():
+                        require_current()
+                        updated = self._commit.record_scoped_reconciliation(
+                            key, evidence=evidence, adapter=adapter,
+                            service_authority=runtime.service_authority)
+                except Exception:  # unavailable/incomplete protocol evidence stays unresolved
+                    with store.transaction():
+                        require_current()
+                        updated = self._commit.record_reconciliation(key, verdict="STILL_UNKNOWN")
                 else:
-                    receipt = found if isinstance(found, Receipt) else None
-                    verdict = lookup_verdict(connector, receipt)
+                    # A scoped proof does not authorize a send. The normal current
+                    # authority/approval/budget/cap gates still execute below.
+                    if (
+                        allow_rehandoff and updated["state"] == "UNKNOWN"
+                        and updated.get("reconcile") == "CONFIRMED_NOT_STARTED"
+                    ):
+                        updated = await self._rehandoff_scoped(key, runtime)
+                    return updated
+        with store.transaction():
+            require_current()
             updated = self._commit.record_reconciliation(key, verdict=verdict, receipt=receipt)
-            if (
-                updated["state"] == "UNKNOWN"
-                and updated.get("reconcile") == "CONFIRMED_NOT_STARTED"
-            ):
-                again = await self.hand_off(key, rehandoff=True)
-                updated = again or self._commit.store.get_action(key) or updated
-            settled.append(updated)
-        return settled
+        if (
+            allow_rehandoff and updated["state"] == "UNKNOWN"
+            and updated.get("reconcile") == "CONFIRMED_NOT_STARTED"
+        ):
+            again = await self.hand_off(key, rehandoff=True)
+            updated = again or self._commit.store.get_action(key) or updated
+        return updated
 
 
 __all__ = ("ActionExecutor", "lookup_verdict", "publication_overlaps_storage")

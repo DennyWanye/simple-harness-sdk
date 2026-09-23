@@ -50,11 +50,12 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "htn" / "c2_root_review
 #: episodes replay on it, so v3 is registered beside it and v2 is never edited.
 FROZEN_ROOT_REVIEWER_V2 = "75debfd9640f1c635b808cdaf7657168ce10782d9e0cd93f08450fdc0d744c76"
 
-#: H1-E closes H0's third freeze gap: v3 (the live root reviewer) was registered but
-#: had no literal anywhere.  The digest is the value H0 recorded in
+#: H1-E closes H0's third freeze gap: v3 (the pre-DeepSeek live root reviewer) was
+#: registered but had no literal anywhere.  The digest is the value H0 recorded in
 #: ``plans/llm-native-htn/H0/prompt-digests.json``; registering it here means a future
 #: edit of v3's words fails loudly instead of silently rewriting a shipped prompt.
 FROZEN_ROOT_REVIEWER_V3 = "21a7814076b72957f41c47bf21fb340d2c2243e3fc0687fb397a143373930980"
+FROZEN_ROOT_REVIEWER_V4 = "7ccbc9c6a2d9ca0fc453452d41cccdf593cb37d46a005fab78697b334753ec48"
 
 
 # ======================================================================================
@@ -179,12 +180,14 @@ def test_the_prompt_v3_reads_the_requirement_against_the_user_goal_and_v2_is_fro
         ROOT_REVIEWER_V1,
         ROOT_REVIEWER_V2,
         ROOT_REVIEWER_V2_VERSION,
+        ROOT_REVIEWER_V3,
+        ROOT_REVIEWER_V4,
         ROOT_REVIEWER_VERSION,
         TEMPLATE_VERSIONS,
         template_for,
     )
 
-    assert ROOT_REVIEWER.prompt_version == ROOT_REVIEWER_VERSION == "root-reviewer-v3"
+    assert ROOT_REVIEWER.prompt_version == ROOT_REVIEWER_VERSION == "root-reviewer-v5"
     for field in ("mission_goal", "goal_parameters"):
         assert field in ROOT_REVIEWER.instructions, field
         assert field not in ROOT_REVIEWER_V2.instructions, field
@@ -200,13 +203,22 @@ def test_the_prompt_v3_reads_the_requirement_against_the_user_goal_and_v2_is_fro
     )
     # H1-E closes H0's third freeze gap: v3, the live template, now has a literal too.
     assert (
-        hashlib.sha256(ROOT_REVIEWER.instructions.encode("utf-8")).hexdigest()
+        hashlib.sha256(ROOT_REVIEWER_V3.instructions.encode("utf-8")).hexdigest()
         == FROZEN_ROOT_REVIEWER_V3
     )
+    assert "绝不能写成 <cricit_verdict>" in ROOT_REVIEWER_V4.instructions
+    assert (
+        hashlib.sha256(ROOT_REVIEWER_V4.instructions.encode()).hexdigest()
+        == FROZEN_ROOT_REVIEWER_V4
+    )
+    assert "<cricit_verdict>" not in ROOT_REVIEWER.instructions
+    assert ROOT_REVIEWER.instructions != ROOT_REVIEWER_V3.instructions
     assert TEMPLATE_VERSIONS["root_reviewer"].keys() >= {
         "root-reviewer-v1",
         "root-reviewer-v2",
         "root-reviewer-v3",
+        "root-reviewer-v4",
+        "root-reviewer-v5",
     }
     assert template_for(ROOT_REVIEWER, {"root_reviewer": "root-reviewer-v2"}) is ROOT_REVIEWER_V2
     # Everything v2 said, v3 still says: it is a revision, not a rewrite.

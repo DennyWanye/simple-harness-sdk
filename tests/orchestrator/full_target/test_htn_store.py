@@ -100,6 +100,7 @@ from agent_orchestrator.knowledge.validity import (
 )
 from agent_orchestrator.storage import (
     acceptance_receipt_schema,
+    admission_seams_schema,
     htn_schema,
     planning_decision_schema,
     schema,
@@ -579,10 +580,14 @@ def planned(htn: HtnStore) -> HtnStore:
 # --------------------------------------------------------------------------------------
 
 
-def test_migration_nineteen_is_the_new_head() -> None:
-    assert schema.SCHEMA_VERSION == 19
-    assert schema.SCHEMA_NAME == "orchestrator-planning-decision-v1"
-    assert schema.MIGRATIONS[-1].ddl is planning_decision_schema.DDL
+def test_operation_completion_is_the_new_head_without_replacing_admission() -> None:
+    assert schema.SCHEMA_VERSION == 24
+    assert schema.SCHEMA_NAME == "orchestrator-planning-human-requests"
+    assert schema.MIGRATIONS[18].ddl is planning_decision_schema.DDL
+    assert schema.MIGRATIONS[19].ddl is admission_seams_schema.DDL
+    assert schema.MIGRATIONS[20].name == "orchestrator-operation-seams"
+    assert schema.MIGRATIONS[21].name == "orchestrator-operation-completion"
+    assert schema.MIGRATIONS[22].name == "orchestrator-method-evaluations"
 
 
 def test_migration_seventeen_is_still_migration_seventeen() -> None:
@@ -604,7 +609,7 @@ def test_migration_sixteen_is_still_migration_sixteen() -> None:
 
 
 def test_the_fifteen_older_migrations_keep_their_checksums() -> None:
-    assert len(schema.MIGRATIONS) == 19
+    assert len(schema.MIGRATIONS) == schema.SCHEMA_VERSION
     for migration, expected in zip(schema.MIGRATIONS[:15], FROZEN_MIGRATIONS, strict=True):
         assert (migration.version, migration.name, migration.checksum) == expected
 
@@ -755,13 +760,23 @@ def test_migration_eighteen_upgrades_an_existing_library_in_place(
                 "SELECT version,name,checksum FROM orch_schema_migrations ORDER BY version"
             )
         ]
-        assert applied[-2] == (
+        assert applied[17] == (
             18,
             "orchestrator-full-target-witness-subject",
             MIGRATION_18_CHECKSUM,
         )
-        assert applied[-1] == (19, schema.SCHEMA_NAME, schema.MIGRATIONS[-1].checksum)
-        assert (tmp_path / "deployed.db.pre-schema-19.backup").is_file()
+        assert applied[18] == (
+            19,
+            "orchestrator-planning-decision-v1",
+            schema.MIGRATIONS[18].checksum,
+        )
+        assert applied[19] == (20, schema.MIGRATIONS[19].name, schema.MIGRATIONS[19].checksum)
+        assert applied[-1] == (
+            schema.SCHEMA_VERSION,
+            schema.SCHEMA_NAME,
+            schema.MIGRATIONS[-1].checksum,
+        )
+        assert (tmp_path / "deployed.db.pre-schema-24.backup").is_file()
         stored = HtnStore(upgraded).list_validity_witnesses(MISSION)
         assert [item.witness_id for item in stored] == ["witness-1"]
         subjects = [
@@ -1048,15 +1063,19 @@ def test_upgrading_a_copy_of_a_v15_library_keeps_every_old_row(
         after = {table: _dump(rehearsal, table) for table in sampled}
         assert after == before
         applied = _dump(rehearsal, "orch_schema_migrations")
-        assert [row[0] for row in applied] == list(range(1, 20))
-        assert applied[-1][1] == "orchestrator-planning-decision-v1"
+        assert [row[0] for row in applied] == list(range(1, schema.SCHEMA_VERSION + 1))
+        assert applied[-1][1] == schema.SCHEMA_NAME
         assert applied[-1][2] == schema.MIGRATIONS[-1].checksum
-        assert applied[-2][1] == "orchestrator-full-target-witness-subject"
-        assert applied[-2][2] == MIGRATION_18_CHECKSUM
-        assert applied[-3][1] == "orchestrator-full-target-acceptance-receipts"
-        assert applied[-3][2] == MIGRATION_17_CHECKSUM
-        assert applied[-4][1] == "orchestrator-full-target-htn"
-        assert applied[-4][2] == MIGRATION_16_CHECKSUM
+        assert applied[19][1] == "orchestrator-h1h-admission-seams"
+        assert applied[19][2] == schema.MIGRATIONS[19].checksum
+        assert applied[18][1] == "orchestrator-planning-decision-v1"
+        assert applied[18][2] == schema.MIGRATIONS[18].checksum
+        assert applied[17][1] == "orchestrator-full-target-witness-subject"
+        assert applied[17][2] == MIGRATION_18_CHECKSUM
+        assert applied[16][1] == "orchestrator-full-target-acceptance-receipts"
+        assert applied[16][2] == MIGRATION_17_CHECKSUM
+        assert applied[15][1] == "orchestrator-full-target-htn"
+        assert applied[15][2] == MIGRATION_16_CHECKSUM
         assert applied[:15] == _dump(original, "orch_schema_migrations")[:15]
         for table in FULL_TARGET_TABLES:
             assert (
@@ -1074,7 +1093,7 @@ def test_the_upgrade_writes_a_backup_of_the_old_library(
     _open_at_version_fifteen(path, monkeypatch)
     upgraded = Store.open(path)
     upgraded.close()
-    backup = tmp_path / "v15.db.pre-schema-19.backup"
+    backup = tmp_path / "v15.db.pre-schema-24.backup"
     assert backup.is_file()
     assert [row[0] for row in _dump(backup, "orch_schema_migrations")] == list(range(1, 16))
     assert _dump(backup, "missions")

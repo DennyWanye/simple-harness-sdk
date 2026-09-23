@@ -256,6 +256,13 @@ def test_resumable_if_members_are_pinned() -> None:
 def test_repair_kind_members_are_pinned() -> None:
     assert [(m.name, m.value) for m in RepairKind] == [
         ("REPLACE_METHOD", "REPLACE_METHOD"),
+        ("REFINE_DEEPER", "REFINE_DEEPER"),
+        ("REBIND_INPUT", "REBIND_INPUT"),
+        ("CANCEL_BRANCH", "CANCEL_BRANCH"),
+        ("RETRY_SAME_METHOD", "RETRY_SAME_METHOD"),
+        ("DECLARE_RUNTIME_BLOCKED", "DECLARE_RUNTIME_BLOCKED"),
+        ("ESCALATE", "ESCALATE"),
+        ("REQUEST_COMPENSATION", "REQUEST_COMPENSATION"),
         ("PROPOSE_SUCCESSOR", "PROPOSE_SUCCESSOR"),
     ]
 

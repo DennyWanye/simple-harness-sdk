@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import posixpath
 import re
+from .domain_tools import DomainTool
+
 from bisect import bisect_right
 from collections.abc import Callable, Mapping
 from copy import deepcopy
@@ -385,6 +387,7 @@ class WorkspaceToolGateway:
         agentdojo_tool_schemas: Mapping[str, dict[str, Any]] | None = None,
         are_invoke: Callable[[str, Mapping[str, Any], str], Mapping[str, Any]] | None = None,
         are_tool_schemas: Mapping[str, dict[str, Any]] | None = None,
+        domain_tools: Mapping[str, DomainTool] | None = None,
     ) -> None:
         self._workspaces = workspaces
         self._bindings: dict[str, WorkspaceBinding] = {}
@@ -405,6 +408,11 @@ class WorkspaceToolGateway:
         self._are_schemas = deepcopy(dict(are_tool_schemas or {}))
         if set(self._are_schemas) & set(TOOL_NAMES):
             raise ValueError("ARE tools cannot replace SDK tools")
+        self._domain_tools = dict(domain_tools or {})
+        self._domain_schemas = {name: deepcopy(tool.schema) for name, tool in self._domain_tools.items()}
+        if set(self._domain_tools) & (set(TOOL_NAMES) | set(self._are_schemas) | set(self._agentdojo_schemas)):
+            raise ValueError("domain tools cannot replace existing tool names")
+        self._domain_locks: dict[str, asyncio.Lock] = {}
         self._are_mission_id: str | None = None
         self._are_lock = asyncio.Lock()
         self._are_stopped = False
@@ -422,7 +430,9 @@ class WorkspaceToolGateway:
         # per-Attempt cap is checked against that durable count (it survives a restart)
         self.on_executed: Callable[[str, Mapping[str, Any]], None] | None = None
         self.executed_counter: Callable[[str], int] | None = None
+        self.execution_refusal: Callable[[str], str | None] | None = None
         self.executed_lookup: Callable[[str], Mapping[str, Any] | None] | None = None
+        self.before_execute: Callable[[WorkspaceBinding], None] | None = None
 
     def bind(self, run_id: str, binding: WorkspaceBinding) -> None:
         self._bindings[run_id] = binding
@@ -588,11 +598,11 @@ class WorkspaceToolGateway:
             )
         arguments = dict(call.arguments)
         # 2. argument schema
-        if call.name in self._agentdojo_schemas or call.name in self._are_schemas:
+        if call.name in (self._agentdojo_schemas | self._are_schemas | self._domain_schemas):
             problem = None
             try:
                 validate_arguments(
-                    arguments, (self._agentdojo_schemas | self._are_schemas)[call.name]
+                    arguments, (self._agentdojo_schemas | self._are_schemas | self._domain_schemas)[call.name]
                 )
             except ArgumentsValidationError as error:
                 problem = str(error)
@@ -615,7 +625,7 @@ class WorkspaceToolGateway:
             # External tool parameters called path refer to the original environment,
             # never the SDK report workspace.
             path = (
-                None if call.name in (self._agentdojo_schemas | self._are_schemas)
+                None if call.name in (self._agentdojo_schemas | self._are_schemas | self._domain_schemas)
                 else arguments.get("path")
             )
             if isinstance(path, str):
@@ -721,7 +731,20 @@ class WorkspaceToolGateway:
                 stage="rate",
                 message=f"this Attempt may execute at most {binding.max_tool_calls} tool calls",
             )
+        # Re-read the original Attempt control and temporary graph fence immediately
+        # before physical work. It never changes an already handed-off effect.
+        if self.before_execute is not None:
+            try:
+                self.before_execute(binding)
+            except Exception:
+                return self._reject(call, record, code="taskgraph_handoff_blocked",
+                    outcome="taskgraph_handoff_blocked", stage="permission",
+                    message="current TaskGraph execution control refuses this handoff")
         # 5. execute
+        refusal = None if self.execution_refusal is None else self.execution_refusal(binding.attempt_id)
+        if refusal is not None:
+            return self._reject(call, record, code=refusal, outcome="execution_stopped",
+                stage="authority", message="This Attempt no longer has authority to start a tool call.")
         appworld_started = False
         agentdojo_started = False
         are_started = False
@@ -759,6 +782,30 @@ class WorkspaceToolGateway:
                     value = self.knowledge_reader(binding.mission_id, call.name, arguments)
                 except ValueError as error:
                     raise WorkspaceError(str(error)) from error
+            elif call.name in self._domain_tools:
+                if binding.mission_id is None:
+                    raise WorkspaceError("domain tool requires a Mission binding")
+                tool = self._domain_tools[call.name]
+                lock = self._domain_locks.setdefault(binding.mission_id, asyncio.Lock())
+                async with lock:
+                    refusal = None if self.execution_refusal is None else self.execution_refusal(binding.attempt_id)
+                    if refusal is not None:
+                        raise WorkspaceError(refusal)
+                    pending = asyncio.create_task(asyncio.to_thread(
+                        tool.invoke, arguments, binding.mission_id, f"{run_id}:{call.call_id}"))
+                    try:
+                        value = dict(await asyncio.shield(pending))
+                    except asyncio.CancelledError:
+                        while not pending.done():
+                            try:
+                                await asyncio.shield(pending)
+                            except asyncio.CancelledError:
+                                continue
+                            except Exception:
+                                break
+                        if not pending.cancelled():
+                            pending.exception()
+                        raise
             elif call.name in self._agentdojo_schemas:
                 if (not binding.writable or binding.view != "work"
                         or self._agentdojo_invoke is None or binding.mission_id is None

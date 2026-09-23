@@ -1,0 +1,157 @@
+"""Exercise H4 retry and runtime wakes through persisted production entry points."""
+import asyncio
+import json
+from dataclasses import replace
+
+import pytest
+
+from agent_orchestrator.api.planning_authorization import PlanningAuthorizationApi
+from agent_orchestrator.governance.permissions import Principal
+from agent_orchestrator.orchestrator.commit_service import CommitRejected, Reservation
+from agent_orchestrator.orchestrator.event_handler import Orchestrator
+from agent_orchestrator.orchestrator.planning_repair_requests import collect_triggers, pending_requests
+from agent_orchestrator.orchestrator.planning_retry import pending_retry_permit
+from agent_orchestrator.orchestrator.planning_runtime_block import (
+    WOKEN, blocks_intent, last_wake, pending_block, resume_source_current, wake_blocks,
+)
+from agent_orchestrator.storage.planning_decision_store import PlanningDecisionStore
+from agent_orchestrator.testing.fixtures import RoleScriptedProvider
+from test_h1i_production_entry import _config, _seed_new_protocol, _refine_reply
+
+
+def grant(loop, mission, intent):
+    PlanningAuthorizationApi(loop.store, tenant_id=mission.tenant_id, principal=Principal(loop._owner)).issue(
+        mission.id, command_id="grant-" + intent.intent_id, request_id=intent.intent_id)
+
+
+async def refined(loop, tmp_path, key):
+    mission, world, binding, dispatch = _seed_new_protocol(loop, tmp_path, key=key)
+    intent = await loop._create_planner_intent(mission.id, ordinal=1)
+    grant(loop, mission, intent)
+    await loop._collect_plan_decision(intent, object(), mission, _refine_reply(intent.config["planning_package"]), dispatch)
+    row = PlanningDecisionStore(loop.store).get_planning_decision_by_attempt(intent.intent_id, 0)
+    assert row["status"] == "COMMITTED", row["detail_json"]
+    target = next(b for b in dispatch.network(mission.id).task_bindings
+                  if str(b.form) == "primitive" and not b.input_ports)
+    return loop.store.get_mission(mission.id), dispatch, str(target.task_id)
+
+
+def attempt(loop, task_id, retry_of=None):
+    return loop.commit.create_attempt(task_id, role="worker", model="fixture-worker",
+        prompt_version="fixture-worker-v1", context_version="h4-runtime-v1",
+        reservation=Reservation(tokens=1000, cost_micros=0),
+        intent_config={"message": "Exercise a failed dispatch and its admitted recovery."},
+        input_hash="e" * 64, inputs=(), retry_of=retry_of)
+
+
+async def repair(loop, mission, dispatch, task_id, payload, ordinal=2):
+    intent = await loop._create_planner_intent(mission.id, ordinal=ordinal)
+    package = intent.config["planning_package"]
+    subject = next(s for s in package["planning_subjects"] if s["task_id"] == task_id)
+    body = {"schema_version": 1, "decision_type": "REPAIR", "subject_key": subject["subject_key"],
+        "rationale": "Recover the recorded failed execution.", "reason_refs": [], "assumptions": [],
+        "uncertainties": [], "alternatives": [], "replan_triggers": [], "payload": payload(package)}
+    grant(loop, mission, intent)
+    await loop._collect_plan_decision(intent, object(), mission,
+        "<planning_decision>" + json.dumps(body) + "</planning_decision>", dispatch)
+    row = PlanningDecisionStore(loop.store).get_planning_decision_by_attempt(intent.intent_id, 0)
+    return intent, row
+
+
+def retry_payload(dispatch, mission, task_id, failed_id, package):
+    network = dispatch.network(mission.id)
+    occurrence = next(s.occurrence_id for s in network.occurrences if str(s.task_id) == task_id)
+    instance = next(i for i in network.method_instances
+                    if any((c.goal_occurrence_id or c.occurrence_id) == occurrence for c in i.child_bindings))
+    ref = next(r for r in package["visible_refs"]
+               if r["kind"] == "method_instance" and r["id"] == str(instance.instance_id))
+    return {"repair_kind": "RETRY_SAME_METHOD", "failed_attempt_id": failed_id, "method_instance_ref": ref}
+
+
+def test_timeout_opens_repair_and_committed_retry_is_single_use(tmp_path):
+    async def case():
+        async with Orchestrator(_config(tmp_path), RoleScriptedProvider({"planner": []})) as loop:
+            mission, dispatch, task_id = await refined(loop, tmp_path, "h4-retry-live")
+            first, first_intent = attempt(loop, task_id)
+            loop.commit.claim_intent(first_intent.intent_id, owner=loop._owner, lease_seconds=60)
+            loop.commit.record_agent_created(first_intent.intent_id, agent_id="fixture", expected_turn_id="turn-1")
+            loop.commit.record_submitted(first_intent.intent_id, receipt={"turn_id": "turn-1", "seq": 1})
+            loop.commit.mark_attempt_timed_out(first.id, reason="stalled", detail={})
+            assert collect_triggers(loop, mission)
+            assert len(pending_requests(loop.store, mission.id)) == 1
+            with pytest.raises(CommitRejected, match="current committed RETRY_SAME_METHOD"):
+                attempt(loop, task_id, first.id)
+            def payload(package):
+                return retry_payload(dispatch, mission, task_id, first.id, package)
+            _, row = await repair(loop, mission, dispatch, task_id, payload)
+            assert row["status"] == "COMMITTED", row["detail_json"]
+            assert pending_retry_permit(loop.store, mission.id, task_id) is not None
+            assert not pending_requests(loop.store, mission.id)
+            dispatch.issue_start_witnesses(mission.id)
+            assert await loop._next_attempt(loop.store.get_mission(mission.id), loop.store.get_task(task_id),
+                                            loop.store.list_attempts(task_id))
+            attempts = loop.store.list_attempts(task_id)
+            assert len(attempts) == 2
+            second = attempts[-1]
+            second_intent = loop.store.get_intent_for_subject(second.id)
+            assert second.retry_of == first.id
+            assert second_intent.config["planning_retry_decision_id"] == row["decision_id"]
+            assert pending_retry_permit(loop.store, mission.id, task_id) is None
+            with pytest.raises(CommitRejected):
+                attempt(loop, task_id, first.id)
+    asyncio.run(case())
+
+
+def test_runtime_wakes_fence_stale_planner_and_repeated_source_transitions(tmp_path):
+    async def case():
+        async with Orchestrator(replace(_config(tmp_path), max_planning_attempts=6), RoleScriptedProvider({"planner": []})) as loop:
+            mission, dispatch, task_id = await refined(loop, tmp_path, "h4-runtime-live")
+            first, _ = attempt(loop, task_id)
+            loop.commit.mark_attempt_lost(first.id, reason="runtime_unavailable")
+            assert collect_triggers(loop, mission)
+            def payload(package):
+                request = next(r for r in package["repair_requests"]
+                               if r["request"]["trigger_source"] == "RUNTIME_UNAVAILABLE")
+                return {"repair_kind": "DECLARE_RUNTIME_BLOCKED", "repair_request_id": request["request_id"],
+                        "blockers": [{"code": "OTHER", "detail": "Recorded executor is unavailable."}],
+                        "resumable_if": ["plan_revision_changed"]}
+            _, row = await repair(loop, mission, dispatch, task_id, payload)
+            assert row["status"] == "NO_STATE_CHANGE", row["detail_json"]
+            assert pending_block(loop.store, mission.id) is not None
+            assert not wake_blocks(loop)
+            with pytest.raises(CommitRejected, match="runtime block"):
+                attempt(loop, task_id, first.id)
+            def unavailable():
+                loop.commit.record_profile_failure("default", error={"reason": "unavailable"},
+                    threshold=1, cooldown_seconds=3600, mission_ids=(mission.id,))
+            unavailable()
+            assert wake_blocks(loop)
+            loop.commit.record_profile_success("default")
+            assert wake_blocks(loop)
+            resumed = await loop._create_planner_intent(mission.id, ordinal=3)
+            assert resume_source_current(loop, resumed, mission)
+            assert not blocks_intent(loop.store, resumed)
+            unavailable()
+            assert not resume_source_current(loop, resumed, mission)
+            assert wake_blocks(loop)
+            assert blocks_intent(loop.store, resumed)
+            assert loop.store.get_intent(resumed.intent_id).state == "FAILED"
+            loop.commit.record_profile_success("default")
+            assert wake_blocks(loop)
+            assert not wake_blocks(loop)
+            wakes = [e for e in loop.store.iter_events(mission.id) if e.type == WOKEN]
+            assert len(wakes) == 4
+            assert len({e.payload["decision_id"] for e in wakes}) == 4
+            assert wakes[0].payload["source_hash"] == wakes[2].payload["source_hash"]
+            assert wakes[1].payload["source_hash"] == wakes[3].payload["source_hash"]
+            block = pending_block(loop.store, mission.id)
+            assert last_wake(loop.store, mission.id, block).id == wakes[-1].id
+            assert not resume_source_current(loop, resumed, mission)
+            def retry(package):
+                return retry_payload(dispatch, mission, task_id, first.id, package)
+            _, retried = await repair(loop, mission, dispatch, task_id, retry, ordinal=4)
+            assert retried["status"] == "COMMITTED", retried["detail_json"]
+            assert pending_block(loop.store, mission.id) is None
+            second, _ = attempt(loop, task_id, first.id)
+            assert second.retry_of == first.id
+    asyncio.run(case())

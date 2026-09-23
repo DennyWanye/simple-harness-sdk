@@ -63,7 +63,7 @@ from ..contracts.htn import (
     TaskForm,
     TaskSemanticBindingV1,
 )
-from ..contracts.models import default_change_policy
+from ..contracts.models import ContractError, default_change_policy
 from ..contracts.resolution import RequirementsRevision
 from ..planning.manager import system_reserve_tokens
 
@@ -279,7 +279,8 @@ def occurrence_criteria(
     declared: Mapping[str, tuple[str, ...]] = {}
     if requirements is not None:
         declared = {
-            item.criterion_id: tuple(item.required_evidence_policy.required_check_ids)
+            item.criterion_id: tuple(item.required_evidence_policy.required_check_ids) + (
+                (item.statement,) if item.statement.startswith(("file:", "pytest:")) else ())
             for item in requirements.criteria
         }
     for reference in binding.requirement_refs:
@@ -512,6 +513,7 @@ def occurrence_task(
     now: float = 0.0,
     declared_policy: Sequence[str] = (),
     criterion_linked: bool = False,
+    require_content_review: bool = False,
 ) -> OccurrenceTask:
     """Build the Task row for one occurrence.  Pure: nothing is written here.
 
@@ -530,6 +532,14 @@ def occurrence_task(
     primitive = binding.form is TaskForm.PRIMITIVE
     criteria = occurrence_criteria(binding, requirements)
     goal = binding.goal_signature.statement or f"satisfy {binding.goal_signature.signature_id}"
+    policy = occurrence_policy(
+        criteria, deployed, declared_policy,
+        read_only=read_only_leaf(binding) and not criterion_linked,
+    )
+    if primitive and require_content_review:
+        if "critic_review" not in deployed:
+            raise ContractError("scoped content acceptance requires a deployed Critic")
+        policy = tuple(dict.fromkeys((*policy, "critic_review")))
     return OccurrenceTask(
         task=Task(
             id=str(spec.task_id),
@@ -546,12 +556,10 @@ def occurrence_task(
                 f"{binding.goal_signature.signature_id}"
             ),
             success_criteria=criteria,
-            verification_policy=occurrence_policy(
-                criteria,
-                deployed,
-                declared_policy,
-                read_only=read_only_leaf(binding) and not criterion_linked,
-            ),
+            # Explicit file requirements are the concrete workspace outputs of
+            # this occurrence. They grant no permission to execute an action.
+            outputs=tuple(dict.fromkeys(c[5:] for c in criteria if c.startswith("file:") and c[5:])),
+            verification_policy=policy,
             allowed_tools=mission.allowed_tools,
             budget=budget,
             priority=_priority(spec),

@@ -16,7 +16,8 @@ from ..contracts.planning_decisions import (
     PLANNING_DECISION_V1,
 )
 from ..runtime.role_templates import (
-    PLANNER_HIERARCHICAL_V8_VERSION,
+    PLANNER_HIERARCHICAL_V10_VERSION,
+    hierarchical_planner_pairing_is_valid,
     PLANNING_DECISION_PACKAGE_VERSION,
 )
 from ..storage.planning_decision_store import PlanningDecisionStore
@@ -26,9 +27,9 @@ from ..storage.store import Store
 #: prompt).  The protocol *name* is not part of this constant: it is the argument of
 #: :func:`binding_document`, so there is exactly one place that assembles the three-field
 #: document and no value here can be silently shadowed by an override.
-PLANNING_PROTOCOL_BINDING = {
+PLANNING_PROTOCOL_BINDING: dict[str, Any] = {
     "package_version": PLANNING_DECISION_PACKAGE_VERSION,
-    "prompt_version": PLANNER_HIERARCHICAL_V8_VERSION,
+    "prompt_version": PLANNER_HIERARCHICAL_V10_VERSION,
 }
 
 
@@ -119,7 +120,14 @@ def planning_protocol_replay_conflict(
         if checked == LEGACY_PLANNING_PROTOCOL:
             return None
         return f"mission {mission_id} has no durable planning protocol binding"
-    if any(stored.get(field) != value for field, value in expected.items()):
+    # A software upgrade does not rebind an existing Mission to a new prompt.
+    # Validate the stored pair and its digest; the caller only chooses the protocol.
+    frozen = {key: stored[key] for key in ("protocol_version", "package_version", "prompt_version")}
+    valid_pair = hierarchical_planner_pairing_is_valid(
+        str(stored["prompt_version"]), int(stored["package_version"])
+    )
+    valid_hash = stored.get("binding_hash") == sha256(canonical_json(frozen).encode("utf-8")).hexdigest()
+    if stored.get("protocol_version") != checked or not valid_pair or not valid_hash:
         return (
             f"mission {mission_id} is durably bound to protocol"
             f" {stored['protocol_version']!r}/package {stored['package_version']}, not"

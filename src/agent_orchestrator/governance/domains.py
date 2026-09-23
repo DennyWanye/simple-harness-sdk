@@ -34,6 +34,7 @@ DOC_DOMAIN = "doc-research-v1"
 APPWORLD_DOMAIN = "appworld-v1"
 AGENTDOJO_DOMAIN = "agentdojo-v1"
 ARE_DOMAIN = "are-v1"
+DRONE_SIM_DOMAIN = "drone-sim-v1"
 # Missions that predate domain binding (plan D1; the same idea as ``policy-legacy``).
 # It is the code domain itself, not a second id for the same behaviour (review A P2-1).
 LEGACY_DOMAIN = CODE_DOMAIN
@@ -479,7 +480,20 @@ ARE_PROFILE = DomainProfileV1(
 #: A domain with no entry falls back to the code-domain ``WORKER_HIERARCHICAL``; an
 #: entry naming a version this build does not register is refused
 #: (:func:`~..runtime.role_templates.hierarchical_worker_for_domain`).
+DRONE_SIM_PROFILE = replace(
+    CODE_PROFILE, id=DRONE_SIM_DOMAIN, version="1",
+    runs_layers=("format_check", "rule_check", "critic_review", "human_review"),
+    planner_floor=("format_check", "rule_check"),
+    default_policy=("format_check", "rule_check", "critic_review"),
+    synthesis_default_policy=("format_check", "rule_check", "critic_review"),
+    external_check="drone-sim-durable-ledger-v1", role_templates={},
+    conflict_template=ConflictTemplateV1(
+        policy=("format_check", "rule_check", "human_review"), decides_with="human_review"),
+    completion_rules={"handler": "drone-sim-v1", "simulation_only": True},
+)
+
 HIERARCHICAL_WORKER_TEMPLATES: Mapping[str, str] = MappingProxyType({
+    DRONE_SIM_DOMAIN: "worker-drone-sim-hierarchical-v1",
     APPWORLD_DOMAIN: "worker-appworld-hierarchical-v1",
 })
 
@@ -487,6 +501,7 @@ DOMAINS: Mapping[str, DomainProfileV1] = MappingProxyType({
     CODE_DOMAIN: CODE_PROFILE, DOC_DOMAIN: DOC_PROFILE, APPWORLD_DOMAIN: APPWORLD_PROFILE,
     AGENTDOJO_DOMAIN: AGENTDOJO_PROFILE,
     ARE_DOMAIN: ARE_PROFILE,
+    DRONE_SIM_DOMAIN: DRONE_SIM_PROFILE,
 })
 
 

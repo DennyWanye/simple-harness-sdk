@@ -1,0 +1,50 @@
+[
+  {
+    "schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "vehicle",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "x",
+        "type": "number",
+        "required": true
+      },
+      {
+        "name": "y",
+        "type": "number",
+        "required": true
+      },
+      {
+        "name": "z",
+        "type": "number",
+        "required": true
+      }
+    ]
+  },
+  {
+    "schema_ref": {
+      "id": "drone-sim.outputs",
+      "version": 1
+    },
+    "fields": []
+  },
+  {
+    "schema_ref": {
+      "id": "drone-sim.vehicle-params",
+      "version": 1
+    },
+    "fields": [
+      {
+        "name": "vehicle",
+        "type": "string",
+        "required": true
+      }
+    ]
+  }
+]

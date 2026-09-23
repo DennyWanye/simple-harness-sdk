@@ -391,6 +391,7 @@ def test_the_hierarchical_worker_version_is_registered_and_pinnable() -> None:
             "worker-hierarchical-v2",
             "worker-hierarchical-v1",
             "worker-appworld-hierarchical-v1",
+            "worker-drone-sim-hierarchical-v1",
         }
     ), "every version a deployment may pin, superseded ones included"
     assert "worker-v3" not in HIERARCHICAL_WORKER_VERSIONS, (

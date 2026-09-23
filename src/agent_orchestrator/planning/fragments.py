@@ -74,12 +74,16 @@ def freeze_fragment_execution(
     inputs: Sequence[Mapping[str, Any]],
     retry_of: str | None,
     validated_input_paths: Mapping[str, str] | None = None,
+    validated_input_identities: frozenset[tuple[str, str, str]] | None = None,
 ) -> dict[str, Any]:
     """System-only creation hook. Never apply it when replaying an old intent.
 
     ``validated_input_paths`` comes only from Commit's independently checked
     selection receipt, never from intent_config or model metadata. It maps a real
     artifact ID to its one approved namespace path, without changing its bytes.
+    TaskGraph may instead supply the exact (artifact, mount path, hash) union
+    checked by its DATA resolver and original Selection receipt. This also permits
+    one artifact at two distinct approved paths without collapsing either mount.
     The CAS manifests include whole input files, not selected excerpts. Retried
     workspaces need their original complete snapshot; v1 refuses pytest projection
     from a retry rather than inventing such a snapshot from today's directory.
@@ -97,6 +101,11 @@ def freeze_fragment_execution(
     validated_paths = dict(validated_input_paths or {})
     if set(validated_paths) - {item.get("artifact_id") for item in inputs}:
         raise ContractError("fragment validated input path has no actual input")
+    if validated_input_identities is not None:
+        actual = frozenset((str(item.get("artifact_id")), str(item.get("path")), str(item.get("content_hash")))
+                           for item in inputs)
+        if actual != validated_input_identities or len(actual) != len(inputs):
+            raise ContractError("fragment validated input identities differ from actual inputs")
     mounted_paths: set[str] = set()
     for item in inputs:
         artifact = store.get_artifact(item.get("artifact_id", ""))
@@ -104,7 +113,10 @@ def freeze_fragment_execution(
             artifact is None
             or artifact.mission_id != mission.id
             or artifact.content_hash != item.get("content_hash")
-            or validated_paths.get(artifact.id, artifact.path) != item.get("path")
+            or (validated_input_identities is None
+                and validated_paths.get(artifact.id, artifact.path) != item.get("path"))
+            or (validated_input_identities is not None
+                and (artifact.id, str(item.get("path")), artifact.content_hash) not in validated_input_identities)
         ):
             raise ContractError("fragment frozen input identity mismatch")
         mounted = _path(item["path"])

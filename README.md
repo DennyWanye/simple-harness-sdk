@@ -1,3 +1,5 @@
+> 2026-09-23 private development checkpoint: HTN + TaskGraph23 + Assurance WIP. See [handoff](../../HANDOFF-2026-09-23.md). Not a release or full acceptance.
+
 # Simple Harness SDK
 
 Current production architecture, persistence, and consumer boundaries are indexed in

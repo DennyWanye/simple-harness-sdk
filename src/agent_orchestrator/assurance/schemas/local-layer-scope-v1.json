@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "rule_id": "local-verifier-layer-scope-v1",
+  "subject": "exact original ResultEnvelope content hash",
+  "inputs": "exact original local verification input manifest including Task and workspace hashes",
+  "assertion": "only the named original verifier layer; no general content or effect assertion",
+  "scope": "original persisted completion scope when a CheckBinding is imported",
+  "authority": "registered checker plus original Commit import; never a model boolean",
+  "freshness": "current input, source, scope, policy and root must be checked at use"
+}

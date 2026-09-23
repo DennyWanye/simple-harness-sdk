@@ -32,6 +32,7 @@ from ....contracts.htn import MethodContract, RegistryAuthor
 from ....contracts.models import ContractError
 from ....contracts.semantic_base import VersionedRef, sequence_of
 from ....knowledge.predicates import PredicateRegistry, PredicateSignature
+from ..domain_package import DomainPackageInstaller
 from ..registry import (
     AdmissionPolicy,
     AdmissionReceipt,
@@ -127,6 +128,72 @@ class SeedDomain:
                     out.append(ref)
         return tuple(out)
 
+    def planning_package(self, package_version: int = 1):
+        """Build the data-only H5 package used by the runtime installer.
+
+        Seed JSON remains the source of truth.  This projection deliberately
+        carries references and capabilities only; the existing catalogues still
+        perform their detailed schema, predicate, task and method admission.
+        """
+        from ..domain_package import (
+            ObserverRegistrationV1,
+            OperatorRegistrationV1,
+            PlanningDomainPackageV1,
+        )
+
+        def ref_name(ref: VersionedRef) -> str:
+            return f"{ref.id}@{ref.version}"
+
+        capabilities = set(self.capability_ids)
+        observers = []
+        for spec in self.observer_types:
+            capability = (
+                spec.required_capabilities[0]
+                if spec.required_capabilities
+                else "observer.read"
+            )
+            capabilities.add(capability)
+            observers.append(
+                ObserverRegistrationV1(
+                    observer_id=ref_name(spec.task_type_ref),
+                    predicate_refs=tuple(ref_name(ref) for ref in spec.observes),
+                    capability=capability,
+                )
+            )
+        operators: dict[str, OperatorRegistrationV1] = {}
+        for spec in self.task_types:
+            if spec.operator_ref is None:
+                continue
+            registration = OperatorRegistrationV1(
+                    operator_id=ref_name(spec.operator_ref),
+                    task_type_ref=ref_name(spec.task_type_ref),
+                    capabilities=tuple(spec.required_capabilities),
+                )
+            previous = operators.get(registration.operator_id)
+            if previous is not None and previous.capabilities != registration.capabilities:
+                raise ContractError(
+                    f"operator {registration.operator_id!r} maps to conflicting task types"
+                )
+            if previous is None or registration.task_type_ref > previous.task_type_ref:
+                operators[registration.operator_id] = registration
+        return PlanningDomainPackageV1(
+            domain_id=self.name,
+            package_version=package_version,
+            schemas=tuple(ref_name(item.schema_ref) for item in self.schemas),
+            predicates=tuple(ref_name(item.predicate_ref) for item in self.predicates),
+            task_types=tuple(ref_name(item.task_type_ref) for item in self.task_types),
+            methods=tuple(f"{item.method_id}@{item.method_version}" for item in self.methods),
+            observers=tuple(observers),
+            operators=tuple(operators.values()),
+            capabilities=tuple(sorted(capabilities)),
+            definitions={
+                **{f"schemas:{ref_name(item.schema_ref)}": item.to_json() for item in self.schemas},
+                **{f"predicates:{ref_name(item.predicate_ref)}": item.to_json() for item in self.predicates},
+                **{f"task_types:{ref_name(item.task_type_ref)}": item.to_json() for item in self.task_types},
+                **{f"methods:{item.method_id}@{item.method_version}": item.to_json() for item in self.methods},
+            },
+        )
+
 
 def _read(path: Path) -> Any:
     try:
@@ -204,6 +271,7 @@ def install_domain(
     schemas: SchemaCatalog,
     predicates: PredicateRegistry,
     catalog: TaskTypeCatalog,
+    package_installer: DomainPackageInstaller | None = None,
 ) -> None:
     """Register the domain's schemas, predicates and task types.
 
@@ -212,6 +280,12 @@ def install_domain(
     would be exactly the bypass §7.3 exists to close — even a human-authored one.
     """
 
+    if package_installer is not None:
+        from ..domain_package import DomainPackageInstaller
+
+        if not isinstance(package_installer, DomainPackageInstaller):
+            raise ContractError("package_installer must be a DomainPackageInstaller")
+        package_installer.install(domain.planning_package())
     for schema in domain.schemas:
         schemas.register(schema)
     for signature in domain.predicates:
@@ -252,13 +326,20 @@ def install_library(
     schemas: SchemaCatalog,
     predicates: PredicateRegistry,
     catalog: TaskTypeCatalog,
+    package_installer: DomainPackageInstaller | None = None,
 ) -> tuple[SeedDomain, ...]:
     """Load and install several domains at once, returning what was installed."""
 
     chosen = tuple(names) if names is not None else available_domains(root)
     domains = tuple(load_domain(name, root=root) for name in chosen)
     for domain in domains:
-        install_domain(domain, schemas=schemas, predicates=predicates, catalog=catalog)
+        install_domain(
+            domain,
+            schemas=schemas,
+            predicates=predicates,
+            catalog=catalog,
+            package_installer=package_installer,
+        )
     return domains
 
 

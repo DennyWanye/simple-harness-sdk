@@ -1,0 +1,470 @@
+[
+  {
+    "schema_version": 1,
+    "method_id": "drone-sim.survey-direct",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "drone-sim.survey",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "drone-sim.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "drone-sim.connected",
+          "version": 1
+        },
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "drone-sim.battery-safe",
+          "version": 1
+        },
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "drone-sim.zone-clear",
+          "version": 1
+        },
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "takeoff",
+        "task_type_ref": {
+          "id": "drone-sim.takeoff",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.command"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "move",
+        "task_type_ref": {
+          "id": "drone-sim.move",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.command"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "capture",
+        "task_type_ref": {
+          "id": "drone-sim.capture",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.command"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "land",
+        "task_type_ref": {
+          "id": "drone-sim.land",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.command"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "takeoff",
+        "after": "move"
+      },
+      {
+        "before": "move",
+        "after": "capture"
+      },
+      {
+        "before": "capture",
+        "after": "land"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-captured",
+          "child_step": "capture",
+          "child_criterion_id": "c-captured",
+          "evidence_requirement": "Simulator ledger contains a capture at the requested coordinates."
+        },
+        {
+          "parent_criterion_id": "c-landed",
+          "child_step": "land",
+          "child_criterion_id": "c-landed",
+          "evidence_requirement": "Telemetry after the last command confirms landed at z=0."
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "land",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "drone-sim.survey-with-preflight",
+    "method_version": 1,
+    "goal_type_ref": {
+      "id": "drone-sim.survey",
+      "version": 1
+    },
+    "parameter_schema_ref": {
+      "id": "drone-sim.route-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "drone-sim.outputs",
+      "version": 1
+    },
+    "applicable_when": [
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "drone-sim.connected",
+          "version": 1
+        },
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "drone-sim.battery-safe",
+          "version": 1
+        },
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          }
+        }
+      },
+      {
+        "op": "predicate",
+        "predicate_ref": {
+          "id": "drone-sim.zone-clear",
+          "version": 1
+        },
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          }
+        }
+      }
+    ],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "preflight",
+        "task_type_ref": {
+          "id": "drone-sim.preflight",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.read"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "takeoff",
+        "task_type_ref": {
+          "id": "drone-sim.takeoff",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.command"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "move",
+        "task_type_ref": {
+          "id": "drone-sim.move",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.command"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "capture",
+        "task_type_ref": {
+          "id": "drone-sim.capture",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.command"
+        ],
+        "obligation_relation": "refines_parent"
+      },
+      {
+        "local_id": "land",
+        "task_type_ref": {
+          "id": "drone-sim.land",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "vehicle": {
+            "op": "parameter",
+            "name": "vehicle"
+          },
+          "x": {
+            "op": "parameter",
+            "name": "x"
+          },
+          "y": {
+            "op": "parameter",
+            "name": "y"
+          },
+          "z": {
+            "op": "parameter",
+            "name": "z"
+          }
+        },
+        "required_capabilities": [
+          "drone-sim.command"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [
+      {
+        "before": "preflight",
+        "after": "takeoff"
+      },
+      {
+        "before": "takeoff",
+        "after": "move"
+      },
+      {
+        "before": "move",
+        "after": "capture"
+      },
+      {
+        "before": "capture",
+        "after": "land"
+      }
+    ],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-captured",
+          "child_step": "capture",
+          "child_criterion_id": "c-captured",
+          "evidence_requirement": "Simulator ledger contains a capture at the requested coordinates."
+        },
+        {
+          "parent_criterion_id": "c-landed",
+          "child_step": "land",
+          "child_criterion_id": "c-landed",
+          "evidence_requirement": "Telemetry after the last command confirms landed at z=0."
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "land",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  }
+]

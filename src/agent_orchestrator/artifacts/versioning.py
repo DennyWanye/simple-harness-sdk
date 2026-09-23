@@ -317,11 +317,13 @@ def manifest_upstream_inputs(
     plan = materialise_plan(manifest, target_rules)
     if plan.problems:
         raise _refuse(plan.problems)
-    producer_of = {binding.binding_id: binding.producer_task_ref for binding in manifest.bindings}
+    bindings_by_id = {binding.binding_id: binding for binding in manifest.bindings}
     inputs: list[UpstreamInput] = []
     for entry in plan.entries:
         producer = next(
-            (str(producer_of[item]) for item in entry.binding_ids if item in producer_of),
+            (str(bindings_by_id[item].producer_task_ref) for item in entry.binding_ids
+             if item in bindings_by_id and entry.artifact_ids
+             and bindings_by_id[item].artifact_id == entry.artifact_ids[0]),
             "",
         )
         inputs.append(
@@ -350,12 +352,9 @@ def materialise_v2(
     :meth:`~.workspace.Workspace.materialise_manifest`, so the CAS and isolation
     guarantees of the old path are unchanged.  What changed is the *set*.
 
-    **Not called from ``src`` yet — P2.3c wires it.**  P2.3b decides the *set* of
-    inputs (``manifest_upstream_inputs`` feeds the dispatch intent, which the
-    existing workspace binding then materialises through the old, unchanged path).
-    Moving the physical write onto this function means changing where a verification
-    copy and a protected file come from, and that belongs with the dispatch work
-    rather than beside it.
+    The TaskGraph workspace binder calls this function for the first materialisation.
+    Recovery never rewrites an active tree: it verifies the protected entries instead,
+    so a changed file remains evidence of tampering rather than being silently repaired.
     """
 
     _require_orderable(network)

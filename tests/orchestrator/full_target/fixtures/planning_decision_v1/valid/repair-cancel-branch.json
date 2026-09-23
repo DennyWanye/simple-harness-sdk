@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "decision_type": "REPAIR",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "repair_kind": "CANCEL_BRANCH",
+    "method_instance_ref": {
+      "kind": "method_instance",
+      "id": "mi-parent",
+      "semantic_revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "step": "optional-check"
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

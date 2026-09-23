@@ -92,6 +92,14 @@ def spec_from_request(
     synthesis = request.get("synthesis")
     if synthesis is not None and not isinstance(synthesis, Mapping):
         raise MissionRequestError("synthesis must be an object (a fixed synthesis Task template)")
+    # §8.1: the charter names the wire.  An *omitted* key keeps the MissionSpec default
+    # (legacy); a present value — including a non-string or an unknown name — is handed to
+    # the constructor so ``checked_planning_protocol`` refuses it, like every other field.
+    protocol_kwargs: dict[str, Any] = {}
+    if "orchestration_semantics_version" in request:
+        protocol_kwargs["orchestration_semantics_version"] = request["orchestration_semantics_version"]
+    if "planning_protocol_version" in request:
+        protocol_kwargs["planning_protocol_version"] = request["planning_protocol_version"]
     try:
         return MissionSpec(
             goal=str(request.get("goal", "")),
@@ -112,6 +120,7 @@ def spec_from_request(
             domain=str(request.get("domain", CODE_DOMAIN)),
             search_policy_version_id=search_policy,
             runtime_profile_id=runtime_profile,
+            **protocol_kwargs,
         )
     except (ContractError, TypeError, ValueError) as error:
         raise MissionRequestError(str(error)) from error
@@ -126,7 +135,13 @@ class MissionApi:
         self._commit = commit
         self._orchestrator = orchestrator
 
+    def _require_execution_root(self) -> None:
+        gate = self._commit._assurance_root_gate
+        if gate is not None:
+            gate.require_execution()
+
     def create(self, *, tenant_id: str, request: Mapping[str, Any]) -> tuple[Mission, bool]:
+        self._require_execution_root()
         if self._orchestrator is not None:
             created: tuple[Mission, bool] = self._orchestrator.create_mission(
                 tenant_id=tenant_id, request=request
@@ -137,12 +152,15 @@ class MissionApi:
         return self._commit.create_mission(spec)
 
     def get(self, mission_id: str) -> dict[str, Any]:
+        self._require_execution_root()
         return self._commit.store.snapshot(mission_id)
 
     def cancel(self, mission_id: str) -> Mission:
+        self._require_execution_root()
         return self._commit.cancel_mission(mission_id)
 
     def events(self, mission_id: str, *, after_seq: int = 0) -> list[Event]:
+        self._require_execution_root()
         return self._commit.store.list_events(mission_id, after_seq=after_seq)
 
 

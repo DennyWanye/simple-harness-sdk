@@ -36,6 +36,36 @@ from simple_harness.providers import (
 TARGET = ProviderTarget("fake", "exact-model", "pricing", "https://example.test/v1", "fake-v1")
 
 
+def test_transport_category_is_durable_without_private_data_or_retry():
+    import httpx
+    from simple_harness.providers import OpenAICompatibleProvider, Secret
+
+    async def case():
+        calls = []
+
+        async def broken(http_request):
+            calls.append(http_request)
+            raise httpx.ReadError("private response with secret-credential", request=http_request)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(broken)) as client:
+            provider = OpenAICompatibleProvider(client, "https://example.test/v1", "exact-model",
+                Secret("secret-credential"), provider_id="fake", pricing_key="pricing")
+            wrapped, _ = meter(provider)
+            with pytest.raises(UnknownProviderUsage):
+                await wrapped.invoke(request("first"), cancel=CancelToken())
+            with pytest.raises(UnknownProviderUsage):
+                await wrapped.invoke(request("second"), cancel=CancelToken())
+            assert len(calls) == 1
+            assert wrapped.unknown_usage_calls == 1
+            assert wrapped.counters.total_tokens == 0
+            row = wrapped.observations[0]
+            assert row["provider_error"]["transport_error_type"] == "ReadError"
+            assert "private response" not in str(row)
+            assert "secret-credential" not in str(row)
+
+    asyncio.run(case())
+
+
 def context(*, budget=None, slots=2):
     plan = ExperimentManifest(
         "meter-test",

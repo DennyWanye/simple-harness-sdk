@@ -14,7 +14,7 @@ import importlib
 import json
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Lock, RLock
@@ -30,6 +30,7 @@ from .appworld_api_observations import (
     project,
 )
 from .appworld_observations import AppWorldExecutionReceipt, AppWorldObservationLedger
+from .appworld_state_observations import AppWorldStatePolicy, AppWorldStateReceipt
 
 # Unified AppWorld keeps task time and server state process-wide. Only one
 # episode may own that state; parallel episodes belong in separate processes.
@@ -130,6 +131,35 @@ class _ExternallyScoredWorld:
             raise ValueError("invalid observation identity")
         return envelope["identity"]
 
+    def observe_registered_state(self, policy: AppWorldStatePolicy) -> tuple[dict[str, Any], str]:
+        request_identity = {"task_id": self._task_id, "experiment_name": self._experiment_name,
+                            "policy_hash": policy.content_hash}
+        request = Request(self._world.remote_environment_url.rstrip("/") + "/host_state_observation",
+                          data=canonical(request_identity), headers={"Content-Type": "application/json"},
+                          method="POST")
+        with urlopen(request, timeout=30) as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("state observation exceeds limit")
+        body = json.loads(raw)
+        if (not isinstance(body, dict) or set(body) != {*request_identity, "result", "identity"}
+                or any(body[key] != value for key, value in request_identity.items())
+                or not isinstance(body["identity"], str) or not body["identity"]):
+            raise ValueError("state observation identity differs")
+        return policy.validate_result(body["result"]), body["identity"]
+
+    def dataset_identity(self) -> str:
+        query = urlencode({"task_id": self._task_id, "experiment_name": self._experiment_name})
+        with urlopen(self._world.remote_environment_url.rstrip("/") + "/host_dataset_identity?" + query,
+                     timeout=30) as response:
+            raw = response.read(1025)
+        body = json.loads(raw)
+        if (len(raw) > 1024 or not isinstance(body, dict) or set(body) != {"identity", "dataset_hash"}
+                or body["identity"] != self.public_observation_identity()
+                or not isinstance(body["dataset_hash"], str) or len(body["dataset_hash"]) != 64):
+            raise ValueError("actual task dataset identity differs")
+        return body["dataset_hash"]
+
     def save_state(self) -> None:
         # The published remote API requires a non-null state_id although the
         # Python signature permits None. Keep checkpoint names episode-local.
@@ -211,6 +241,7 @@ class AppWorldEpisode:
         self._result: dict[str, Any] | None = None
         self._checkpoints: set[str] = set()
         self._world_change_listeners: list[Callable[[int], None]] = []
+        self._state_observations: dict[str, AppWorldStateReceipt] = {}
         self._observations = AppWorldObservationLedger(
             run_id=config.experiment_name, task_id=config.task_id
         )
@@ -366,7 +397,7 @@ class AppWorldEpisode:
                 world_version=world_version,
             )
 
-    def observe_public_api(self, app: str, api: str, *, parameters: dict[str, Any] | None = None
+    def observe_public_api(self, app: str, api: str, *, parameters: Mapping[str, Any] | None = None
                            ) -> tuple[AppWorldAPIReceipt, dict[str, str | None]]:
         """Host-only current-world GET; return a registered receipt and safe projection."""
         with self._lock:
@@ -419,6 +450,43 @@ class AppWorldEpisode:
         finally:
             self._lock.release()
 
+    def dataset_identity(self) -> str:
+        with self._lock:
+            if self._finalized or not isinstance(self._world, _ExternallyScoredWorld):
+                raise RuntimeError("dataset identity requires the actual independent service")
+            return self._world.dataset_identity()
+
+    def observe_registered_state(self, policy: AppWorldStatePolicy
+                                 ) -> tuple[AppWorldStateReceipt, dict[str, Any]]:
+        """Read trusted service state; never call the hidden official evaluator."""
+        from uuid import uuid4
+        from .appworld_api_observations import digest
+        with self._lock:
+            if self._finalized or not isinstance(self._world, _ExternallyScoredWorld):
+                raise RuntimeError("state observation requires a live independent AppWorld service")
+            if policy.to_json()["task_id"] != self.config.task_id:
+                raise ValueError("state observation task differs")
+            result, identity = self._world.observe_registered_state(policy)
+            if identity != self._world.public_observation_identity():
+                raise RuntimeError("AppWorld changed during state observation")
+            receipt = AppWorldStateReceipt(uuid4().hex, self.run_id, self.config.task_id,
+                self.episode_id, self.world_version, identity, policy.content_hash, digest(result))
+            self._state_observations[receipt.receipt_id] = receipt
+            return receipt, result
+
+    def verify_state_observation(self, receipt: AppWorldStateReceipt, result: dict[str, Any]) -> bool:
+        with self._lock:
+            if (self._finalized or type(receipt) is not AppWorldStateReceipt
+                    or self._state_observations.get(receipt.receipt_id) != receipt
+                    or (receipt.run_id, receipt.task_id, receipt.episode_id, receipt.world_version)
+                    != (self.run_id, self.config.task_id, self.episode_id, self.world_version)
+                    or not receipt.matches(result) or not isinstance(self._world, _ExternallyScoredWorld)):
+                return False
+            try:
+                return receipt.service_identity == self._world.public_observation_identity()
+            except (OSError, ValueError, RuntimeError, TimeoutError):
+                return False
+
     def _save(self) -> None:
         # Published PyPI 0.1.3.post1 exposes save_state; newer upstream also has
         # save. Both persist the current world, and missing support is an error.
@@ -469,6 +537,20 @@ class AppWorldEpisode:
                 # Detach the host result from AppWorld objects and require JSON output.
                 self._result = json.loads(json.dumps(result))
                 return dict(self._result)
+            finally:
+                try:
+                    self._world.close()
+                finally:
+                    _ACTIVE_WORLD.release()
+
+    def abort(self) -> None:
+        """Release an unusable episode without invoking the hidden evaluator."""
+        with self._lock:
+            if self._finalized:
+                return
+            self._finalized = True
+            try:
+                self._advance_world()
             finally:
                 try:
                     self._world.close()

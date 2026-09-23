@@ -1,0 +1,403 @@
+[
+  {
+    "id": "OCC-01",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_report_preparation_does_not_finish_effect",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "真实创建要求“生成报告并送达”，批准Spec，计划冻结Scope，使用原Worker/result/内容Review接纳报告。",
+    "required_assertions": "准备Acceptance与Contribution存在；获准DATA和ACTION_PROPOSAL可读取报告；MIXED Task未COMPLETED、根/Obligation未满足；T0无需等待Mission完成。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/commit_service.py",
+      "src/agent_orchestrator/orchestrator/leaf_acceptance.py",
+      "src/agent_orchestrator/orchestrator/hierarchical_dispatch.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-02",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_completion_mapping_missing_or_ambiguous",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "分别缺Spec、缺Scope、milestone歧义、profile仅支持received而要求delivered；再测确切批准映射。",
+    "required_assertions": "前四项具名拒绝/待确认，不从候选/profile/无intent推断要求；正确的Spec在原要求批准链持久化。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/operation_completion.py",
+      "src/agent_orchestrator/api/operation_completion.py",
+      "src/agent_orchestrator/runtime/operation_payloads.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-03",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_exact_effect_reaches_outcome_review_and_completion",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "通过真实submit/T0、official ACTION_PROPOSAL、T1审批、受控connector回执和official OPERATION_OUTCOME完成。",
+    "required_assertions": "真实输入桥、Effect Acceptance、Contribution和Delivery关联一致；根Review前不能完成；原命令/回执重送只一份正式接受。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/operation_outcomes.py",
+      "src/agent_orchestrator/orchestrator/resolution_commits.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-04",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_every_outcome_identity_axis_is_checked",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "分别篡改operation、occurrence、action version、link hash、effect hash、spec/mission/obligation、target/namespace/params/handoff/receipt身份；尝试裸DeliveryReceipt。",
+    "required_assertions": "每个变体均不能完成；不能用operation_id非空/SENT/CONFIRMED越过完整链；原真实效果事实仍归档。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/operation_outcomes.py",
+      "src/agent_orchestrator/orchestrator/resolution_commits.py",
+      "src/agent_orchestrator/runtime/operation_ref_resolver.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-05",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_requirement_input_revocation_blocks_old_contribution",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "在准备后、review后和最终commit前分别改变要求/milestone、替换输入、撤回原支持；另测无关plan变化。",
+    "required_assertions": "旧证据不适配新要求/输入；历史保留，不自动重发；无关plan变化按局部身份/Validity复核，不伪造新要求。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/operation_completion.py",
+      "src/agent_orchestrator/orchestrator/resolution_commits.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-06",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_multiple_required_effects_are_not_collapsed",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "同Mission两项MUST效果；只完成A，B分别无intent、待审批、UNKNOWN，最后完成B。",
+    "required_assertions": "A不能完成B；待办可见；克隆A的binding用于B拒绝；A/B独立合格并经根验收后才满足。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/operation_completion.py",
+      "src/agent_orchestrator/orchestrator/event_handler.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-07",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_report_only_and_legacy_remain_compatible",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "新lane明确CONTENT_ONLY纯报告；再给Worker多余action candidate；另跑原legacy黄金场景。",
+    "required_assertions": "新报告正常完成且不发明动作；legacy不写新增表/事件、不改变canonical结果；缺Spec的新lane不可伪装legacy。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/commit_service.py",
+      "src/agent_orchestrator/orchestrator/operation_completion.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-08",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_direct_final_commit_cannot_skip_effect_gate",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "根没有delivery_contract；构造所有children/primitive CURRENT Acceptance；绕过root readiness直接调用最终Commit/Delivery writer。",
+    "required_assertions": "完整Root Completion gate仍拒绝缺少匹配effect proof的完成；拒绝发生在写事务，状态/预算未错误释放。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/resolution_commits.py",
+      "src/agent_orchestrator/orchestrator/commit_service.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-09",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_scope_acceptance_delivery_and_receipt_are_atomic",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "在准备Acceptance、Contribution、T3效果Acceptance、Delivery和通知写入切点抛异常；使用真实子进程在提交前/后退出。",
+    "required_assertions": "无孤立的可消费接受或假完成；rollback保留原事实；重启同command查原receipt，不再次执行connector。",
+    "production_paths": [
+      "src/agent_orchestrator/storage/operation_completion_store.py",
+      "src/agent_orchestrator/orchestrator/operation_outcomes.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-10",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_shared_obligation_uses_per_occurrence_completion_scope",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "同一Obligation的CONTENT child、MIXED child或root aggregate；采用方法要求内容DATA可提前消费；ORDER要求完整接受。",
+    "required_assertions": "CONTENT不会等待所有siblings效果；MIXED不会因共享Obligation的别个接受完成；DATA按范围可读、纯ORDER不提前释放；owner唯一和根全部MUST保持。",
+    "production_paths": [
+      "src/agent_orchestrator/planning/htn/compiler.py",
+      "src/agent_orchestrator/orchestrator/plan_commits.py",
+      "src/agent_orchestrator/orchestrator/hierarchical_dispatch.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-11",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_outcome_review_callback_cold_replay",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "T3事实已保存、Outcome Review未派发/已派发/结果已返回但接受未提交时逐点重启，两个连接竞争消费。",
+    "required_assertions": "复用原fact/request/Review/command身份；不重复Operation/不伪造Reviewer Attempt；官方binding唯一、效果接受幂等、实际费用仍计入原责任。",
+    "production_paths": [
+      "src/agent_orchestrator/orchestrator/operation_outcomes.py",
+      "src/agent_orchestrator/orchestrator/event_handler.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  },
+  {
+    "id": "OCC-12",
+    "target_nodeid": "tests/orchestrator/full_target/operation_completion/test_completion_contract.py::test_effect_pending_is_work_not_false_completion_or_retry",
+    "actual_nodeids": [],
+    "status": "PENDING_SDK_EXECUTION",
+    "arrange_and_execute": "准备成功后持续等待用户intent/审批/异步结果；运行调度/no-dispatchable/取消超时路径，后续导入有效或UNKNOWN回执。",
+    "required_assertions": "不因为worker队列空自动完成或连续重开Worker；正式Review/reconcile可推进；超时取消不写成功、不清UNKNOWN，D3语义保持。",
+    "production_paths": [
+      "src/agent_orchestrator/graph/eligibility.py",
+      "src/agent_orchestrator/orchestrator/event_handler.py",
+      "src/agent_orchestrator/orchestrator/hierarchical_dispatch.py"
+    ],
+    "real_components": [
+      "Store",
+      "original Commit",
+      "actual requirement authority producer",
+      "scoped acceptance reader",
+      "official Review pipeline",
+      "effect lineage resolver"
+    ],
+    "allowed_substitutes": [
+      "model transport",
+      "controlled external connector test service"
+    ],
+    "evidence": {
+      "source_fingerprint": null,
+      "junit_relative_path": null,
+      "receipt_manifest_relative_path": null,
+      "independent_review": null
+    },
+    "owner": "existing OCC writer, Assurance guard integration owner",
+    "acceptance_gate": "AS_VERIFY_EFFECT_INTEGRATION",
+    "trigger_entry": "original OCC entry from production_paths, arrange_and_execute unchanged"
+  }
+]

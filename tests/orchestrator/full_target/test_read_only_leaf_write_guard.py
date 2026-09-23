@@ -158,7 +158,11 @@ def test_effective_tools_hides_patch_apply_tools_on_a_read_only_leaf() -> None:
     # Patch/apply names are not in TOOL_SCHEMAS, so a real DeploymentPolicy would
     # refuse them; the trim still has to drop them when a caller has them in the
     # four-way intersection (selftest / a future schema).
-    deployment = SimpleNamespace(allowed_tools=role)
+    deployment = SimpleNamespace(
+        allowed_tools=role,
+        domain_tools=frozenset(),
+        domain_read_only_tools=frozenset(),
+    )
     writing = effective_tools(
         mission_tools=role, task_tools=role, role_tools=role, deployment=deployment
     )

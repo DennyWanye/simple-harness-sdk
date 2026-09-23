@@ -11,6 +11,7 @@ from ..governance.domains import (
     ARE_DOMAIN,
     CODE_DOMAIN,
     DOC_DOMAIN,
+    DRONE_SIM_DOMAIN,
     DomainProfileV1,
 )
 from .deterministic_checks import LayerResult, rule_check
@@ -50,6 +51,10 @@ class AppWorldHandler(CodeHandler):
         )
 
 
+class DroneSimHandler(AppWorldHandler):
+    name = "drone-sim"
+
+
 class AgentDojoHandler(CodeHandler):
     name = "agentdojo"
 
@@ -81,6 +86,7 @@ _HANDLERS = {
     CODE_DOMAIN: CodeHandler(),
     DOC_DOMAIN: DocumentHandler(),
     APPWORLD_DOMAIN: AppWorldHandler(),
+    DRONE_SIM_DOMAIN: DroneSimHandler(),
     AGENTDOJO_DOMAIN: AgentDojoHandler(),
     ARE_DOMAIN: AREHandler(),
 }

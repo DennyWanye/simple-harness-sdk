@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/local-check-receipt-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mission_id",
+    "check_spec_ref",
+    "subject_hash",
+    "input_manifest_hash",
+    "environment_hash",
+    "run_nonce",
+    "started_at_ms",
+    "finished_at_ms",
+    "execution_state",
+    "assertions",
+    "recorder_implementation_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "check_spec_ref": {
+      "allOf": [
+        {
+          "$ref": "common.schema.json#/$defs/ref"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "check_spec"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "subject_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "input_manifest_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "environment_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "run_nonce": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "started_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "finished_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "execution_state": {
+      "enum": [
+        "SUCCEEDED",
+        "ERROR",
+        "CANCELLED"
+      ]
+    },
+    "assertions": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "assertion_key",
+          "verdict",
+          "output_hash"
+        ],
+        "properties": {
+          "assertion_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "verdict": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "UNKNOWN"
+            ]
+          },
+          "output_hash": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            ]
+          }
+        }
+      },
+      "uniqueItems": true
+    },
+    "recorder_implementation_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

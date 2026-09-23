@@ -133,8 +133,14 @@ class OpenAICompatibleProvider:
     """Perform one OpenAI-compatible chat-completions request per invocation."""
 
     __slots__ = (
-        "_client", "_endpoint", "_redactor", "_secret", "_target", "_timeout",
+        "_client",
+        "_endpoint",
+        "_redactor",
+        "_secret",
+        "_target",
+        "_timeout",
         "_tool_schema_mode",
+        "_stream",
     )
 
     def __init__(
@@ -149,6 +155,7 @@ class OpenAICompatibleProvider:
         pricing_key: str | None = None,
         tool_schema_mode: str = LEGACY_TOOL_SCHEMA_MODE,
         allow_private_http: bool = False,
+        stream: bool = False,
     ) -> None:
         if not isinstance(client, httpx.AsyncClient):
             raise TypeError("client must be an httpx.AsyncClient")
@@ -165,29 +172,39 @@ class OpenAICompatibleProvider:
             raise ValueError("base_url must not contain credentials")
         if type(allow_private_http) is not bool:
             raise TypeError("allow_private_http must be a boolean")
+        if type(stream) is not bool:
+            raise TypeError("stream must be a boolean")
         private_http = False
         if allow_private_http and hostname is not None:
             try:
                 address = ip_address(hostname)
-                private_http = any(address in ip_network(network) for network in (
-                    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
-                ))
+                private_http = any(
+                    address in ip_network(network)
+                    for network in (
+                        "10.0.0.0/8",
+                        "172.16.0.0/12",
+                        "192.168.0.0/16",
+                        "fc00::/7",
+                    )
+                )
             except ValueError:
                 pass
-        if parsed.scheme == "http" and not private_http and hostname not in {
-            "127.0.0.1",
-            "localhost",
-            "::1",
-        }:
+        if (
+            parsed.scheme == "http"
+            and not private_http
+            and hostname
+            not in {
+                "127.0.0.1",
+                "localhost",
+                "::1",
+            }
+        ):
             raise ValueError("non-loopback provider URLs must use HTTPS")
         if tool_schema_mode not in (LEGACY_TOOL_SCHEMA_MODE, DEEPSEEK_STRICT_TOOL_SCHEMA_MODE):
             raise ValueError("unsupported tool_schema_mode")
-        if (
-            tool_schema_mode == DEEPSEEK_STRICT_TOOL_SCHEMA_MODE
-            and base_url.rstrip("/") not in (
-                "https://api.deepseek.com/beta",
-                "https://api.deepseek.com/beta/chat/completions",
-            )
+        if tool_schema_mode == DEEPSEEK_STRICT_TOOL_SCHEMA_MODE and base_url.rstrip("/") not in (
+            "https://api.deepseek.com/beta",
+            "https://api.deepseek.com/beta/chat/completions",
         ):
             raise ValueError(
                 "deepseek-strict-v1 requires the official HTTPS DeepSeek beta endpoint"
@@ -203,6 +220,7 @@ class OpenAICompatibleProvider:
         self._client = client
         self._secret = secret
         self._tool_schema_mode = tool_schema_mode
+        self._stream = stream
         if isinstance(timeout, bool) or (isinstance(timeout, (int, float)) and timeout <= 0):
             raise ValueError("timeout must be positive")
         self._timeout = timeout
@@ -213,9 +231,12 @@ class OpenAICompatibleProvider:
             pricing_key=pricing_key or model,
             endpoint_identity=self._endpoint,
             adapter_key=(
-                DEEPSEEK_STRICT_ADAPTER_KEY
-                if tool_schema_mode == DEEPSEEK_STRICT_TOOL_SCHEMA_MODE
-                else "openai-compatible.chat-completions.v1"
+                (
+                    DEEPSEEK_STRICT_ADAPTER_KEY
+                    if tool_schema_mode == DEEPSEEK_STRICT_TOOL_SCHEMA_MODE
+                    else "openai-compatible.chat-completions.v1"
+                )
+                + (".sse-v1" if stream else "")
             ),
         )
 
@@ -248,6 +269,8 @@ class OpenAICompatibleProvider:
 
     async def _post_once(self, request: ProviderRequest) -> ProviderResponse:
         try:
+            if self._stream:
+                return await self._stream_once(request)
             response = await self._client.post(
                 self._endpoint,
                 headers={
@@ -260,9 +283,28 @@ class OpenAICompatibleProvider:
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError(private_cause=self._redactor.exception(exc)) from None
         except httpx.RequestError as exc:
-            raise ProviderTransportError(private_cause=self._redactor.exception(exc)) from None
+            category = next(
+                (
+                    kind.__name__
+                    for kind in (
+                        httpx.ConnectError,
+                        httpx.ReadError,
+                        httpx.WriteError,
+                        httpx.CloseError,
+                        httpx.LocalProtocolError,
+                        httpx.RemoteProtocolError,
+                        httpx.ProxyError,
+                        httpx.UnsupportedProtocol,
+                    )
+                    if isinstance(exc, kind)
+                ),
+                "RequestError",
+            )
+            raise ProviderTransportError(
+                private_cause=self._redactor.exception(exc), transport_error_type=category
+            ) from None
 
-        self._raise_for_status(response.status_code)
+        self._check_response_status(response)
         try:
             payload = response.json()
         except (ValueError, UnicodeError):
@@ -270,6 +312,71 @@ class OpenAICompatibleProvider:
                 private_cause=RuntimeError("response body was not valid JSON")
             ) from None
         return self._parse_response(request, payload, response)
+
+    def _check_response_status(self, response: httpx.Response) -> None:
+        if response.status_code == 403:
+            # Some compatible relays use 403 for expired credentials. Recognize
+            # only the explicit machine code; never disclose the response body
+            # or reinterpret an arbitrary permission rejection as authentication.
+            try:
+                rejection = response.json()
+            except (ValueError, UnicodeError):
+                rejection = None
+            if isinstance(rejection, dict):
+                error = rejection.get("error", rejection)
+                if isinstance(error, dict) and error.get("code") == "API_KEY_EXPIRED":
+                    raise ProviderAuthenticationError(
+                        status_code=403, public_message="Provider API key has expired."
+                    )
+        self._raise_for_status(response.status_code)
+
+    async def _stream_once(self, request: ProviderRequest) -> ProviderResponse:
+        from .chat_stream import ChatStream
+
+        accumulator = ChatStream()
+        async with self._client.stream(
+            "POST",
+            self._endpoint,
+            headers={
+                "Authorization": f"Bearer {self._secret.reveal()}",
+                "Content-Type": "application/json",
+            },
+            json={
+                **self._request_payload(request),
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+            timeout=self._timeout,
+        ) as response:
+            if response.status_code == 403:
+                await response.aread()
+            self._check_response_status(response)
+            try:
+                if (
+                    response.headers.get("content-type", "").split(";", 1)[0].strip()
+                    != "text/event-stream"
+                ):
+                    raise ProviderProtocolError()
+                async for line in response.aiter_lines():
+                    accumulator.line(line)
+                    if accumulator.done:
+                        break
+                payload = accumulator.payload()
+            except (ProviderProtocolError, httpx.RequestError) as error:
+                # A valid final usage chunk remains billed even if framing fails.
+                try:
+                    usage = self._parse_usage(accumulator.usage)
+                except ProviderProtocolError:
+                    usage = None
+                if usage is not None:
+                    cause = (
+                        error
+                        if isinstance(error, ProviderProtocolError)
+                        else ProviderProtocolError()
+                    )
+                    raise _ProtocolErrorWithUsage(usage, cause, None) from None
+                raise
+            return self._parse_response(request, payload, response)
 
     def _request_payload(self, request: ProviderRequest) -> dict[str, Any]:
         return openai_chat_request_payload(
@@ -415,10 +522,7 @@ class OpenAICompatibleProvider:
         if not isinstance(choice, Mapping):
             return None
         finish_reason = choice.get("finish_reason")
-        if (
-            isinstance(finish_reason, str)
-            and finish_reason in _DIAGNOSTIC_FINISH_REASONS
-        ):
+        if isinstance(finish_reason, str) and finish_reason in _DIAGNOSTIC_FINISH_REASONS:
             return finish_reason
         return None
 

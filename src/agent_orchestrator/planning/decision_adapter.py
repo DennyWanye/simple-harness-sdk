@@ -18,9 +18,15 @@ from typing import Any
 from ..contracts.htn import (
     EvidenceRef,
     PlanProposal,
+    PlanRevision,
+    MissionRef,
     ReadItem,
     ReadItemKind,
     RefineOperation,
+    RebindInputOperation,
+    CancelBranchOperation,
+    ProposeSuccessorOperation,
+    BindSharedGoalOperation,
     RetireMethodOperation,
     RunningWorkPolicy,
 )
@@ -35,13 +41,21 @@ from ..contracts.planning_decisions import (
     PlanningRefKind,
     PlanningRefV1,
     RefineDecision,
+    RepairRefineDeeperDecision,
+    RepairRebindInputDecision,
+    RepairCancelBranchDecision,
     RepairProposeSuccessorDecision,
     RepairReplaceMethodDecision,
     ResumableIf,
     WaitDecision,
 )
 from ..contracts.semantic_base import VersionedRef, hash_hex, identifier, index
-from .decision_admission import AdmissionContext, AdmittedPlanningDecision
+from .decision_admission import (
+    AdmissionContext,
+    AdmittedPlanningDecision,
+    NoMutationDecision,
+    PreAdmittedPlanningDecision,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,8 +90,8 @@ class AdapterContext:
             self.trigger_refs, (str, bytes)
         ):
             raise ContractError("adapter.trigger_refs must be a sequence")
-        for item in self.trigger_refs:
-            if not isinstance(item, EvidenceRef):
+        for trigger in self.trigger_refs:
+            if not isinstance(trigger, EvidenceRef):
                 raise ContractError("adapter.trigger_refs entries must be EvidenceRef values")
         object.__setattr__(self, "read_set", tuple(self.read_set))
         object.__setattr__(self, "trigger_refs", tuple(self.trigger_refs))
@@ -192,7 +206,7 @@ def _instance_id(admitted: AdmittedPlanningDecision, payload_ref: PlanningRefV1)
 
 def _refine_operation(
     admitted: AdmittedPlanningDecision,
-    payload: RefineDecision | RepairReplaceMethodDecision,
+    payload: RefineDecision | RepairRefineDeeperDecision | RepairReplaceMethodDecision,
 ) -> RefineOperation:
     return RefineOperation(
         goal_id=_subject_id(admitted.subject, "task_id"),
@@ -213,8 +227,8 @@ def _proposal(
     return AdaptedPlanningOutcome(
         proposal=PlanProposal(
             proposal_id=context.proposal_id,
-            mission_id=context.mission_id,
-            expected_plan_revision=context.base_plan_revision,
+            mission_id=MissionRef(context.mission_id),
+            expected_plan_revision=PlanRevision(context.base_plan_revision),
             trigger_refs=context.trigger_refs,
             read_set=context.read_set,
             operations=operations,
@@ -269,13 +283,23 @@ def adapt_admitted_decision(
     decision = admitted.decision
     payload = decision.payload
 
-    if isinstance(payload, (BindExistingGoalDecision, RepairProposeSuccessorDecision)):
-        raise ContractError(
-            f"decision type {decision.decision_type!s} is not enabled in the adapter"
-        )
+    if isinstance(payload, RepairProposeSuccessorDecision):
+        return _proposal(admitted, adapter_context, (_successor_operation(payload),),
+                         running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE)
+    if isinstance(payload, RepairCancelBranchDecision):
+        return _proposal(admitted, adapter_context,
+            (CancelBranchOperation(payload.method_instance_ref.id, payload.step),),
+            running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE)
+    if isinstance(payload, RepairRebindInputDecision):
+        return _proposal(admitted, adapter_context, (_rebind_operation(payload),),
+                         running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE)
 
-    if decision.decision_type is PlanningDecisionType.REFINE:
-        if not isinstance(payload, RefineDecision):
+    if isinstance(payload, BindExistingGoalDecision):
+        return _proposal(admitted, adapter_context, (_bind_operation(payload),),
+                         running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE)
+
+    if decision.decision_type is PlanningDecisionType.REFINE or isinstance(payload, RepairRefineDeeperDecision):
+        if not isinstance(payload, (RefineDecision, RepairRefineDeeperDecision)):
             raise ContractError("REFINE payload is not a RefineDecision")
         return _proposal(
             admitted,
@@ -310,9 +334,121 @@ def adapt_admitted_decision(
     )
 
 
+def adapt_for_preview(
+    pre_admitted: PreAdmittedPlanningDecision | NoMutationDecision,
+    *,
+    context: AdapterContext,
+) -> PlanProposal | NoMutationDecision:
+    """Build a typed candidate without manufacturing final admission."""
+
+    if isinstance(pre_admitted, NoMutationDecision):
+        return pre_admitted
+    if not isinstance(pre_admitted, PreAdmittedPlanningDecision):
+        raise ContractError("preview adapter requires a pre-admitted decision")
+    if not isinstance(context, AdapterContext):
+        raise ContractError("preview adapter context must be an AdapterContext")
+    decision = pre_admitted.decision
+    payload = decision.payload
+    if isinstance(payload, RepairProposeSuccessorDecision):
+        return PlanProposal(proposal_id=context.proposal_id, mission_id=MissionRef(context.mission_id),
+            expected_plan_revision=PlanRevision(context.base_plan_revision),
+            trigger_refs=context.trigger_refs, read_set=context.read_set,
+            operations=(_successor_operation(payload),), rationale=decision.rationale,
+            running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE)
+    if isinstance(payload, RepairCancelBranchDecision):
+        return PlanProposal(proposal_id=context.proposal_id, mission_id=MissionRef(context.mission_id),
+            expected_plan_revision=PlanRevision(context.base_plan_revision),
+            trigger_refs=context.trigger_refs, read_set=context.read_set,
+            operations=(CancelBranchOperation(payload.method_instance_ref.id, payload.step),), rationale=decision.rationale,
+            running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE)
+    if isinstance(payload, RepairRebindInputDecision):
+        return PlanProposal(proposal_id=context.proposal_id, mission_id=MissionRef(context.mission_id),
+            expected_plan_revision=PlanRevision(context.base_plan_revision),
+            trigger_refs=context.trigger_refs, read_set=context.read_set,
+            operations=(_rebind_operation(payload),), rationale=decision.rationale,
+            running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE)
+    if isinstance(payload, BindExistingGoalDecision):
+        return PlanProposal(proposal_id=context.proposal_id, mission_id=MissionRef(context.mission_id),
+            expected_plan_revision=PlanRevision(context.base_plan_revision),
+            trigger_refs=context.trigger_refs, read_set=context.read_set,
+            operations=(_bind_operation(payload),), rationale=decision.rationale,
+            running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE)
+    if decision.decision_type is PlanningDecisionType.REFINE or isinstance(payload, RepairRefineDeeperDecision):
+        if not isinstance(payload, (RefineDecision, RepairRefineDeeperDecision)) or not pre_admitted.method_refs:
+            raise ContractError("REFINE preview lacks a resolved method")
+        operation = RefineOperation(
+            goal_id=_subject_id(pre_admitted.subject, "task_id"),
+            obligation_id=_subject_id(pre_admitted.subject, "obligation_id"),
+            method_ref=_versioned_ref(pre_admitted.method_refs[0]),
+            bindings=dict(payload.bindings),
+        )
+        return PlanProposal(
+            proposal_id=context.proposal_id,
+            mission_id=MissionRef(context.mission_id),
+            expected_plan_revision=PlanRevision(context.base_plan_revision),
+            trigger_refs=context.trigger_refs,
+            read_set=context.read_set,
+            operations=(operation,),
+            rationale=decision.rationale,
+            running_work_policy=RunningWorkPolicy.RETAIN_IF_BINDINGS_UNCHANGED,
+        )
+    if decision.decision_type is PlanningDecisionType.REPAIR:
+        if not isinstance(payload, RepairReplaceMethodDecision) or not pre_admitted.method_refs:
+            raise ContractError("REPAIR preview has no enabled replacement")
+        instance = next(
+            (item for item in pre_admitted.context.admission.active_method_instances
+             if item.ref_key == (
+                 str(payload.rejected_method_instance.kind),
+                 payload.rejected_method_instance.id,
+                 payload.rejected_method_instance.semantic_revision,
+                 payload.rejected_method_instance.content_hash,
+             )),
+            None,
+        )
+        retire = RetireMethodOperation(
+            method_instance_id=(instance.instance_id if instance is not None
+                                else payload.rejected_method_instance.id),
+            reason=decision.rationale,
+        )
+        refine = RefineOperation(
+            goal_id=_subject_id(pre_admitted.subject, "task_id"),
+            obligation_id=_subject_id(pre_admitted.subject, "obligation_id"),
+            method_ref=_versioned_ref(pre_admitted.method_refs[0]),
+            bindings=dict(payload.bindings),
+        )
+        return PlanProposal(
+            proposal_id=context.proposal_id,
+            mission_id=MissionRef(context.mission_id),
+            expected_plan_revision=PlanRevision(context.base_plan_revision),
+            trigger_refs=context.trigger_refs,
+            read_set=context.read_set,
+            operations=(retire, refine),
+            rationale=decision.rationale,
+            running_work_policy=RunningWorkPolicy.REQUEST_STOP_THEN_RECONCILE,
+        )
+    raise ContractError(f"decision type {decision.decision_type!s} is not enabled for preview")
+
+
 __all__ = (
     "AdapterContext",
     "AdaptedPlanningOutcome",
     "DurableOnly",
+    "adapt_for_preview",
     "adapt_admitted_decision",
 )
+
+
+def _rebind_operation(payload: RepairRebindInputDecision) -> RebindInputOperation:
+    return RebindInputOperation(payload.consumer_task_ref.id, payload.requirement_id,
+        payload.expected_requirement_hash, payload.producer_task_ref.id, payload.output_port)
+
+
+def _successor_operation(payload: RepairProposeSuccessorDecision) -> ProposeSuccessorOperation:
+    return ProposeSuccessorOperation(payload.old_task_ref.id, payload.obligation_ref.id,
+        VersionedRef(payload.goal_type_ref.id, payload.goal_type_ref.version, payload.goal_type_ref.content_hash),
+        dict(payload.bindings))
+
+
+def _bind_operation(payload: BindExistingGoalDecision) -> BindSharedGoalOperation:
+    return BindSharedGoalOperation(payload.consumer_method_instance_ref.id, payload.step,
+        payload.goal_ref.id, None if payload.resolution_ref is None else payload.resolution_ref.id)

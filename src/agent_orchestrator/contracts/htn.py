@@ -1644,6 +1644,7 @@ class ChildBinding:
     #: actually reusing an accepted result may name one: sharing live work has no
     #: acceptance yet, and new work has nothing to point at (I01).
     acceptance_ref: TypedRef | None = None
+    resolution_ref: TypedRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1694,6 +1695,13 @@ class ChildBinding:
                     "only REUSE_ACCEPTED binds a specific Acceptance (TG decision 9)"
                 )
 
+        if self.resolution_ref is not None:
+            if (not isinstance(self.resolution_ref, TypedRef)
+                    or self.resolution_ref.kind is not TypedRefKind.RESOLUTION
+                    or self.reuse_policy is not ReusePolicy.REUSE_ACCEPTED
+                    or self.acceptance_ref is not None):
+                raise ContractError("reused compound binds one exact GoalResolution, separately from Acceptance")
+
     def to_json(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "instance_id": str(self.instance_id),
@@ -1707,6 +1715,8 @@ class ChildBinding:
             payload["goal_occurrence_id"] = str(self.goal_occurrence_id)
         if self.acceptance_ref is not None:
             payload["acceptance_ref"] = self.acceptance_ref.to_json()
+        if self.resolution_ref is not None:
+            payload["resolution_ref"] = self.resolution_ref.to_json()
         return payload
 
     @classmethod
@@ -1720,6 +1730,7 @@ class ChildBinding:
                 "reuse_policy",
                 "goal_occurrence_id",
                 "acceptance_ref",
+                "resolution_ref",
             ),
         )
         raw_goal_occurrence = data.get("goal_occurrence_id")
@@ -1734,6 +1745,7 @@ class ChildBinding:
             goal_occurrence_id=(
                 None if raw_goal_occurrence is None else OccurrenceId(raw_goal_occurrence)
             ),
+            resolution_ref=(None if data.get("resolution_ref") is None else TypedRef.from_json(data["resolution_ref"], f"{name}.resolution_ref")),
             acceptance_ref=(
                 None
                 if raw_acceptance is None
@@ -2526,6 +2538,30 @@ class BindSharedGoalOperation:
 
 
 @dataclass(frozen=True, slots=True)
+class CancelBranchOperation:
+    method_instance_id: str
+    step: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {"op": "cancel_branch", "method_instance_id": self.method_instance_id, "step": self.step}
+
+
+@dataclass(frozen=True, slots=True)
+class RebindInputOperation:
+    consumer_task_id: str
+    requirement_id: str
+    expected_requirement_hash: str
+    producer_task_id: str
+    output_port: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {"op": "rebind_input", "consumer_task_id": self.consumer_task_id,
+                "requirement_id": self.requirement_id,
+                "expected_requirement_hash": self.expected_requirement_hash,
+                "producer_task_id": self.producer_task_id, "output_port": self.output_port}
+
+
+@dataclass(frozen=True, slots=True)
 class ProposeSuccessorOperation:
     old_task_id: str
     obligation_id: str
@@ -2543,7 +2579,7 @@ class ProposeSuccessorOperation:
 
 
 PlanOperation: TypeAlias = (
-    "RefineOperation | RetireMethodOperation | BindSharedGoalOperation | ProposeSuccessorOperation"
+    "RefineOperation | RetireMethodOperation | BindSharedGoalOperation | ProposeSuccessorOperation | RebindInputOperation | CancelBranchOperation"
 )
 
 
@@ -2582,6 +2618,20 @@ def parse_plan_operation(value: object, name: str) -> PlanOperation:
             goal_id=identifier(data["goal_id"], f"{name}.goal_id"),
             resolution_id=optional_identifier(data["resolution_id"], f"{name}.resolution_id"),
         )
+    if op == "cancel_branch":
+        data = fields_of(value, name, required=("op", "method_instance_id", "step"))
+        return CancelBranchOperation(
+            identifier(data["method_instance_id"], f"{name}.method_instance_id"),
+            identifier(data["step"], f"{name}.step"))
+    if op == "rebind_input":
+        data = fields_of(value, name, required=("op", "consumer_task_id", "requirement_id",
+            "expected_requirement_hash", "producer_task_id", "output_port"))
+        return RebindInputOperation(
+            consumer_task_id=identifier(data["consumer_task_id"], f"{name}.consumer_task_id"),
+            requirement_id=identifier(data["requirement_id"], f"{name}.requirement_id"),
+            expected_requirement_hash=hash_hex(data["expected_requirement_hash"], f"{name}.expected_requirement_hash"),
+            producer_task_id=identifier(data["producer_task_id"], f"{name}.producer_task_id"),
+            output_port=identifier(data["output_port"], f"{name}.output_port"))
     if op == "propose_successor":
         data = fields_of(
             value,
@@ -2967,6 +3017,32 @@ class ObligationCoverage:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskBindingRewrite:
+    """Compiler-owned control binding update, CAS-bound to the complete old row.
+
+    It cannot rename a Task, transfer a duty or change its semantic contract.
+    Those changes require an explicit successor Task instead.
+    """
+
+    expected_hash: str
+    binding: TaskSemanticBindingV1
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "expected_hash", hash_hex(self.expected_hash, "binding_rewrite.expected_hash"))
+        if not isinstance(self.binding, TaskSemanticBindingV1):
+            raise ContractError("binding_rewrite.binding must be a semantic binding")
+
+    def to_json(self) -> dict[str, Any]:
+        return {"expected_hash": self.expected_hash, "binding": self.binding.to_json()}
+
+    @classmethod
+    def from_json(cls, value: object, name: str = "binding_rewrite") -> TaskBindingRewrite:
+        data = fields_of(value, name, required=("expected_hash", "binding"))
+        return cls(expected_hash=data["expected_hash"],
+                   binding=TaskSemanticBindingV1.from_json(data["binding"], f"{name}.binding"))
+
+
+@dataclass(frozen=True, slots=True)
 class ProposedPlanDelta:
     """§18.3: the compiler's checked output — the only shape a Commit accepts.
 
@@ -2991,6 +3067,8 @@ class ProposedPlanDelta:
     obligation_openings: tuple[ObligationOpening, ...] = ()
     referenced_occurrences: tuple[OccurrenceId, ...] = ()
     compiled_from_proposal_id: str | None = None
+    binding_rewrites: tuple[TaskBindingRewrite, ...] = ()
+    resolution_reuses: tuple[TypedRef, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "delta_id", identifier(self.delta_id, "delta.delta_id"))
@@ -3002,6 +3080,12 @@ class ProposedPlanDelta:
         )
         if not isinstance(self.read_set, SemanticReadSet):
             raise ContractError("delta.read_set must be a SemanticReadSet (ADR-13)")
+        if any(not isinstance(ref, TypedRef) or ref.kind is not TypedRefKind.RESOLUTION
+               for ref in self.resolution_reuses):
+            raise ContractError("delta.resolution_reuses requires typed GoalResolution references")
+        rewritten = [item.binding.task_id for item in self.binding_rewrites]
+        if len(rewritten) != len(set(rewritten)):
+            raise ContractError("delta cannot rewrite a Task binding twice")
         opened = [opening.obligation_id for opening in self.obligation_openings]
         if len(set(opened)) != len(opened):
             raise ContractError("delta.obligation_openings must not open one duty twice")
@@ -3070,6 +3154,10 @@ class ProposedPlanDelta:
             payload["obligation_openings"] = [
                 opening.to_json() for opening in self.obligation_openings
             ]
+        if self.binding_rewrites:
+            payload["binding_rewrites"] = [item.to_json() for item in self.binding_rewrites]
+        if self.resolution_reuses:
+            payload["resolution_reuses"] = [item.to_json() for item in self.resolution_reuses]
         return payload
 
     @classmethod
@@ -3088,6 +3176,8 @@ class ProposedPlanDelta:
                 "obligation_openings",
                 "referenced_occurrences",
                 "compiled_from_proposal_id",
+                "binding_rewrites",
+                "resolution_reuses",
             ),
         )
         return cls(
@@ -3135,6 +3225,10 @@ class ProposedPlanDelta:
                 OccurrenceId(item) for item in data.get("referenced_occurrences", ())
             ),
             compiled_from_proposal_id=data.get("compiled_from_proposal_id"),
+            resolution_reuses=sequence_of(data.get("resolution_reuses", ()), f"{name}.resolution_reuses",
+                lambda item, where: TypedRef.from_json(item, where)),
+            binding_rewrites=sequence_of(data.get("binding_rewrites", ()), f"{name}.binding_rewrites",
+                                        lambda item, where: TaskBindingRewrite.from_json(item, where)),
         )
 
 
@@ -3701,6 +3795,9 @@ __all__ = (
     "PredicateCondition",
     "ProposeSuccessorOperation",
     "ProposedPlanDelta",
+    "TaskBindingRewrite",
+    "RebindInputOperation",
+    "CancelBranchOperation",
     "StructureBudget",
     "ReadItem",
     "ReadItemKind",

@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mission_id",
+    "tenant_id",
+    "task_id",
+    "attempt_id",
+    "result_id",
+    "schema",
+    "subject_hash",
+    "task",
+    "envelope",
+    "artifacts",
+    "verification_copy",
+    "client_result_id",
+    "tampered",
+    "knowledge",
+    "require_synthesis_knowledge",
+    "action_problems",
+    "local_code_execution",
+    "domain",
+    "assessment_binding"
+  ],
+  "properties": {
+    "mission_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "result_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema": {
+      "const": "assurance-local-verification-input-v1"
+    },
+    "subject_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "task": {
+      "type": "object"
+    },
+    "envelope": {
+      "type": "object"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "verification_copy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "files"
+      ],
+      "properties": {
+        "attempt_id": {
+          "type": "string"
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "client_result_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tampered": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "knowledge": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "require_synthesis_knowledge": {
+      "type": "boolean"
+    },
+    "action_problems": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "local_code_execution": {
+      "type": "boolean"
+    },
+    "domain": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "assessment_binding": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  }
+}

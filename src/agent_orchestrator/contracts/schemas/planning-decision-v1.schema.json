@@ -715,8 +715,288 @@
     "repairKind": {
       "enum": [
         "REPLACE_METHOD",
+        "REFINE_DEEPER",
+        "REBIND_INPUT",
+        "CANCEL_BRANCH",
+        "RETRY_SAME_METHOD",
+        "DECLARE_RUNTIME_BLOCKED",
+        "ESCALATE",
+        "REQUEST_COMPENSATION",
         "PROPOSE_SUCCESSOR"
       ]
+    },
+    "repairRefineDeeperPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "method_ref",
+        "bindings"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "REFINE_DEEPER"
+        },
+        "method_ref": {
+          "$ref": "#/$defs/planningRef"
+        },
+        "bindings": {
+          "type": "object",
+          "maxProperties": 64
+        }
+      }
+    },
+    "repairRebindInputPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "consumer_task_ref",
+        "producer_task_ref",
+        "requirement_id",
+        "expected_requirement_hash",
+        "output_port"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "REBIND_INPUT"
+        },
+        "consumer_task_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/planningRef"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "task"
+                }
+              }
+            }
+          ]
+        },
+        "producer_task_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/planningRef"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "task"
+                }
+              }
+            }
+          ]
+        },
+        "requirement_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "expected_requirement_hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "output_port": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "repairCancelBranchPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "method_instance_ref",
+        "step"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "CANCEL_BRANCH"
+        },
+        "method_instance_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/planningRef"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "method_instance"
+                }
+              }
+            }
+          ]
+        },
+        "step": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "repairRetrySameMethodPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "failed_attempt_id",
+        "method_instance_ref"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "RETRY_SAME_METHOD"
+        },
+        "failed_attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "method_instance_ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/planningRef"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "method_instance"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "repairRuntimeBlockedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "repair_request_id",
+        "blockers",
+        "resumable_if"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "DECLARE_RUNTIME_BLOCKED"
+        },
+        "repair_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "blockers": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/blockedItem"
+          },
+          "minItems": 1
+        },
+        "resumable_if": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/resumableIf"
+              },
+              {
+                "anyOf": [
+                  {
+                    "const": "evidence_updated"
+                  },
+                  {
+                    "const": "human_resolved"
+                  },
+                  {
+                    "const": "plan_revision_changed"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    "repairEscalatePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "target",
+        "question",
+        "options",
+        "blocking"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "ESCALATE"
+        },
+        "target": {
+          "const": "human"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "options": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "$ref": "#/$defs/humanOption"
+          }
+        },
+        "blocking": {
+          "type": "boolean"
+        }
+      }
+    },
+    "repairCompensationPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_kind",
+        "action_key",
+        "action_hash",
+        "reason"
+      ],
+      "properties": {
+        "repair_kind": {
+          "$ref": "#/$defs/repairKind",
+          "const": "REQUEST_COMPENSATION"
+        },
+        "action_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "action_hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      }
     }
   },
   "allOf": [
@@ -782,6 +1062,27 @@
             "oneOf": [
               {
                 "$ref": "#/$defs/repairReplaceMethodPayload"
+              },
+              {
+                "$ref": "#/$defs/repairRefineDeeperPayload"
+              },
+              {
+                "$ref": "#/$defs/repairRebindInputPayload"
+              },
+              {
+                "$ref": "#/$defs/repairCancelBranchPayload"
+              },
+              {
+                "$ref": "#/$defs/repairRetrySameMethodPayload"
+              },
+              {
+                "$ref": "#/$defs/repairRuntimeBlockedPayload"
+              },
+              {
+                "$ref": "#/$defs/repairEscalatePayload"
+              },
+              {
+                "$ref": "#/$defs/repairCompensationPayload"
               },
               {
                 "$ref": "#/$defs/repairProposeSuccessorPayload"

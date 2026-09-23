@@ -1,0 +1,142 @@
+[
+  {
+    "schema_version": 1,
+    "method_id": "appworld.fulfil-by-api",
+    "method_version": 2,
+    "goal_type_ref": {
+      "id": "appworld.fulfil-request",
+      "version": 2
+    },
+    "parameter_schema_ref": {
+      "id": "appworld.operation-request-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "appworld.outputs",
+      "version": 1
+    },
+    "applicable_when": [],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "prepare",
+        "task_type_ref": {
+          "id": "appworld.prepare-action",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          },
+          "request": {
+            "op": "parameter",
+            "name": "request"
+          },
+          "target": {
+            "op": "parameter",
+            "name": "target"
+          }
+        },
+        "required_capabilities": [
+          "repo.write"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-request-satisfied",
+          "child_step": "prepare",
+          "child_criterion_id": "c-program-prepared",
+          "evidence_requirement": "This preparation contributes a reviewed program; only the root registered Operation state milestone can establish the requested business effect."
+        },
+        {
+          "parent_criterion_id": "c-actions-confirmed",
+          "child_step": "prepare",
+          "child_criterion_id": "c-program-prepared",
+          "evidence_requirement": "This preparation contributes a reviewed program; only the root registered Operation state milestone can establish the requested business effect."
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "prepare",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  },
+  {
+    "schema_version": 1,
+    "method_id": "appworld.fulfil-by-search",
+    "method_version": 2,
+    "goal_type_ref": {
+      "id": "appworld.fulfil-request",
+      "version": 2
+    },
+    "parameter_schema_ref": {
+      "id": "appworld.operation-request-params",
+      "version": 1
+    },
+    "output_schema_ref": {
+      "id": "appworld.outputs",
+      "version": 1
+    },
+    "applicable_when": [],
+    "exploration_assumptions": [],
+    "steps": [
+      {
+        "local_id": "prepare",
+        "task_type_ref": {
+          "id": "appworld.prepare-search-action",
+          "version": 1
+        },
+        "form": "primitive",
+        "arguments": {
+          "app": {
+            "op": "parameter",
+            "name": "app"
+          },
+          "request": {
+            "op": "parameter",
+            "name": "request"
+          },
+          "target": {
+            "op": "parameter",
+            "name": "target"
+          }
+        },
+        "required_capabilities": [
+          "repo.write"
+        ],
+        "obligation_relation": "refines_parent"
+      }
+    ],
+    "ordering": [],
+    "required_capabilities": [],
+    "expected_effects": [],
+    "composition": {
+      "criterion_links": [
+        {
+          "parent_criterion_id": "c-request-satisfied",
+          "child_step": "prepare",
+          "child_criterion_id": "c-program-prepared",
+          "evidence_requirement": "This preparation contributes a reviewed program; only the root registered Operation state milestone can establish the requested business effect."
+        },
+        {
+          "parent_criterion_id": "c-actions-confirmed",
+          "child_step": "prepare",
+          "child_criterion_id": "c-program-prepared",
+          "evidence_requirement": "This preparation contributes a reviewed program; only the root registered Operation state milestone can establish the requested business effect."
+        }
+      ],
+      "outputs": {},
+      "finalizer_step": "prepare",
+      "independent_review_required": true
+    },
+    "basis_refs": []
+  }
+]

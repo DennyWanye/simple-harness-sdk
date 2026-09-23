@@ -1,0 +1,15 @@
+{
+  "manifest_version": 1,
+  "codecs": [
+    {"kind": "data_requirement", "codec": "DataRequirement.to_json/from_json", "source_path": "agent_orchestrator/contracts/htn.py", "source_sha256": "3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+    {"kind": "method_instance", "codec": "MethodInstanceDraft.to_json/from_json", "source_path": "agent_orchestrator/contracts/htn.py", "source_sha256": "3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+    {"kind": "obligation_coverage", "codec": "ObligationCoverage.to_json/from_json", "source_path": "agent_orchestrator/contracts/htn.py", "source_sha256": "3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+    {"kind": "occurrence", "codec": "OccurrenceSpec.to_json/from_json", "source_path": "agent_orchestrator/contracts/htn.py", "source_sha256": "3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+    {"kind": "order_constraint", "codec": "OrderConstraint.to_json/from_json", "source_path": "agent_orchestrator/contracts/htn.py", "source_sha256": "3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+    {"kind": "task_semantics", "codec": "TaskSemanticBindingV1.to_json/from_json", "source_path": "agent_orchestrator/contracts/htn.py", "source_sha256": "3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"},
+    {"kind": "typed_edge", "codec": "TypedEdge.to_json/from_json", "source_path": "agent_orchestrator/contracts/htn.py", "source_sha256": "3750328911ca2851818778f74bf8b510933213593cc7825d8cea41b8f2b67a28"}
+  ],
+  "supporting_sources": [
+    {"component": "TaskNetworkSnapshot.constructor", "source_path": "agent_orchestrator/graph/task_network.py", "source_sha256": "5399dd8d43a1621ce37170fa5490e5ab7b58571e7212af98bf473cf87801d370"}
+  ]
+}

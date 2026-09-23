@@ -31,6 +31,10 @@ from agent_orchestrator.orchestrator.planning_protocol_binding import (
     planning_protocol_for_mission,
     planning_protocol_replay_conflict,
 )
+from agent_orchestrator.runtime.role_templates import (
+    PLANNER_HIERARCHICAL_V10_VERSION,
+    PLANNING_DECISION_PACKAGE_VERSION,
+)
 from agent_orchestrator.storage.store import Store
 
 
@@ -120,12 +124,12 @@ def test_new_protocol_creation_writes_one_binding_with_frozen_hash(tmp_path) -> 
     binding = planning_protocol_for_mission(store, mission.id)
     assert binding is not None
     assert binding["protocol_version"] == PLANNING_DECISION_V1
-    assert binding["package_version"] == 4
-    assert binding["prompt_version"] == "planner-hierarchical-v8"
+    assert binding["package_version"] == PLANNING_DECISION_PACKAGE_VERSION
+    assert binding["prompt_version"] == PLANNER_HIERARCHICAL_V10_VERSION
     expected = {
         "protocol_version": PLANNING_DECISION_V1,
-        "package_version": 4,
-        "prompt_version": "planner-hierarchical-v8",
+        "package_version": PLANNING_DECISION_PACKAGE_VERSION,
+        "prompt_version": PLANNER_HIERARCHICAL_V10_VERSION,
     }
     assert (
         binding["binding_hash"]
@@ -192,8 +196,9 @@ def test_replay_is_idempotent_and_protocol_cannot_change(tmp_path) -> None:
             _spec_with_field_set_behind_the_constructor("idem", LEGACY_PLANNING_PROTOCOL)
         )
     assert planning_protocol_replay_conflict(store, mission.id, LEGACY_PLANNING_PROTOCOL) == (
-        f"mission {mission.id} is durably bound to protocol {PLANNING_DECISION_V1!r}/package 4,"
-        f" not {LEGACY_PLANNING_PROTOCOL!r}/package 4"
+        f"mission {mission.id} is durably bound to protocol {PLANNING_DECISION_V1!r}/"
+        f"package {PLANNING_DECISION_PACKAGE_VERSION}, not {LEGACY_PLANNING_PROTOCOL!r}/"
+        f"package {PLANNING_DECISION_PACKAGE_VERSION}"
     )
     assert planning_protocol_replay_conflict(store, mission.id, PLANNING_DECISION_V1) is None
     assert store.find_mission("tenant", "idem")[1] == sha256_hex(spec.to_json())
@@ -452,30 +457,34 @@ def test_the_durable_binding_ignores_the_ambient_environment(tmp_path, monkeypat
 # ---------------------------------------------------------------------------------------
 
 
-def test_the_protocol_switch_is_reachable_without_editing_the_request_parser() -> None:
-    """The switch must be reachable from the files this slice is allowed to touch.
-
-    ``api/missions.py`` is not on the allowlist, so the request parser must stay byte
-    for byte as it was.  That is only acceptable if the parser is not the *only* way to
-    name the wire: the field is part of ``MissionSpec``, so any caller that builds a
-    spec — the ``__main__`` CLI, the evaluation runners, the Host's own record reader —
-    can name it, and the parser simply leaves the dataclass default in place.
-
-    This pins the negative half too: the parser must keep *dropping* the key, because
-    reaching in there is what the allowlist forbids.
-    """
+def test_request_parser_binds_the_protocol_and_preserves_legacy_default() -> None:
+    """The HTTP request body must reach the durable MissionSpec protocol field."""
 
     from agent_orchestrator.api.missions import spec_from_request
 
     named = spec_from_request(
         "tenant", {"idempotency_key": "x", "planning_protocol_version": PLANNING_DECISION_V1}
     )
-    plain = spec_from_request("tenant", {"idempotency_key": "x"})
-    # The key is dropped, not defaulted: the two documents are byte for byte the same,
-    # so a request cannot smuggle the wire in through HTTP and the legacy bytes hold.
-    assert named.to_json() == plain.to_json()
-    assert named.planning_protocol_version == LEGACY_PLANNING_PROTOCOL
-    assert "planning_protocol_version" not in named.to_json()
+    plain = spec_from_request("tenant", {"idempotency_key": "y"})
+    assert named.planning_protocol_version == PLANNING_DECISION_V1
+    assert named.to_json()["planning_protocol_version"] == PLANNING_DECISION_V1
+    assert plain.planning_protocol_version == LEGACY_PLANNING_PROTOCOL
+    assert "planning_protocol_version" not in plain.to_json()
+
+    from agent_orchestrator.api.missions import MissionRequestError
+
+    with pytest.raises(MissionRequestError, match="planning protocol"):
+        spec_from_request(
+            "tenant",
+            {
+                "idempotency_key": "unknown",
+                "planning_protocol_version": "planning-decision-v99",
+            },
+        )
+    with pytest.raises(MissionRequestError, match="planning protocol"):
+        spec_from_request(
+            "tenant", {"idempotency_key": "invalid", "planning_protocol_version": []}
+        )
     named = MissionSpec(
         goal="g",
         success_criteria=("ok",),
@@ -488,20 +497,14 @@ def test_the_protocol_switch_is_reachable_without_editing_the_request_parser() -
     assert named.to_json()["planning_protocol_version"] == PLANNING_DECISION_V1
 
 
-def test_the_slice_touches_no_file_outside_its_allowlist() -> None:
-    """Guard against the repair silently re-adding the out-of-allowlist mapping.
+def test_request_parser_rejects_non_string_protocol_values() -> None:
+    from agent_orchestrator.api.missions import MissionRequestError, spec_from_request
 
-    The gate fails the whole slice on a single out-of-allowlist file, so the mapping in
-    ``api/missions.py`` cannot come back.  Reading the file we are not allowed to change
-    is enough to prove it: the parser must not mention the field at all.
-    """
-
-    import inspect
-
-    from agent_orchestrator.api.missions import spec_from_request
-
-    source = inspect.getsource(spec_from_request)
-    assert "planning_protocol_version" not in source
+    for value in (1, {}, [PLANNING_DECISION_V1]):
+        with pytest.raises(MissionRequestError, match="planning protocol"):
+            spec_from_request(
+                "tenant", {"idempotency_key": "bad", "planning_protocol_version": value}
+            )
 
 
 # ---------------------------------------------------------------------------------------
@@ -528,8 +531,8 @@ def test_the_binding_hash_names_the_protocol_and_is_sensitive_to_it() -> None:
     for protocol in (LEGACY_PLANNING_PROTOCOL, PLANNING_DECISION_V1):
         document = {
             "protocol_version": protocol,
-            "package_version": 4,
-            "prompt_version": "planner-hierarchical-v8",
+            "package_version": PLANNING_DECISION_PACKAGE_VERSION,
+            "prompt_version": PLANNER_HIERARCHICAL_V10_VERSION,
         }
         expected = hashlib.sha256(
             json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()

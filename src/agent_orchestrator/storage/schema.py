@@ -18,10 +18,17 @@ from dataclasses import dataclass
 from ..governance.budget_tail_schema import DDL as DDL_V13
 from ..governance.mission_system_tail_schema import DDL as DDL_V15
 from .acceptance_receipt_schema import DDL as DDL_V17
+from .admission_seams_schema import DDL as DDL_V20
+from .assurance_schema import DDL as DDL_V26
 from .fragment_schema import FRAGMENT_SCHEMA_SQL as DDL_V14
 from .htn_schema import DDL as DDL_V16
+from .planning_human_store import DDL as DDL_V24
 from .planning_decision_schema import DDL as DDL_V19
+from .operation_seams_schema import DDL as DDL_V21
+from .operation_completion_schema import DDL as DDL_V22
 from .validity_subject_schema import DDL as DDL_V18
+from .method_evaluation_schema import DDL as DDL_V23
+from .taskgraph_schema import DDL as DDL_V25
 
 
 @dataclass(frozen=True, slots=True)
@@ -556,6 +563,13 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(17, "orchestrator-full-target-acceptance-receipts", DDL_V17),
     Migration(18, "orchestrator-full-target-witness-subject", DDL_V18),
     Migration(19, "orchestrator-planning-decision-v1", DDL_V19),
+    Migration(20, "orchestrator-h1h-admission-seams", DDL_V20),
+    Migration(21, "orchestrator-operation-seams", DDL_V21),
+    Migration(22, "orchestrator-operation-completion", DDL_V22),
+    Migration(23, "orchestrator-method-evaluations", DDL_V23),
+    Migration(24, "orchestrator-planning-human-requests", DDL_V24),
+    Migration(25, "orchestrator-taskgraph-execution-v2", DDL_V25),
+    Migration(26, "orchestrator-assurance-exec-v1.1", DDL_V26),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -582,6 +596,7 @@ __all__ = (
     "DDL_V17",
     "DDL_V18",
     "DDL_V19",
+    "DDL_V20",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

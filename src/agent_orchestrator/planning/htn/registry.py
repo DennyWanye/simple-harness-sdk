@@ -879,12 +879,25 @@ class MethodRegistry:
         self._registrations: dict[tuple[str, int, str], MethodRegistration] = {}
         self._receipts: dict[tuple[str, int, str], AdmissionReceipt] = {}
         self._trial_uses: dict[tuple[tuple[str, int, str], str], int] = {}
+        self._evaluation_scopes: dict[tuple[str, int, str], frozenset[str]] = {}
         #: goal type ``(id, version, content_hash)`` → the methods written for it, in
         #: insertion order.  Retrieval is on the hot path of every refinement, and a
         #: scan of every definition per frontier item is the wrong shape for it.
         self._by_goal_type: dict[tuple[str, int, str], list[tuple[str, int, str]]] = {}
         #: goal type id → every version of it that some method targets, for suggestions.
         self._by_goal_type_id: dict[str, list[tuple[str, int, str]]] = {}
+
+    def fork(self) -> MethodRegistry:
+        """An isolated admission workspace sharing only immutable records."""
+        candidate = MethodRegistry()
+        candidate._definitions = dict(self._definitions)
+        candidate._registrations = dict(self._registrations)
+        candidate._receipts = dict(self._receipts)
+        candidate._trial_uses = dict(self._trial_uses)
+        candidate._evaluation_scopes = dict(self._evaluation_scopes)
+        candidate._by_goal_type = {key: list(value) for key, value in self._by_goal_type.items()}
+        candidate._by_goal_type_id = {key: list(value) for key, value in self._by_goal_type_id.items()}
+        return candidate
 
     # -- storage ------------------------------------------------------------------
 
@@ -906,6 +919,27 @@ class MethodRegistry:
             MethodRef(method_id=item[0], version=item[1], content_hash=item[2])
             for item in sorted(self._definitions)
         )
+
+    def restore(self, contract: MethodContract, registration: MethodRegistration) -> None:
+        """Restore only records read by the system from its authoritative method store."""
+        ref = contract.method_ref()
+        if registration.method_ref != ref or registration.author is RegistryAuthor.MODEL:
+            raise ContractError("persisted registration does not describe the system-admitted method")
+        key = self._key(ref)
+        if any(item[:2] == key[:2] and item != key for item in self._definitions):
+            raise ContractError("stored method version conflicts with loaded definition")
+        self._definitions[key] = contract
+        self._registrations[key] = registration
+        self._index(contract, key)
+        self._evaluation_scopes.pop(key, None)
+
+    def allow_evaluation_trials(self, ref: MethodRef, mission_ids: Sequence[str]) -> None:
+        """Install the system-frozen offline evaluation cohort; not model-selectable scope."""
+        registration = self._require_registration(ref)
+        if registration.status is not MethodRegistryStatus.TRIAL_ADMITTED:
+            return
+        self._evaluation_scopes[self._key(ref)] = frozenset(
+            str(mission_ref(item, "evaluation.mission_id")) for item in mission_ids)
 
     # -- admission ----------------------------------------------------------------
 
@@ -1312,7 +1346,8 @@ class MethodRegistry:
         mission = mission_ref(mission_id, "mission_id")
         return (
             registration.status is MethodRegistryStatus.TRIAL_ADMITTED
-            and registration.trial_scope_mission == str(mission)
+            and (registration.trial_scope_mission == str(mission)
+                 or str(mission) in self._evaluation_scopes.get(self._key(ref), frozenset()))
         )
 
     def candidates_for(

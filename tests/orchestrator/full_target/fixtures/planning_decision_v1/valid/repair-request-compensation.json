@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "decision_type": "REPAIR",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "repair_kind": "REQUEST_COMPENSATION",
+    "action_key": "action-original",
+    "action_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reason": "Request human disposition"
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}

@@ -16,7 +16,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Protocol
 
 from simple_harness.execution.provider_admission import (
     ProviderAdmissionDenied,
@@ -31,7 +31,25 @@ from simple_harness.providers import (
 )
 from simple_harness.providers.errors import ProviderError, ProviderRequestRejectedError
 
-from .experiment import ExecutionCounters, ExperimentBudget, RunContext
+from .experiment import ExecutionCounters, ExperimentBudget
+
+
+class MeterManifest(Protocol):
+    @property
+    def provider(self) -> str: ...
+    @property
+    def model(self) -> str: ...
+    @property
+    def budget(self) -> ExperimentBudget: ...
+    @property
+    def physical_slots(self) -> int: ...
+
+
+class MeterContext(Protocol):
+    @property
+    def manifest(self) -> MeterManifest: ...
+    @property
+    def report_usage(self) -> Callable[[ExecutionCounters], None]: ...
 
 
 class ExperimentBudgetExhausted(ProviderRequestRejectedError):
@@ -96,7 +114,7 @@ class MeteredProvider:
     def __init__(
         self,
         provider: Provider,
-        context: RunContext,
+        context: MeterContext,
         *,
         estimate_input_tokens: Callable[[ProviderRequest], int],
         extra_input_reserve: Callable[[ProviderRequest], int] | None = None,
@@ -363,6 +381,10 @@ class MeteredProvider:
                         raise
                     except Exception as error:
                         row["status"] = type(error).__name__
+                        if isinstance(error, ProviderError):
+                            # Stable categories only: never persist private causes,
+                            # endpoint URLs, request bodies or authentication data.
+                            row["provider_error"] = error.to_dict()
                         detail = (
                             getattr(error, "detail", None)
                             if isinstance(error, ProviderError)

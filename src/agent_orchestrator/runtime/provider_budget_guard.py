@@ -159,6 +159,10 @@ class ProviderBudgetCommitAdapter:
                     raise _deny("provider parent Attempt is terminal")
                 task_id = parent_attempt.task_id
         if task_id:
+            from ..orchestrator.planning_repair_continuations import planning_repair_stop_gate
+
+            if planning_repair_stop_gate(self.store, mission.id, str(task_id)):
+                raise _deny("planning repair stop gate blocks Provider handoff", reason_code="planning_repair_stop_gate")
             task = self.store.get_task(str(task_id))
             if (
                 task is None
@@ -166,9 +170,15 @@ class ProviderBudgetCommitAdapter:
                 or (
                     task.status in TERMINAL_TASK
                     and not self._accepted_fragment_manager(intent, task)
+                    and not self._accepted_operation_review(intent, task)
                 )
             ):
                 raise _deny("provider Task is terminal or differs from Mission")
+        from ..storage.store import StoreError
+        try:
+            self.commit.require_taskgraph_handoff(intent)
+        except StoreError as error:
+            raise _deny("TaskGraph attempt authority changed", reason_code="authority_rejected") from error
         # Service intent leases govern pre-submit claiming, not an ongoing SDK
         # turn. SUBMITTED service authority additionally uses the SDK Run lease
         # CAS inside handoff. Attempts have an independently renewed live lease.
@@ -182,6 +192,26 @@ class ProviderBudgetCommitAdapter:
         if reservation is None or reservation["state"] != "RESERVED":
             raise _deny("provider subject has no live budget reservation")
         return intent, reservation
+
+    def _accepted_operation_review(self, intent, task) -> bool:
+        from ..storage.operation_intent_store import OperationIntentStore
+        from ..storage.operation_completion_store import OperationCompletionStore
+
+        if intent.kind != "plan" or task.status is not TaskStatus.COMPLETED:
+            return False
+        role = intent.config.get("role")
+        if role not in {"operation_proposal_reviewer", "operation_outcome_reviewer"}:
+            return False
+        source = OperationIntentStore(self.store).get(str(intent.config.get("operation_intent_id", "")))
+        if (source is None or source["mission_id"] != intent.mission_id
+            or source["producer_task_id"] != task.id or source["source_result_id"] != task.accepted_result_id):
+            return False
+        if role == "operation_proposal_reviewer":
+            return intent.config.get("review_package_id") == source["review_package_id"]
+        outcome = OperationCompletionStore(self.store).get_outcome_binding_exact(
+            intent.mission_id, str(intent.config.get("outcome_binding_id", "")))
+        return (outcome is not None and outcome["document"].intent_id == source["intent_id"]
+            and outcome["review_package_id"] == intent.config.get("review_package_id"))
 
     def grow(self, reservation, *, required: int, required_cost_micros: int = 0) -> None:
         if (required <= reservation["reserved_tokens"]

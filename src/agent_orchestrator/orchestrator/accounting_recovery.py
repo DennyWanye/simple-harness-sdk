@@ -19,6 +19,7 @@ from simple_harness.execution.uow import UnitOfWorkConflict
 from ..contracts.models import jsonable, sha256_hex
 from ..governance.budgets import BudgetError, UsageFact
 from ..governance.provider_prices import ProviderPrice
+from ..runtime.planning_operations import SourceUnavailable
 
 
 def _require(condition, message):
@@ -26,7 +27,47 @@ def _require(condition, message):
         raise BudgetError("late accounting binding: " + message)
 
 
-def _facts(commit, bridge, intent, reservation):
+def _task_scope(store, intent):
+    """Resolve the original task link, including Critic's frozen Attempt view."""
+    task_id = intent.config.get("task_id")
+    attempt = None
+    if intent.kind == "attempt":
+        attempt = store.get_attempt(intent.subject_id)
+        _require(attempt is not None, "Attempt")
+    elif intent.kind == "critic" and intent.config.get("attempt_id"):
+        # Mission critics also use view ids here; only a real original Attempt
+        # provides task ownership. Never parse a subject/view id for a Task.
+        attempt = store.get_attempt(intent.config["attempt_id"])
+    if attempt is not None:
+        _require(attempt.mission_id == intent.mission_id, "Attempt Mission")
+        _require(task_id is None or task_id == attempt.task_id, "Attempt Task")
+        task_id = attempt.task_id
+    if task_id is not None:
+        task = store.get_task(task_id)
+        _require(task is not None and task.mission_id == intent.mission_id, "Task")
+    return task_id
+
+
+def _account_subject(commit, intent, task_id):
+    if intent.config.get("assurance_protocol") == "assurance-exec-v1.1":
+        from ..contracts.resolution import ReviewAccount
+        from ..storage.assurance_reads import AssuranceReader
+        from ..storage.htn_store import HtnStore
+        from .assurance_review_transport import read_review_invocation_locked
+        mission = commit.store.get_mission(intent.mission_id)
+        _require(mission is not None, "missing Mission")
+        _, binding = read_review_invocation_locked(
+            commit, AssuranceReader(commit.store, tenant_id=mission.tenant_id,
+                                    mission_id=mission.id), intent.intent_id)
+        package = HtnStore(commit.store).get_review_package(binding.to_json()["package_ref"]["id"])
+        if package.account in {ReviewAccount.MISSION, ReviewAccount.MISSION_PLANNING}:
+            return mission.id
+        _require(task_id == binding.to_json()["subject"]["owner_task_ref"]["id"], "review account owner")
+        return task_id
+    return intent.mission_id if intent.kind == "manager" else (task_id or intent.mission_id)
+
+
+def _facts(commit, bridge, intent, reservation, *, grants=None, historical=False):
     """Validate original subject -> single Agent/Turn -> every physical invocation.
 
     A terminal grant alone is insufficient. Even SETTLED grants are re-bound to
@@ -47,7 +88,10 @@ def _facts(commit, bridge, intent, reservation):
     duplicates = store.connection.execute(
         "SELECT COUNT(*) FROM dispatch_intents WHERE agent_id=?", (intent.agent_id,),
     ).fetchone()[0]
-    _require(duplicates == 1, "Agent reused across subjects")
+    if historical:
+        _require(duplicates == 0, "historical Agent reused across subjects")
+    else:
+        _require(duplicates == 1, "Agent reused across subjects")
     config = AgentConfig.from_json(dict(intent.config["agent_config"])).to_json()
     # SDK records recursively freeze JSON as mappingproxy/tuple. Compare the
     # detached JSON representation, never weaken canonical_json's public schema
@@ -60,27 +104,19 @@ def _facts(commit, bridge, intent, reservation):
     _require(turn.input_hash == input_hash_for(actual_message), "SDK input hash")
     _require(canonical_json(jsonable(turn.input_json)) == canonical_json(
         {"message": actual_message.to_dict()}), "SDK input bytes")
-    task_id = intent.config.get("task_id")
-    if intent.kind == "attempt":
-        attempt = store.get_attempt(intent.subject_id)
-        _require(attempt is not None and attempt.mission_id == intent.mission_id, "Attempt")
-        task_id = attempt.task_id
-    if task_id is not None:
-        task = store.get_task(task_id)
-        _require(task is not None and task.mission_id == intent.mission_id, "Task")
+    task_id = _task_scope(store, intent)
     # Manager is funded by the Mission; task_id names its historical evidence
     # scope, not the account charged by create_service_intent.
-    account_subject = intent.mission_id if intent.kind == "manager" else (
-        task_id or intent.mission_id
-    )
+    account_subject = _account_subject(commit, intent, task_id)
     _require(reservation["account_id"] == "budget:" + account_subject, "original account")
     terminal = str(turn.phase) in {"committed", "failed"}
     complete = terminal
     facts = []
     originals = uow.list_provider_invocations(RunId(binding.run_id))
-    grants = store.connection.execute(
-        "SELECT * FROM provider_token_grants WHERE subject_id=?", (intent.subject_id,),
-    ).fetchall()
+    if grants is None:
+        grants = store.connection.execute(
+            "SELECT * FROM provider_token_grants WHERE subject_id=?", (intent.subject_id,),
+        ).fetchall()
     ids = {original.invocation_id for original in originals}
     _require(all(row["invocation_id"] in ids for row in grants), "grant absent from SDK Run")
     for original in originals:
@@ -152,8 +188,7 @@ def import_late_accounting(orch) -> bool:
     rows = store.connection.execute(
         "SELECT i.intent_id FROM dispatch_intents i JOIN budget_reservations r"
         " ON r.subject_id=i.subject_id WHERE r.state='RESERVED'"
-        " AND i.state IN ('SETTLED','FAILED') AND i.agent_id IS NOT NULL"
-        " AND i.expected_turn_id IS NOT NULL ORDER BY i.created_at",
+        " AND i.state IN ('SETTLED','FAILED') ORDER BY i.created_at",
     ).fetchall()
     progressed = False
     for row in rows:
@@ -163,18 +198,31 @@ def import_late_accounting(orch) -> bool:
                 reservation = orch.commit.ledger.reservation(intent.subject_id)
                 if reservation is None or reservation["state"] == "SETTLED":
                     continue
-                # Old unguarded intents retain their historical recovery path.
-                if not intent.config.get("provider_admission_fingerprint"):
+                from .taskgraph_dispatch import taskgraph_enabled
+                graph_enabled = taskgraph_enabled(store, intent.mission_id)
+                from ..storage.assurance_store import AssuranceStore
+                assured = AssuranceStore(store).lane(intent.mission_id) == "ASSURANCE_1_1"
+                # TaskGraph can also prove a request never materialized. Legacy
+                # unguarded intents retain their historical recovery path.
+                if not graph_enabled and not assured and not intent.config.get("provider_admission_fingerprint"):
                     continue
                 bridge = orch.bridge_for(intent)  # exact persisted pool; never fallback
-                facts, complete, task_id = _facts(orch.commit, bridge, intent, reservation)
+                if graph_enabled or assured:
+                    from .taskgraph_runtime_imports import TaskGraphRuntimeImports
+                    source = TaskGraphRuntimeImports(orch).read_subject(intent)
+                    facts, complete, task_id = source.usage, source.accounting_complete, source.task_id
+                else:
+                    if intent.agent_id is None or intent.expected_turn_id is None:
+                        continue
+                    facts, complete, task_id = _facts(orch.commit, bridge, intent, reservation)
                 imported = orch.commit.import_usage(intent.subject_id, intent.mission_id, facts)
-                settled = complete and not orch.commit.ledger.has_unknown_usage(
-                    intent.subject_id)
+                settled = (complete and (not (graph_enabled or assured) or source.physical_settled)
+                           and not orch.commit.ledger.has_unknown_usage(intent.subject_id))
                 if settled:
                     orch.commit._settle_subject(
                         intent.subject_id, intent.mission_id, task_id=task_id)
                 progressed = progressed or bool(imported) or settled
-        except (BudgetError, ValueError, KeyError, TypeError, UnitOfWorkConflict) as error:
+        except (BudgetError, ValueError, KeyError, TypeError, UnitOfWorkConflict, SourceUnavailable) as error:
             orch._note(f"accounting subject {row[0]} held: {error}")
-    return progressed
+    from .taskgraph_action_settlement import settle_resolved_actions
+    return settle_resolved_actions(orch) or progressed

@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/common.schema.json",
+  "$defs": {
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision",
+        "content_hash"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "pin"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "requirements",
+            "task",
+            "method",
+            "method_instance",
+            "artifact",
+            "source",
+            "observation",
+            "review",
+            "acceptance",
+            "resolution",
+            "operation",
+            "tool_receipt",
+            "policy",
+            "authority",
+            "capability",
+            "input_manifest",
+            "completion_scope",
+            "completion_spec",
+            "result",
+            "commit_receipt",
+            "reservation_fact",
+            "agent_turn_receipt",
+            "check_binding",
+            "check_spec",
+            "check_policy",
+            "local_check_receipt",
+            "execution_receipt",
+            "disclosure_receipt",
+            "review_package"
+          ]
+        },
+        "pin": {
+          "$ref": "#/$defs/pin"
+        }
+      }
+    },
+    "read_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "channel",
+        "key",
+        "fingerprint",
+        "coverage"
+      ],
+      "properties": {
+        "channel": {
+          "enum": [
+            "OBJECT",
+            "QUERY_SET",
+            "ACCESS",
+            "POLICY"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "coverage": {
+          "const": "COMPLETE"
+        }
+      }
+    },
+    "catalogue_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "ref"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "pattern": "^ev-[0-9a-f]{64}$"
+        },
+        "ref": {
+          "$ref": "#/$defs/ref"
+        }
+      }
+    }
+  }
+}

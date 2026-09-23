@@ -89,7 +89,7 @@ HIERARCHICAL_PACKAGE_VERSION = "planner-package-hierarchical-v4"
 #: A separate constant, because the integer pairing version and this string are the
 #: two values a legacy request hash is computed over — and the legacy path must keep
 #: producing ``HIERARCHICAL_PACKAGE_VERSION`` byte for byte.
-HIERARCHICAL_DECISION_PACKAGE_VERSION = "planner-package-hierarchical-v5"
+HIERARCHICAL_DECISION_PACKAGE_VERSION = "planner-package-hierarchical-v6"
 
 #: The output block the decision protocol asks for; the legacy block is unchanged.
 DECISION_OUTPUT_CONTRACT = "<planning_decision>{json}</planning_decision>"
@@ -192,6 +192,7 @@ def method_library(
     limit: int = MAX_METHODS_PER_SIGNATURE,
     rejected_refs: Sequence[Any] = (),
     read_only_rejected_refs: Sequence[Any] = (),
+    mission_id: str | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """The methods this deployment holds for the open goals' signatures.
 
@@ -218,6 +219,10 @@ def method_library(
     entries: list[dict[str, Any]] = []
     for signature in sorted({str(item) for item in signatures}):
         found = _methods_for(registry, signature)
+        if mission_id is not None:
+            from ...contracts.htn import MissionRef
+            found = tuple(contract for contract in found
+                          if registry.retrievable(contract.method_ref(), mission_id=MissionRef(mission_id)))
         for contract in list(found)[: max(0, limit)]:
             reference = contract.method_ref()
             entries.append(
@@ -758,6 +763,23 @@ def _collect_refs(
         if not isinstance(entry, Mapping):
             continue
         instance = _method_instance_ref(entry)
+        # The legacy rejected-refinement section intentionally carries only the
+        # instance id.  The new decision package must still expose the complete
+        # method_instance quadruple, so use the collector-supplied authoritative
+        # row when the legacy entry has no parameters_digest field.  This keeps
+        # legacy package bytes unchanged while making REPAIR references admissible.
+        if instance is None:
+            instance_id = entry.get("rejected_method_instance_id")
+            authority = authority_by_key.get(
+                (PlanningRefKind.METHOD_INSTANCE.value, str(instance_id))
+            )
+            if authority is not None:
+                instance = _one_ref(
+                    PlanningRefKind.METHOD_INSTANCE.value,
+                    authority.get("id"),
+                    authority.get("semantic_revision"),
+                    authority.get("content_hash"),
+                )
         if instance is not None:
             collected.append(instance)
         ref = _method_ref(entry.get("rejected_method_ref", entry.get("method_ref")))
@@ -1055,6 +1077,8 @@ def hierarchical_planner_package(
     planning_protocol: str | None = None,
     previous_feedback: Any = None,
     authoritative_refs: Sequence[Any] = (),
+    task_states: Mapping[str, Mapping[str, Any]] | None = None,
+    repair_goal_occurrences: Sequence[str] = (),
 ) -> dict[str, Any]:
     """The whole package, as a plain mapping the context builder can seal.
 
@@ -1076,7 +1100,8 @@ def hierarchical_planner_package(
     passes — leaves the returned mapping *byte for byte* what it always was.
     Passing ``PLANNING_DECISION_V1`` adds the five fields §38 names, switches the
     output contract to ``<planning_decision>`` and the in-package label to
-    ``planner-package-hierarchical-v5``; ``previous_feedback`` is the caller's
+    ``planner-package-hierarchical-v6``; authoritative task state, when supplied,
+    enriches the existing plan rows. ``previous_feedback`` is the caller's
     ``PlanningFeedbackV1`` for a re-ask, or ``None`` for a first round.  An unknown
     protocol name is a programming error and raises rather than silently falling
     back to the legacy shape.
@@ -1106,6 +1131,11 @@ def hierarchical_planner_package(
     signatures = [item["goal_signature_id"] for item in goals] + [
         item["goal_signature_id"] for item in replaced
     ]
+    if planning_protocol == PLANNING_DECISION_V1:
+        repair_goals = set(repair_goal_occurrences)
+        signatures.extend(str(network.binding_for_occurrence(spec.occurrence_id).goal_signature.signature_id)
+                          for spec in network.occurrences
+                          if spec.form is TaskForm.COMPOUND and str(spec.occurrence_id) in repair_goals)
     package: dict[str, Any] = {
         "role": "planner",
         "mode": "hierarchical",
@@ -1132,6 +1162,7 @@ def hierarchical_planner_package(
                 signatures,
                 rejected_refs=struck,
                 read_only_rejected_refs=read_only_struck,
+                mission_id=str(network.mission_id) if planning_protocol == "planning-decision-v1" else None,
             )
         ],
         "applicability": [dict(item) for item in applicability_reports(reports)],
@@ -1180,6 +1211,17 @@ def hierarchical_planner_package(
         ),
     }
     if planning_protocol == PLANNING_DECISION_V1:
+        # v6: authoritative execution outcomes belong to the frozen plan view.
+        # They are not rejection feedback and never imply semantic acceptance.
+        for section in ("open_compound_goals", "committed_primitives"):
+            for row in package["plan"][section]:
+                state = (task_states or {}).get(row["occurrence_id"])
+                if state is not None:
+                    row.update({
+                        "task_status": state["task_status"],
+                        "task_version": state["task_version"],
+                        "occurrence_outcome": state["occurrence_outcome"],
+                    })
         # The §38 fields go *on top of* the legacy ones — the plan, method library,
         # applicability, facts, operators and rejected refinements all stay.  The
         # authority list combines what the network can attest (every task binding, at

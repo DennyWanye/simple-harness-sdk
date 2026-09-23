@@ -827,7 +827,10 @@ class SelectionCommitsMixin:
                 connectors=connectors,
                 deployment=deployment,
             )
-            if completed.status is not TaskStatus.COMPLETED:
+            from .scoped_content_review import uses_completion_protocol
+            prepared = (uses_completion_protocol(self._store, completed.mission_id)
+                        and completed.accepted_result_id == result_id)
+            if completed.status is not TaskStatus.COMPLETED and not prepared:
                 return {"result_id": result_id, "accepted": False}
             round_["state"] = "COMMITTED"
             self._save_selection_round(round_)
@@ -967,17 +970,22 @@ class SelectionCommitsMixin:
                 continue
             prefix = c_id + ":critic:"
             ordinal = subject_id.removeprefix(prefix)
+            original_subject = (subject_id.startswith(prefix) and ordinal.isascii()
+                                and ordinal.isdecimal() and bool(ordinal)
+                                and not ordinal.startswith("0"))
+            if not original_subject:
+                from .assurance_review_transport import is_bound_task_review_subject
+                original_subject = is_bound_task_review_subject(
+                    self, mission_id=mission_id, task_id=tid, attempt_id=c_id,
+                    subject_id=subject_id,
+                )
             if (
                 kind != "critic"
                 or mission_id != round_["mission_id"]
                 or task_id != tid
                 or attempt_id != c_id
                 or account_id != self._selection_task_account(tid)
-                or not subject_id.startswith(prefix)
-                or not ordinal.isascii()
-                or not ordinal.isdecimal()
-                or not ordinal
-                or ordinal.startswith("0")
+                or not original_subject
             ):
                 raise self._selection_error("selection Critic service identity differs")
             return round_

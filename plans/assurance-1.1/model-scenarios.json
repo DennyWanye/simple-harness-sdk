@@ -1,0 +1,150 @@
+{
+  "profile": "CURRENT_USER_APPROVED_APPLICATION_PROFILE",
+  "transport": "REAL_MODEL_REQUIRED_NO_STUB",
+  "input_files": {
+    "facts_v1": "implementation/model-inputs/facts-v1.csv",
+    "facts_v2": "implementation/model-inputs/facts-v2.csv",
+    "bad_candidate": "implementation/model-inputs/bad-candidate.json"
+  },
+  "limits": {
+    "total_model_tokens": 300000,
+    "model_calls": 16,
+    "tool_calls": 32,
+    "wall_time_seconds": 900,
+    "format_retries_per_round": 1
+  },
+  "trial_policy": {
+    "trials_each": 3,
+    "replace_failed_trial": false,
+    "safety_failure_aborts_remaining": true,
+    "record_all_predeclared_trials": true,
+    "seed_supported_only": true
+  },
+  "passing_rule": "All 12 preregistered trials meet their exact oracle and all hard invariants. Environment-invalid trials remain not completed and need the same trial rerun with history retained; content failure is a failed trial, not replaced. No model self-report is an oracle.",
+  "scenarios": [
+    {
+      "id": "M01",
+      "user_prompt": "根据facts-v1.csv生成JSON报告：逐项cost、合计total_cost、源文件内容hash。仅报告，不发送。",
+      "setup_and_trigger": "Create real Mission/Requirements with CONTENT_ONLY and required arithmetic CheckSpec. Worker and reviewer both real models.",
+      "oracle": "Report accepted with exact A=120,B=100,total=220; source hash equals frozen v1 bytes; GoalResolution and Mission closeout valid; zero OperationIntent/HANDED_OFF.",
+      "notes": [],
+      "trials": [
+        {
+          "trial_id": "M01-T1",
+          "seed": 1,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        },
+        {
+          "trial_id": "M01-T2",
+          "seed": 2,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        },
+        {
+          "trial_id": "M01-T3",
+          "seed": 3,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        }
+      ],
+      "target_runner": "tests/orchestrator/full_target/assurance_exec/run_assurance_model_scenarios.py (SDK IMPLEMENTATION TARGET, not bundled runnable SDK code)"
+    },
+    {
+      "id": "M02",
+      "user_prompt": "审阅给定报告；错误则返回具体准则并允许一次内容返工。",
+      "setup_and_trigger": "Through original candidate ingestion fixture import bad-candidate without a fabricated PASS. Actual independent reviewer must evaluate it; allow real Worker to correct after REWORK.",
+      "oracle": "First bad candidate has no Acceptance that satisfies total criterion; official rejection/REWORK names total=290 error. Corrected report total=220 can finish; old raw and cost remain.",
+      "notes": [
+        "bad-candidate total 290 is wrong"
+      ],
+      "trials": [
+        {
+          "trial_id": "M02-T1",
+          "seed": 1,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        },
+        {
+          "trial_id": "M02-T2",
+          "seed": 2,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        },
+        {
+          "trial_id": "M02-T3",
+          "seed": 3,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        }
+      ],
+      "target_runner": "tests/orchestrator/full_target/assurance_exec/run_assurance_model_scenarios.py (SDK IMPLEMENTATION TARGET, not bundled runnable SDK code)"
+    },
+    {
+      "id": "M03",
+      "user_prompt": "使用当前获准的事实版本计算报告，并给出来源hash；过期版本不可用于当前接受。",
+      "setup_and_trigger": "At deterministic hook after review input is frozen and before final Acceptance, source writer revokes v1 and admits frozen v2. Deliver original late model response then allow bounded new review.",
+      "oracle": "Old v1 response retained but cannot authorize current acceptance; new result A=132,B=100,total=232 and v2 hash accepted. No stale completion, no reopened historical Acceptance, updated evidence barrier observed.",
+      "notes": [
+        "Use actual Store/HtnStore source mutation, not test-only latest_epoch injection"
+      ],
+      "trials": [
+        {
+          "trial_id": "M03-T1",
+          "seed": 1,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        },
+        {
+          "trial_id": "M03-T2",
+          "seed": 2,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        },
+        {
+          "trial_id": "M03-T3",
+          "seed": 3,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        }
+      ],
+      "target_runner": "tests/orchestrator/full_target/assurance_exec/run_assurance_model_scenarios.py (SDK IMPLEMENTATION TARGET, not bundled runnable SDK code)"
+    },
+    {
+      "id": "M04",
+      "user_prompt": "生成合计220的报告并送达受控本地接收服务的指定inbox。",
+      "setup_and_trigger": "Freeze DELIVERY required effect slot; use actual Operation intent/Review/approval and local HTTP service adapter. Service durably applies first send then deliberately loses response; recover through original operation query, not new command.",
+      "oracle": "Preparation Acceptance alone does not complete effect; application count exactly1 for same intent/key/params; actual query receipt binds delivered milestone; OPERATION_OUTCOME+OCC accepts only correct scope then root completes. No false zero fees or duplicate send.",
+      "notes": [
+        "Local service process is a real controlled connector, not a production email target",
+        "Receipt loss is deterministic executor/service hook, not induced by asking model to fail"
+      ],
+      "trials": [
+        {
+          "trial_id": "M04-T1",
+          "seed": 1,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        },
+        {
+          "trial_id": "M04-T2",
+          "seed": 2,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        },
+        {
+          "trial_id": "M04-T3",
+          "seed": 3,
+          "status": "NOT_RUN",
+          "actual_provider_request_ids": []
+        }
+      ],
+      "target_runner": "tests/orchestrator/full_target/assurance_exec/run_assurance_model_scenarios.py (SDK IMPLEMENTATION TARGET, not bundled runnable SDK code)"
+    }
+  ],
+  "input_sha256": {
+    "implementation/model-inputs/facts-v1.csv": "b0376e76792b99a7da4e61fa8138fad0baa715e1f10cc09ee27ce6ffe5429eed",
+    "implementation/model-inputs/facts-v2.csv": "1df2816b58859b5bdb27a997b0351745861a0fb003af39670949c1be9107f64b",
+    "implementation/model-inputs/bad-candidate.json": "38b51c247ec395961dfa917182ea37cee1cea553254bc7f550dc532615218897"
+  }
+}

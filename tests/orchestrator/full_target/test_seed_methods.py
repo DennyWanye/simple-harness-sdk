@@ -145,7 +145,7 @@ def compile_first(env: Env, network, report):
 
 
 def test_both_pilot_domains_ship() -> None:
-    assert available_domains() == PILOT_DOMAINS
+    assert set(PILOT_DOMAINS) <= set(available_domains())
 
 
 def test_a_domain_is_exactly_four_files() -> None:

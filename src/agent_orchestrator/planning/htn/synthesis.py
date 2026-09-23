@@ -455,6 +455,8 @@ class SynthesisRequest:
     #: field at the boundary rather than overwriting it, and a model that was never
     #: told cannot avoid it.
     forbidden_fields: tuple[str, ...] = ()
+    # A collision-free suggestion, never an admission or a registry status.
+    new_method_identity: tuple[str, int] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -511,6 +513,12 @@ class SynthesisRequest:
             "output_tag": self.output_tag,
             "role_prompt_version": self.role_prompt_version,
             "forbidden_fields": list(self.forbidden_fields),
+            **({"new_method_identity": {
+                "method_id": self.new_method_identity[0],
+                "method_version": self.new_method_identity[1],
+                "notice": "Use this fresh method_id and method_version for the new method proposal. "
+                          "They avoid shared-library collisions and confer no admission or authority.",
+            }} if self.new_method_identity is not None else {}),
         }
 
     def content_hash(self) -> str:

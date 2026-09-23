@@ -1058,6 +1058,48 @@ class RootReviewCoordinator:
         """
 
         semantics = self.semantics
+        from .scoped_content_review import uses_completion_protocol
+
+        if uses_completion_protocol(self.store, mission_id):
+            from .operation_completion import OperationCompletionError, OperationCompletionReader
+            from ..contracts.operation_completion import PlanRevisionPinV1
+
+            active = semantics.active_plan_revision(mission_id)
+            network = self.dispatch.network(mission_id)
+            roots = tuple(network.root_occurrence_ids)
+            if active is None or len(roots) != 1:
+                raise OperationCompletionError(
+                    "OP_COMPLETION_SCOPE_UNRESOLVED", "no unique active root Scope"
+                )
+            plan_ref = PlanRevisionPinV1(
+                revision=int(active.revision), snapshot_hash=active.snapshot_hash
+            )
+            reader = OperationCompletionReader(self.store)
+            scope = reader.read_scope(mission_id, plan_ref, str(roots[0]))
+            if scope.task_ref.id != str(binding.task_id):
+                raise OperationCompletionError(
+                    "OP_COMPLETION_SCOPE_UNRESOLVED", "root Scope names another Task"
+                )
+            requirements = semantics.get_requirements_revision(
+                mission_id, int(scope.requirements_ref.revision)
+            )
+            reader.read_requirements(
+                mission_id,
+                TypedRef(
+                    kind=TypedRefKind.REQUIREMENTS,
+                    id=scope.requirements_ref.id,
+                    revision=int(scope.requirements_ref.revision),
+                    content_hash=scope.requirements_ref.content_hash,
+                ),
+            )
+            if (
+                str(requirements.revision_id) != scope.requirements_ref.id
+                or requirements.content_hash() != scope.requirements_ref.content_hash
+            ):
+                raise OperationCompletionError(
+                    "OP_EFFECT_SCOPE_STALE", "root Requirements differ from the frozen Scope"
+                )
+            return requirements
         latest = semantics.latest_requirements_revision(mission_id)
         candidate = root_requirements(
             mission_id, binding, revision=1 if latest is None else int(latest.revision)
@@ -1195,7 +1237,7 @@ class RootReviewCoordinator:
         for link in carried:
             by_task.setdefault(str(link.task_id), []).append(link)
         covered_by: dict[str, list[dict[str, Any]]] = {}
-        contributions: list[Mapping[str, Any]] = []
+        contributions: list[dict[str, Any]] = []
         budget = EXCERPT_BUDGET_CHARS
         for reference in package.child_acceptance_refs:
             try:
@@ -1269,6 +1311,39 @@ class RootReviewCoordinator:
                     "evidence": _evidence_label(outputs, artifacts, review),
                 }
             )
+        from .taskgraph_dispatch import taskgraph_enabled
+        if taskgraph_enabled(self.store, mission_id):
+            from .taskgraph_review_evidence import accepted_verification_evidence
+            for contribution in contributions:
+                acceptance = semantics.get_acceptance(str(contribution["acceptance_id"]))
+                contribution["verification_evidence"] = accepted_verification_evidence(
+                    self.store, semantics, mission_id, acceptance)
+
+        from .scoped_content_review import uses_completion_protocol
+
+        if uses_completion_protocol(self.store, mission_id):
+            from .completion_status import current_effect_proofs
+
+            effects = {proof["acceptance_id"]: proof for proof in current_effect_proofs(self.store, mission_id)}
+            for contribution in contributions:
+                proof = effects.get(str(contribution["acceptance_id"]))
+                if proof is None:
+                    continue
+                contribution["carries_root_criteria"] = [
+                    {"root_criterion_id": criterion_id, "leaf_criterion_id": criterion_id,
+                     "leaf_review_verdict": "PASS", "evidence_requirement": "verified operation outcome"}
+                    for criterion_id in proof["criterion_ids"]
+                ]
+                for criterion_id in proof["criterion_ids"]:
+                    sources = covered_by.setdefault(str(criterion_id), [])
+                    if not any(item["acceptance_id"] == contribution["acceptance_id"] for item in sources):
+                        sources.append({"acceptance_id": contribution["acceptance_id"],
+                            "task_id": contribution["task_id"], "leaf_criterion_id": criterion_id,
+                            "evidence_requirement": "verified operation outcome", "ports": []})
+                contribution["evidence"] = {"kind": "operation_outcome",
+                    "effect_key": proof["effect_key"], "outcome_binding": proof["outcome_binding"],
+                    "observations": list(proof["observations"]),
+                    "evidence_refs": [ref.to_json() for ref in proof["evidence_refs"]]}
         return RootReviewRequest(
             package_id=str(package.package_id),
             goal_task_id=str(package.binding.subject_ref.id),
@@ -1288,7 +1363,13 @@ class RootReviewCoordinator:
             contributions=tuple(contributions),
             requirements_revision=int(package.binding.requirements_revision),
             schema_feedback=str(schema_feedback),
-            requirements_revision_semantics=REQUIREMENTS_REVISION_SEMANTICS,
+            requirements_revision_semantics=(
+                "This review and its contributions use the approved requirements revision, "
+                "with immutable occurrence completion scopes. Operation outcome evidence "
+                "proves effects separately from content preparation."
+                if uses_completion_protocol(self.store, mission_id)
+                else REQUIREMENTS_REVISION_SEMANTICS
+            ),
             mission_goal=mission_goal,
             goal_parameters=goal_parameters,
         )
@@ -1364,6 +1445,18 @@ class RootReviewCoordinator:
             )
             for item in package.criteria
         )
+        from .scoped_content_review import uses_completion_protocol
+
+        if uses_completion_protocol(self.store, mission_id):
+            from dataclasses import replace
+            from .completion_status import current_effect_proofs
+
+            proofs = current_effect_proofs(self.store, mission_id)
+            anchors = {ref.id for ref in package.child_acceptance_refs}
+            outcomes = tuple(replace(outcome, evidence_refs=tuple(
+                ref for proof in proofs if proof["acceptance_id"] in anchors
+                and outcome.criterion_id in proof["criterion_ids"]
+                for ref in proof["evidence_refs"])) for outcome in outcomes)
         record = ReviewRecord(
             record_id=ReviewRecordId(
                 "rec-root-"

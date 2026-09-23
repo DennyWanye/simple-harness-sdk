@@ -1,0 +1,2899 @@
+[
+  {
+    "original_id": "CA-A01",
+    "title": "空成功公式",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A01",
+      "A02"
+    ],
+    "original_contract": {
+      "id": "CA-A01",
+      "group": "A",
+      "title": "空成功公式",
+      "given": "新要求含空ALL或ANY",
+      "when": "提交要求",
+      "then": "codec拒绝，不生成已满足目标",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a01",
+      "requirements": [
+        "R12",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "codec拒绝，不生成已满足目标",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a01",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A02",
+    "title": "悬空或重复准则",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A01",
+      "A02"
+    ],
+    "original_contract": {
+      "id": "CA-A02",
+      "group": "A",
+      "title": "悬空或重复准则",
+      "given": "公式引用未知ID或catalog重复",
+      "when": "解析/提交",
+      "then": "稳定字段错误；不静默忽略",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a02",
+      "requirements": [
+        "R12",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "稳定字段错误；不静默忽略",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a02",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A03",
+    "title": "替代路线不误阻塞",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [
+      "A05"
+    ],
+    "original_contract": {
+      "id": "CA-A03",
+      "group": "A",
+      "title": "替代路线不误阻塞",
+      "given": "合法A或B；A失败B完整通过",
+      "when": "最终验收",
+      "then": "有效B可满足公式；仍核对A的未决动作",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a03",
+      "requirements": [
+        "R10",
+        "R12",
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "有效B可满足公式；仍核对A的未决动作",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a03",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A04",
+    "title": "强制约束不被OR绕过",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A05"
+    ],
+    "original_contract": {
+      "id": "CA-A04",
+      "group": "A",
+      "title": "强制约束不被OR绕过",
+      "given": "一条路线通过，隐私检查FAIL",
+      "when": "Reviewer给ACCEPT",
+      "then": "Commit拒绝，保留失败和审阅记录",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a04",
+      "requirements": [
+        "R12",
+        "R28",
+        "R50"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "Commit拒绝，保留失败和审阅记录",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a04",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A05",
+    "title": "未知不当成功",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [
+      "A02",
+      "A18"
+    ],
+    "original_contract": {
+      "id": "CA-A05",
+      "group": "A",
+      "title": "未知不当成功",
+      "given": "一个必需检查缺失/UNKNOWN",
+      "when": "完成AgentTurn",
+      "then": "Review可正常保存，但Task不被接受",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a05",
+      "requirements": [
+        "R28",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "Review可正常保存，但Task不被接受",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a05",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A06",
+    "title": "真实检查失败优先",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A04"
+    ],
+    "original_contract": {
+      "id": "CA-A06",
+      "group": "A",
+      "title": "真实检查失败优先",
+      "given": "代码测试实际失败",
+      "when": "Reviewer声称PASS",
+      "then": "不接受；原测试日志/执行身份保留",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a06",
+      "requirements": [
+        "R28",
+        "R51"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "不接受；原测试日志/执行身份保留",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a06",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A07",
+    "title": "审阅与作者隔离",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A07"
+    ],
+    "original_contract": {
+      "id": "CA-A07",
+      "group": "A",
+      "title": "审阅与作者隔离",
+      "given": "Worker拥有可写目录，Review绑定独立视图",
+      "when": "Reviewer请求写被审文件",
+      "then": "被拒，不能改完批准自己的版本",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a07",
+      "requirements": [
+        "R28",
+        "R50"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "被拒，不能改完批准自己的版本",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a07",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A08",
+    "title": "旧产物Review",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A11"
+    ],
+    "original_contract": {
+      "id": "CA-A08",
+      "group": "A",
+      "title": "旧产物Review",
+      "given": "H1通过，H2被选中",
+      "when": "H1 Review迟到",
+      "then": "计费/保存H1历史但不能批准H2",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a08",
+      "requirements": [
+        "R16",
+        "R17"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "计费/保存H1历史但不能批准H2",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a08",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A09",
+    "title": "要求修订",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A03",
+      "A11"
+    ],
+    "original_contract": {
+      "id": "CA-A09",
+      "group": "A",
+      "title": "要求修订",
+      "given": "r1审阅途中用户合法提交r2",
+      "when": "r1 Review返回",
+      "then": "不解释为r2已满足，未影响成果按显式映射重判",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a09",
+      "requirements": [
+        "R44",
+        "R17"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "不解释为r2已满足，未影响成果按显式映射重判",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a09",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A10",
+    "title": "无关分支变更",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A11",
+      "C02"
+    ],
+    "original_contract": {
+      "id": "CA-A10",
+      "group": "A",
+      "title": "无关分支变更",
+      "given": "B无输入/准则变化；A提交新计划",
+      "when": "接受B Review",
+      "then": "按相关readset允许，不要求全图所有version相同",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a10",
+      "requirements": [
+        "R16",
+        "R14"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "按相关readset允许，不要求全图所有version相同",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a10",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A11",
+    "title": "准则遗漏与伪回执",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A01",
+      "A08"
+    ],
+    "original_contract": {
+      "id": "CA-A11",
+      "group": "A",
+      "title": "准则遗漏与伪回执",
+      "given": "模型漏准则或引用包外回执",
+      "when": "解析review-v2",
+      "then": "明确报错，有限格式修复计费不补PASS",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a11",
+      "requirements": [
+        "R28",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "明确报错，有限格式修复计费不补PASS",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a11",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A12",
+    "title": "局部通过组合错误",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A15"
+    ],
+    "original_contract": {
+      "id": "CA-A12",
+      "group": "A",
+      "title": "局部通过组合错误",
+      "given": "所有孩子有Acceptance但接口不一致",
+      "when": "父组合审阅",
+      "then": "拒绝父Resolution，子历史不删除",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a12",
+      "requirements": [
+        "R12",
+        "R21"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "拒绝父Resolution，子历史不删除",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a12",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A13",
+    "title": "预执行候选",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A13",
+      "A17"
+    ],
+    "original_contract": {
+      "id": "CA-A13",
+      "group": "A",
+      "title": "预执行候选",
+      "given": "报告审阅通过，发送尚未执行",
+      "when": "候选和根分别请求接受",
+      "then": "内容候选可接受；已发送准则仍未满足",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a13",
+      "requirements": [
+        "R12",
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "内容候选可接受；已发送准则仍未满足",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a13",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A14",
+    "title": "同候选重复接受",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C01"
+    ],
+    "original_contract": {
+      "id": "CA-A14",
+      "group": "A",
+      "title": "同候选重复接受",
+      "given": "同包和相同命令被重送",
+      "when": "两个提交者并发accept",
+      "then": "单个正式接受/下游消息，回执相同",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a14",
+      "requirements": [
+        "R36",
+        "R39"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "单个正式接受/下游消息，回执相同",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a14",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A15",
+    "title": "不同候选并发通过",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C02"
+    ],
+    "original_contract": {
+      "id": "CA-A15",
+      "group": "A",
+      "title": "不同候选并发通过",
+      "given": "两个候选独立被接受",
+      "when": "争用一个DATA端口",
+      "then": "按选择CAS只绑定一个；不覆盖另一个历史",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a15",
+      "requirements": [
+        "R16",
+        "R12"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "按选择CAS只绑定一个；不覆盖另一个历史",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a15",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A16",
+    "title": "评审预算身份",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A12"
+    ],
+    "original_contract": {
+      "id": "CA-A16",
+      "group": "A",
+      "title": "评审预算身份",
+      "given": "Task Critic和Mission Judge各有真实配置",
+      "when": "准入/增长预算",
+      "then": "各走正确账户；Judge不要求伪Worker Attempt",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a16",
+      "requirements": [
+        "R03",
+        "R26",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "各走正确账户；Judge不要求伪Worker Attempt",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a16",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A17",
+    "title": "Mission收敛门",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C05"
+    ],
+    "original_contract": {
+      "id": "CA-A17",
+      "group": "A",
+      "title": "Mission收敛门",
+      "given": "根内容通过，弃用分支仍有未知写操作",
+      "when": "请求完成Mission",
+      "then": "显示收尾/核对，不能悄悄完成",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a17",
+      "requirements": [
+        "R40",
+        "R59"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "显示收尾/核对，不能悄悄完成",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a17",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A18",
+    "title": "终态后查询回执",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C01",
+      "C05"
+    ],
+    "original_contract": {
+      "id": "CA-A18",
+      "group": "A",
+      "title": "终态后查询回执",
+      "given": "相同成功命令在Mission终态后重送",
+      "when": "重试",
+      "then": "当前读取授权允许时返回旧回执，不创建新任务",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a18",
+      "requirements": [
+        "R36",
+        "R39"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "当前读取授权允许时返回旧回执，不创建新任务",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a18",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A19",
+    "title": "已删除敏感依据",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V13"
+    ],
+    "original_contract": {
+      "id": "CA-A19",
+      "group": "A",
+      "title": "已删除敏感依据",
+      "given": "旧Acceptance存在但原证据依法定/用户政策删除",
+      "when": "重新读/复验",
+      "then": "保留非敏感事实和限制，不补造原文",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a19",
+      "requirements": [
+        "R17",
+        "R60"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "保留非敏感事实和限制，不补造原文",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a19",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-A20",
+    "title": "非法类型组合",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A01"
+    ],
+    "original_contract": {
+      "id": "CA-A20",
+      "group": "A",
+      "title": "非法类型组合",
+      "given": "把MissionJudge对象传入TaskCritic函数",
+      "when": "静态检查+边界解析",
+      "then": "预期类型错误/归属拒绝，非缺依赖假失败",
+      "test_target": "tests/orchestrator/core_assurance/test_acceptance.py::test_a20",
+      "requirements": [
+        "R03",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "预期类型错误/归属拒绝，非缺依赖假失败",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a20",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K01",
+    "title": "缺观察不是否定",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [
+      "V01"
+    ],
+    "original_contract": {
+      "id": "CA-K01",
+      "group": "K",
+      "title": "缺观察不是否定",
+      "given": "Fact无证据",
+      "when": "查询",
+      "then": "UNKNOWN，不是FALSE",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k01",
+      "requirements": [
+        "R06"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "UNKNOWN，不是FALSE",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k01",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K02",
+    "title": "显式反证",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V01",
+      "V07"
+    ],
+    "original_contract": {
+      "id": "CA-K02",
+      "group": "K",
+      "title": "显式反证",
+      "given": "有可信负literal无正literal",
+      "when": "求值",
+      "then": "FALSE并给出负证据，不借未命中生成",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k02",
+      "requirements": [
+        "R06"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "FALSE并给出负证据，不借未命中生成",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k02",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K03",
+    "title": "冲突不爆炸",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [
+      "V05"
+    ],
+    "original_contract": {
+      "id": "CA-K03",
+      "group": "K",
+      "title": "冲突不爆炸",
+      "given": "同命题正负皆有",
+      "when": "求值无关命题",
+      "then": "当前命题CONFLICT，无关项仍UNKNOWN",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k03",
+      "requirements": [
+        "R06",
+        "R29"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "当前命题CONFLICT，无关项仍UNKNOWN",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k03",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K04",
+    "title": "AND支持不全",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [
+      "V01",
+      "V04"
+    ],
+    "original_contract": {
+      "id": "CA-K04",
+      "group": "K",
+      "title": "AND支持不全",
+      "given": "K需要A和B，仅A成立",
+      "when": "读取K",
+      "then": "不成立/UNKNOWN；不可用",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k04",
+      "requirements": [
+        "R29"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "不成立/UNKNOWN；不可用",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k04",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K05",
+    "title": "OR独立支持",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V04"
+    ],
+    "original_contract": {
+      "id": "CA-K05",
+      "group": "K",
+      "title": "OR独立支持",
+      "given": "K由A+B或C支持，A撤回C仍有效",
+      "when": "失效重算",
+      "then": "K可用C见证；不重做无关Worker",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k05",
+      "requirements": [
+        "R29",
+        "R30"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "K可用C见证；不重做无关Worker",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k05",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K06",
+    "title": "重复来源不算独立",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V12"
+    ],
+    "original_contract": {
+      "id": "CA-K06",
+      "group": "K",
+      "title": "重复来源不算独立",
+      "given": "同实验报告两个格式",
+      "when": "需要两份独立证据",
+      "then": "不满足独立性要求",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k06",
+      "requirements": [
+        "R28",
+        "R29"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "不满足独立性要求",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k06",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K07",
+    "title": "无锚循环",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V03"
+    ],
+    "original_contract": {
+      "id": "CA-K07",
+      "group": "K",
+      "title": "无锚循环",
+      "given": "A引用B，B引用A，无外部锚",
+      "when": "重算",
+      "then": "两者不自证TRUE",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k07",
+      "requirements": [
+        "R29"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "两者不自证TRUE",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k07",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K08",
+    "title": "撤回循环锚",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V03"
+    ],
+    "original_contract": {
+      "id": "CA-K08",
+      "group": "K",
+      "title": "撤回循环锚",
+      "given": "有锚时A/B成立，后来唯一锚撤回",
+      "when": "重算",
+      "then": "从当前锚重算，不能从旧TRUE续算",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k08",
+      "requirements": [
+        "R30",
+        "R29"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "从当前锚重算，不能从旧TRUE续算",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k08",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K09",
+    "title": "冲突路径另有替代",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "V05"
+    ],
+    "original_contract": {
+      "id": "CA-K09",
+      "group": "K",
+      "title": "冲突路径另有替代",
+      "given": "A冲突且A可推K，另有独立C推K",
+      "when": "用途求值",
+      "then": "按无冲突见证C使用，A不用于强制门",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k09",
+      "requirements": [
+        "R29",
+        "R30"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "storage/htn_store.py",
+      "storage/store.py",
+      "knowledge/validity.py"
+    ],
+    "required_assertions": [
+      "按无冲突见证C使用，A不用于强制门",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k09",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K10",
+    "title": "规则不是引用列表",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "V02"
+    ],
+    "original_contract": {
+      "id": "CA-K10",
+      "group": "K",
+      "title": "规则不是引用列表",
+      "given": "Worker任意声称A推出B",
+      "when": "写Justification",
+      "then": "无合法RuleAdmission/独立Review不得启用",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k10",
+      "requirements": [
+        "R28",
+        "R29"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "storage/htn_store.py",
+      "storage/store.py",
+      "knowledge/validity.py"
+    ],
+    "required_assertions": [
+      "无合法RuleAdmission/独立Review不得启用",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k10",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K11",
+    "title": "新增反证的幻读",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V07"
+    ],
+    "original_contract": {
+      "id": "CA-K11",
+      "group": "K",
+      "title": "新增反证的幻读",
+      "given": "Review读到无负证据，随后插入反证",
+      "when": "接受旧readset",
+      "then": "集合epoch冲突并重判，不能只查旧正证据版本",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k11",
+      "requirements": [
+        "R16",
+        "R30"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "集合epoch冲突并重判，不能只查旧正证据版本",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k11",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K12",
+    "title": "撤回与异步缓存",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [
+      "V07",
+      "V11"
+    ],
+    "original_contract": {
+      "id": "CA-K12",
+      "group": "K",
+      "title": "撤回与异步缓存",
+      "given": "源撤回已Commit，旧缓存还显示CURRENT",
+      "when": "handoff/Context/accept",
+      "then": "dirty gate立即阻断或最新同步重算",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k12",
+      "requirements": [
+        "R30",
+        "R34"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "dirty gate立即阻断或最新同步重算",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k12",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K13",
+    "title": "过期但定时器迟到",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V08"
+    ],
+    "original_contract": {
+      "id": "CA-K13",
+      "group": "K",
+      "title": "过期但定时器迟到",
+      "given": "证据valid_to已过，到期事件尚未调度",
+      "when": "实际使用",
+      "then": "按now拒绝当前用途；后续事件便于重放",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k13",
+      "requirements": [
+        "R06",
+        "R30"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "按now拒绝当前用途；后续事件便于重放",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k13",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K14",
+    "title": "START与ACCEPT不同",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "V08",
+      "V10"
+    ],
+    "original_contract": {
+      "id": "CA-K14",
+      "group": "K",
+      "title": "START与ACCEPT不同",
+      "given": "开始前提库存足够，操作后库存减少",
+      "when": "验收历史开始见证",
+      "then": "不抹掉START；若用户要求当前值另行取证",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k14",
+      "requirements": [
+        "R06",
+        "R17"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "storage/htn_store.py",
+      "storage/store.py",
+      "knowledge/validity.py"
+    ],
+    "required_assertions": [
+      "不抹掉START；若用户要求当前值另行取证",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k14",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K15",
+    "title": "权限与真值分开",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V08",
+      "V09"
+    ],
+    "original_contract": {
+      "id": "CA-K15",
+      "group": "K",
+      "title": "权限与真值分开",
+      "given": "事实仍有证据但Agent读权限撤回",
+      "when": "检索/验证",
+      "then": "禁止披露；不把事实写FALSE",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k15",
+      "requirements": [
+        "R34",
+        "R50"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "禁止披露；不把事实写FALSE",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k15",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K16",
+    "title": "来源声称与现实",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V01"
+    ],
+    "original_contract": {
+      "id": "CA-K16",
+      "group": "K",
+      "title": "来源声称与现实",
+      "given": "来源写提升40%，引文核验通过",
+      "when": "Claim请求现实VERIFIED",
+      "then": "只确认source_says；实测主张另需证据",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k16",
+      "requirements": [
+        "R28",
+        "R29"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "只确认source_says；实测主张另需证据",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k16",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K17",
+    "title": "范围/版本不同",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "V10"
+    ],
+    "original_contract": {
+      "id": "CA-K17",
+      "group": "K",
+      "title": "范围/版本不同",
+      "given": "同名命题来自不同对象/语料版本",
+      "when": "查找/共享",
+      "then": "不合并不同FactKey，不复用不匹配Acceptance",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k17",
+      "requirements": [
+        "R06",
+        "R11"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "storage/htn_store.py",
+      "storage/store.py",
+      "knowledge/validity.py"
+    ],
+    "required_assertions": [
+      "不合并不同FactKey，不复用不匹配Acceptance",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k17",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-K18",
+    "title": "不完整依赖覆盖",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V06",
+      "V14"
+    ],
+    "original_contract": {
+      "id": "CA-K18",
+      "group": "K",
+      "title": "不完整依赖覆盖",
+      "given": "一次工具读取未记录可追溯来源",
+      "when": "影响分析",
+      "then": "标记coverage不足并保守复审，不称精确最小影响",
+      "test_target": "tests/orchestrator/core_assurance/test_validity.py::test_k18",
+      "requirements": [
+        "R30",
+        "R51"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "标记coverage不足并保守复审，不称精确最小影响",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k18",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X01",
+    "title": "同操作跨Attempt",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X01",
+      "group": "X",
+      "title": "同操作跨Attempt",
+      "given": "同授权occurrence换方法/Agent",
+      "when": "再次提出相同操作",
+      "then": "同Operation与外部key，避免重复应用",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x01",
+      "requirements": [
+        "R03",
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "同Operation与外部key，避免重复应用",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x01",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X02",
+    "title": "合法第二次同目标",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X02",
+      "group": "X",
+      "title": "合法第二次同目标",
+      "given": "同Mission用户明确新意图再次发送",
+      "when": "创建新occurrence",
+      "then": "不同Operation；不被旧target key合并",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x02",
+      "requirements": [
+        "R03",
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "不同Operation；不被旧target key合并",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x02",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X03",
+    "title": "同key不同参数",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X03",
+      "group": "X",
+      "title": "同key不同参数",
+      "given": "H1已封存handoff",
+      "when": "用同key发H2",
+      "then": "拒绝；不能覆盖原回执",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x03",
+      "requirements": [
+        "R40",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "拒绝；不能覆盖原回执",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x03",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X04",
+    "title": "效果发生丢回执",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X04",
+      "group": "X",
+      "title": "效果发生丢回执",
+      "given": "目标已事务提交，进程退出",
+      "when": "恢复核对",
+      "then": "读取原回执，一次应用且正确结算",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x04",
+      "requirements": [
+        "R38",
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "读取原回执，一次应用且正确结算",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x04",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X05",
+    "title": "handoff后延迟到达",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X05",
+      "group": "X",
+      "title": "handoff后延迟到达",
+      "given": "旧请求排队中，lookup暂时无结果",
+      "when": "新owner恢复",
+      "then": "保持UNKNOWN；不以瞬时not found重发",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x05",
+      "requirements": [
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "保持UNKNOWN；不以瞬时not found重发",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x05",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X06",
+    "title": "幂等保存期耗尽",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X06",
+      "group": "X",
+      "title": "幂等保存期耗尽",
+      "given": "key记录可能被清理",
+      "when": "lookup空",
+      "then": "不自动再发；不能证明未发生",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x06",
+      "requirements": [
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "不自动再发；不能证明未发生",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x06",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X07",
+    "title": "旧writer仍活",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X07",
+      "group": "X",
+      "title": "旧writer仍活",
+      "given": "lease过期但旧线程/进程未停",
+      "when": "替代执行开始",
+      "then": "无真实fence不能冲突新handoff",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x07",
+      "requirements": [
+        "R16",
+        "R40",
+        "R49"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "无真实fence不能冲突新handoff",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x07",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X08",
+    "title": "终局未应用后重试",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X08",
+      "group": "X",
+      "title": "终局未应用后重试",
+      "given": "证明覆盖handoff1且它无法再执行",
+      "when": "当前授权允许handoff2",
+      "then": "同key/spec安全再发；新成功不与旧未执行矛盾",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x08",
+      "requirements": [
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "同key/spec安全再发；新成功不与旧未执行矛盾",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x08",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X09",
+    "title": "查询权威不足",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X09",
+      "group": "X",
+      "title": "查询权威不足",
+      "given": "best_effort查不到",
+      "when": "reconcile",
+      "then": "UNKNOWN而不是NOT_APPLIED_FINAL",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x09",
+      "requirements": [
+        "R40",
+        "R48"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "UNKNOWN而不是NOT_APPLIED_FINAL",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x09",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X10",
+    "title": "取消后迟到APPLIED",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X10",
+      "group": "X",
+      "title": "取消后迟到APPLIED",
+      "given": "用户取消后原操作实际成功回执晚到",
+      "when": "导入事实",
+      "then": "保存真实后果/费用，不授权新动作",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x10",
+      "requirements": [
+        "R38",
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "保存真实后果/费用，不授权新动作",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x10",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X11",
+    "title": "矛盾权威收据",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X11",
+      "group": "X",
+      "title": "矛盾权威收据",
+      "given": "相同交接范围收到APPLIED和最终未应用",
+      "when": "合并",
+      "then": "quarantine/conflict，无last-write-wins",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x11",
+      "requirements": [
+        "R40",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "quarantine/conflict，无last-write-wins",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x11",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X12",
+    "title": "补偿失败",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X12",
+      "group": "X",
+      "title": "补偿失败",
+      "given": "原操作成功，独立获批补偿",
+      "when": "补偿被拒/超时",
+      "then": "原成功不删；补偿独立失败/UNKNOWN记录",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x12",
+      "requirements": [
+        "R41"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "原成功不删；补偿独立失败/UNKNOWN记录",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x12",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X13",
+    "title": "审批绑定过期",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X13",
+      "group": "X",
+      "title": "审批绑定过期",
+      "given": "批准H1，参数或需求变H2",
+      "when": "handoff",
+      "then": "原批准不能用于H2，重新审批",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x13",
+      "requirements": [
+        "R40",
+        "R44",
+        "R50"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "原批准不能用于H2，重新审批",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x13",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X14",
+    "title": "SDK提交编排丢回执",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X14",
+      "group": "X",
+      "title": "SDK提交编排丢回执",
+      "given": "SDK已创建Turn且保存输入",
+      "when": "编排重启",
+      "then": "原creation_key/input_id查回，不创建新工作",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x14",
+      "requirements": [
+        "R39"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "原creation_key/input_id查回，不创建新工作",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x14",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X15",
+    "title": "结果导入重复",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X15",
+      "group": "X",
+      "title": "结果导入重复",
+      "given": "执行源同revision事实重送",
+      "when": "重复消费",
+      "then": "业务/费用导入一次；不同hash冲突",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x15",
+      "requirements": [
+        "R39",
+        "R51"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "业务/费用导入一次；不同hash冲突",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x15",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X16",
+    "title": "未知费用后确认",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X16",
+      "group": "X",
+      "title": "未知费用后确认",
+      "given": "调用UNKNOWN，无可信用量，之后结算",
+      "when": "更新源revision",
+      "then": "保留未知预留到可信结算，不提前记0占死消费键",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x16",
+      "requirements": [
+        "R25",
+        "R26",
+        "R39"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "保留未知预留到可信结算，不提前记0占死消费键",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x16",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X17",
+    "title": "观察失败不是不存在",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X17",
+      "group": "X",
+      "title": "观察失败不是不存在",
+      "given": "AgentBridge读取临时数据库失败",
+      "when": "恢复调度",
+      "then": "ObservationUnavailable，不能生成新Attempt",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x17",
+      "requirements": [
+        "R38",
+        "R39",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "ObservationUnavailable，不能生成新Attempt",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x17",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-X18",
+    "title": "过期通知worker确认",
+    "owner": "原execution claim/receipt importer；Assurance collector只接精确来源，不生成新claim",
+    "proposed_assurance_case_ids": [],
+    "original_contract": {
+      "id": "CA-X18",
+      "group": "X",
+      "title": "过期通知worker确认",
+      "given": "消息租约换代，旧worker返回ack",
+      "when": "确认",
+      "then": "不能确认新claim；相同消费者业务事实仍去重",
+      "test_target": "tests/orchestrator/core_assurance/test_operations.py::test_x18",
+      "requirements": [
+        "R16",
+        "R45"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
+    "trigger_entry": "原call/turn receipt导入→_collect_root_review/profile collector→原usage importer；针对过期claim的late result",
+    "production_paths": [
+      "orchestrator/event_handler.py",
+      "orchestrator/accounting_recovery.py",
+      "orchestrator/resolution_commits.py"
+    ],
+    "required_assertions": [
+      "不能确认新claim；相同消费者业务事实仍去重",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。",
+      "过期lease不能产生新的执行claim或新的权限；已有相同消费者/业务结果按原稳定键去重；raw与费用不因不再可采用而丢失；异body冲突。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x18",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I01",
+    "title": "全部三链集成",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "E03",
+      "C05"
+    ],
+    "original_contract": {
+      "id": "CA-I01",
+      "group": "I",
+      "title": "全部三链集成",
+      "given": "真实TG共享分支+多支持证据+受控发布",
+      "when": "执行§18流程含kill",
+      "then": "版本/接受/真实效果/费用/通知一致",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i01",
+      "requirements": [
+        "R12",
+        "R30",
+        "R39",
+        "R40"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "版本/接受/真实效果/费用/通知一致",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i01",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I02",
+    "title": "compound不伪执行",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A15"
+    ],
+    "original_contract": {
+      "id": "CA-I02",
+      "group": "I",
+      "title": "compound不伪执行",
+      "given": "实际HTN Method含两个AND孩子",
+      "when": "启动完整Mission",
+      "then": "不创建假父Worker；实际组合审阅和GoalResolution",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i02",
+      "requirements": [
+        "R04",
+        "R12"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "不创建假父Worker；实际组合审阅和GoalResolution",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i02",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I03",
+    "title": "相同scope多Manager",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C02"
+    ],
+    "original_contract": {
+      "id": "CA-I03",
+      "group": "I",
+      "title": "相同scope多Manager",
+      "given": "两Manager同时修改支持和Task绑定",
+      "when": "并发Commit",
+      "then": "相关冲突被发现，不相关安全rebase成立",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i03",
+      "requirements": [
+        "R16",
+        "R36"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "相关冲突被发现，不相关安全rebase成立",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i03",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I04",
+    "title": "安全注入跨共享",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "A08",
+      "A10",
+      "V09"
+    ],
+    "original_contract": {
+      "id": "CA-I04",
+      "group": "I",
+      "title": "安全注入跨共享",
+      "given": "不可信文档含改权限指令，经摘要/Knowledge传递",
+      "when": "下游工具调用",
+      "then": "引用始终是数据，权限和操作key不可模型控制",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i04",
+      "requirements": [
+        "R34",
+        "R50"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "引用始终是数据，权限和操作key不可模型控制",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i04",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I05",
+    "title": "真实UI与坏消息",
+    "owner": "OPS/OCC existing production owner; Assurance outcome/closeout guard integration",
+    "proposed_assurance_case_ids": [
+      "C07"
+    ],
+    "original_contract": {
+      "id": "CA-I05",
+      "group": "I",
+      "title": "真实UI与坏消息",
+      "given": "后端仍评审时前端收到坏消息",
+      "when": "刷新/重连",
+      "then": "保留stale画面，不能显示完成或业务UNKNOWN",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i05",
+      "requirements": [
+        "R57",
+        "R58"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
+    "production_paths": [
+      "orchestrator/action_commits.py",
+      "orchestrator/operation_materialization.py",
+      "orchestrator/resolution_commits.py",
+      "orchestrator/accounting_recovery.py"
+    ],
+    "required_assertions": [
+      "保留stale画面，不能显示完成或业务UNKNOWN",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i05",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I06",
+    "title": "旧库冷恢复",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C06"
+    ],
+    "original_contract": {
+      "id": "CA-I06",
+      "group": "I",
+      "title": "旧库冷恢复",
+      "given": "旧Mission/intent/hash/receipt固定夹具",
+      "when": "升级后只读/恢复",
+      "then": "字节与身份不变，legacy规则不被猜成v2",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i06",
+      "requirements": [
+        "R17",
+        "R38",
+        "R57"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "字节与身份不变，legacy规则不被猜成v2",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i06",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I07",
+    "title": "新投影重建",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C04",
+      "V11"
+    ],
+    "original_contract": {
+      "id": "CA-I07",
+      "group": "I",
+      "title": "新投影重建",
+      "given": "保留事件/CAS/受控基线，清除本专项派生表",
+      "when": "Replay",
+      "then": "重建相同事实，无模型/工具调用；coverage边界明确",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i07",
+      "requirements": [
+        "R37",
+        "R38"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "重建相同事实，无模型/工具调用；coverage边界明确",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i07",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I08",
+    "title": "跨库备份缺资产",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C03",
+      "C06",
+      "V13"
+    ],
+    "original_contract": {
+      "id": "CA-I08",
+      "group": "I",
+      "title": "跨库备份缺资产",
+      "given": "备份中遗漏执行回执或CAS",
+      "when": "恢复",
+      "then": "禁新副作用并报告缺口，不重发弥补",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i08",
+      "requirements": [
+        "R38",
+        "R39",
+        "R60"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "禁新副作用并报告缺口，不重发弥补",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i08",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I09",
+    "title": "删除后恢复备份",
+    "owner": "original Store/HtnStore evidence mutation owner + Assurance validity integration",
+    "proposed_assurance_case_ids": [
+      "V13"
+    ],
+    "original_contract": {
+      "id": "CA-I09",
+      "group": "I",
+      "title": "删除后恢复备份",
+      "given": "旧快照含已删除证据",
+      "when": "应用tombstone恢复",
+      "then": "不复活正文/索引/缓存，历史限制可见",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i09",
+      "requirements": [
+        "R60"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
+    "production_paths": [
+      "storage/store.py",
+      "storage/htn_store.py",
+      "knowledge/validity.py",
+      "orchestrator/assurance_events.py"
+    ],
+    "required_assertions": [
+      "不复活正文/索引/缓存，历史限制可见",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i09",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  },
+  {
+    "original_id": "CA-I10",
+    "title": "外部评分器隔离",
+    "owner": "existing scoped/root/composition Review owner + Assurance official/acceptance integration",
+    "proposed_assurance_case_ids": [
+      "C08"
+    ],
+    "original_contract": {
+      "id": "CA-I10",
+      "group": "I",
+      "title": "外部评分器隔离",
+      "given": "开发集四臂/真实外部任务",
+      "when": "系统内部评审",
+      "then": "看不到隐藏答案；错误完成由外部评分独立判定",
+      "test_target": "tests/orchestrator/core_assurance/test_integration.py::test_i10",
+      "requirements": [
+        "R28",
+        "R52"
+      ],
+      "status": "NOT_RUN_SDK",
+      "required_evidence": [
+        "实际SDK提交",
+        "测试日志/失败原因",
+        "状态/回执/费用或图绑定的断言",
+        "涉及副作用时真实应用次数"
+      ]
+    },
+    "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
+    "execution": "PENDING_SDK_EXECUTION",
+    "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
+    "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
+    "production_paths": [
+      "orchestrator/resolution_commits.py",
+      "orchestrator/scoped_content_review.py"
+    ],
+    "required_assertions": [
+      "看不到隐藏答案；错误完成由外部评分独立判定",
+      "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
+    ],
+    "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i10",
+    "actual_nodeids": [],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+  }
+]

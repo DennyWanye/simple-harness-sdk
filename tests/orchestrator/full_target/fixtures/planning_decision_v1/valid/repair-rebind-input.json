@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "decision_type": "REPAIR",
+  "subject_key": "subject-root",
+  "rationale": "选择一个已注册且当前可适用的方法。",
+  "reason_refs": [],
+  "assumptions": [],
+  "payload": {
+    "repair_kind": "REBIND_INPUT",
+    "consumer_task_ref": {
+      "kind": "task",
+      "id": "consumer",
+      "semantic_revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "producer_task_ref": {
+      "kind": "task",
+      "id": "producer",
+      "semantic_revision": 1,
+      "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "requirement_id": "input-1",
+    "expected_requirement_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "output_port": "result"
+  },
+  "uncertainties": [],
+  "alternatives": [],
+  "replan_triggers": []
+}
