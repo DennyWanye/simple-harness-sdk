@@ -31,6 +31,7 @@ from .errors import ArpError
 from .indexing import SessionIndexCoordinator
 from .retriever import SessionRetriever
 from .lifecycle import SkillLifecycleService
+from .session_lifecycle import SessionLifecycleService
 from .skill_tools import ArpModelTools
 from .skill_use import SkillUseService
 from .meter import MeterBinding, NativeMeterAdapter
@@ -64,6 +65,7 @@ class ArpRuntime:
     skills: SkillImporter | None = None
     lifecycle: SkillLifecycleService | None = None
     skill_use: SkillUseService | None = None
+    sessions: SessionLifecycleService | None = None
     _services: dict[str, SessionSearchService] = field(default_factory=dict)
 
     @property
@@ -85,10 +87,17 @@ class ArpRuntime:
             self._services[session.session_id] = service
         return service, state.guard, state.generation
 
+    def release_session(self, session_id: str) -> None:
+        """Drop one Session's in-memory partition and search service (before destroy/rebuild)."""
+
+        self.index.release(session_id)
+        self._services.pop(session_id, None)
+
     def tick(self) -> dict[str, int]:
-        """One fair coordination pass: due INDEX jobs, then non-terminal recalls."""
+        """One fair coordination pass: due INDEX/PURGE jobs, DRAINING proofs, then non-terminal recalls."""
 
         jobs = self.index.process_due()
+        draining = 0 if self.sessions is None else self.sessions.drive_draining()
         probed = False
         if self.catalogue is not None and self.bootstrap is not None and self.catalogue_caller is not None:
             probed = refresh_builtin_health(self.catalogue, self.bootstrap.deployment_ref, caller=self.catalogue_caller)
@@ -110,7 +119,7 @@ class ArpRuntime:
                     raise  # anything else is a coordinator defect, not a recorded outcome
                 blocked += 1  # the row itself carries the named BLOCKED/STALE code
             resumed += 1
-        return {"jobs": len(jobs), "recalls": resumed, "blocked": blocked, "deferred": deferred, "health_probed": int(probed)}
+        return {"jobs": len(jobs), "draining": draining, "recalls": resumed, "blocked": blocked, "deferred": deferred, "health_probed": int(probed)}
 
     def close(self) -> None:
         self.index.close()
@@ -250,6 +259,13 @@ def build_arp_runtime(
             state.catalogue, state.skills, runtime.uow, arp.clock_ms, ports.clock, policy.approval_ref, str(arp.profile.owner_mode), script_runner=arp.script_runner,
             count=index.count, skill_capacity=skill_capacity, loaded_blocks=lambda session: skill_blocks_for(state, session, count=index.count),
         )
+        state.sessions = SessionLifecycleService(
+            runtime=runtime, root=root, index=index, recall=state.recall, access_for=lambda session, turn_id: holder["context"]._access(session, turn_id),
+            capture=lambda session, highwater: holder["context"]._capture(session, highwater), release=state.release_session,
+            retention_policy_ref=arp.profile.refs.retention_policy_ref, authority_ref=policy.approval_ref, clock_ms=arp.clock_ms, clock=ports.clock,
+            owner_id=ports.owner_id, fault=arp.fault,
+        )
+        index.handlers["PURGE"] = state.sessions.process_purge_job
         holder["exposure"] = state.exposure
     except BaseException:
         runtime.uow.database.close()

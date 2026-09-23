@@ -16,6 +16,7 @@ execution UOW's own ``run_events`` writer and binds them in ``arp_event_bindings
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -823,6 +824,25 @@ def read_job_by_key(connection: sqlite3.Connection, session_id: str, kind: str, 
     return None if row is None else _job(row)
 
 
+def list_session_jobs(
+    connection: sqlite3.Connection, session_id: str, *, kinds: Sequence[str] | None = None, states: Sequence[str] | None = None
+) -> tuple[JobRow, ...]:
+    """Every job of one Session (oldest first), optionally narrowed by kind / state."""
+
+    where = ["session_id=?"]
+    args: list[Any] = [session_id]
+    if kinds:
+        where.append(f"kind IN ({','.join('?' for _ in kinds)})")
+        args.extend(kinds)
+    if states:
+        where.append(f"state IN ({','.join('?' for _ in states)})")
+        args.extend(states)
+    rows = connection.execute(
+        f"SELECT {_JOB_COLUMNS} FROM arp_jobs WHERE {' AND '.join(where)} ORDER BY next_at_ms, job_id", args
+    ).fetchall()
+    return tuple(_job(r) for r in rows)
+
+
 def put_job_locked(
     connection: sqlite3.Connection,
     *,
@@ -1127,11 +1147,15 @@ def get_context_recall_exact(connection: sqlite3.Connection, original_request_ke
     return None if row is None else _recall(row)
 
 
-def list_pending_recalls(connection: sqlite3.Connection, *, limit: int = 8) -> tuple[ContextRecallRow, ...]:
+def list_pending_recalls(
+    connection: sqlite3.Connection, *, limit: int = 8, session_id: str | None = None
+) -> tuple[ContextRecallRow, ...]:
+    scope = "" if session_id is None else " AND session_id=?"
+    args: tuple[Any, ...] = (int(limit),) if session_id is None else (session_id, int(limit))
     rows = connection.execute(
         f"SELECT {_RECALL_COLUMNS} FROM arp_context_recalls WHERE phase NOT IN ('READY','SKIPPED','BLOCKED','STALE')"
-        " ORDER BY next_wake_at_ms, recall_key LIMIT ?",
-        (int(limit),),
+        f"{scope} ORDER BY next_wake_at_ms, recall_key LIMIT ?",
+        args,
     ).fetchall()
     return tuple(_recall(r) for r in rows)
 
@@ -1294,6 +1318,48 @@ def publish_index_generation_locked(
     created = active_index_publication(connection, session_id)
     assert created is not None
     return created
+
+
+# ---- retention permits (R1: the only key that opens a retained row's DELETE guard) -------------
+
+
+def retention_row_key(parts: Sequence[object]) -> str:
+    """The exact text SQLite's ``json_array(...)`` produces for the same values."""
+
+    return json.dumps(list(parts), ensure_ascii=False, separators=(",", ":"))
+
+
+def put_retention_permit_locked(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    row_key: Sequence[object],
+    body_hash: str,
+    expires_at_ms: int,
+    source_receipt_ref: Pin,
+) -> Mapping[str, Any]:
+    """One permit per (table, row, body hash); a same-identity replay returns the stored row."""
+
+    require_transaction(connection)
+    source_receipt_ref.require_kind("receipt")
+    if type(body_hash) is not str or len(body_hash) != 64:
+        raise ArpError("STRING_PATTERN", field_path="body_hash")
+    if type(expires_at_ms) is not int or expires_at_ms < 0:
+        raise ArpError("NUMBER_LIMIT", field_path="expires_at_ms")
+    key = retention_row_key(row_key)
+    existing = connection.execute(
+        "SELECT expires_at_ms, source_receipt_ref_json FROM arp_retention_permits WHERE table_name=? AND row_key=? AND body_hash=?",
+        (table_name, key, body_hash),
+    ).fetchone()
+    if existing is not None:
+        if Pin.from_json(_load(existing[1])) != source_receipt_ref:
+            raise ArpError("SOURCE_HASH_CONFLICT", "retention permit already granted from another receipt")
+        return {"table_name": table_name, "row_key": key, "body_hash": body_hash, "expires_at_ms": int(existing[0]), "source_receipt_ref": source_receipt_ref.to_json()}
+    connection.execute(
+        "INSERT INTO arp_retention_permits(table_name,row_key,body_hash,expires_at_ms,source_receipt_ref_json) VALUES (?,?,?,?,?)",
+        (_text(table_name, "table_name"), key, body_hash, expires_at_ms, _pin_column(source_receipt_ref)),
+    )
+    return {"table_name": table_name, "row_key": key, "body_hash": body_hash, "expires_at_ms": expires_at_ms, "source_receipt_ref": source_receipt_ref.to_json()}
 
 
 # ---- original receipts (run_events rows for facts that have no table of their own) -----------

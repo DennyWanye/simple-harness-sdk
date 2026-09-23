@@ -109,6 +109,9 @@ class SessionIndexCoordinator:
     embedding: Any | None = None
     embedding_resource_ref: Pin | None = None
     fault: Callable[[str], None] | None = None
+    # Other job kinds claimed by the same fair pass (RP-D1: PURGE); a kind without a
+    # handler is handed back untouched.
+    handlers: dict[str, Callable[[store.JobRow], Mapping[str, Any]]] = field(default_factory=dict)
     _states: dict[str, SessionIndexState] = field(default_factory=dict)
 
     # ---- partition / generation -----------------------------------------------------
@@ -154,6 +157,13 @@ class SessionIndexCoordinator:
         for state in self._states.values():
             state.partition.close()
         self._states.clear()
+
+    def release(self, session_id: str) -> None:
+        """Drop one Session's open partition (RP-D1: before its directory is renamed)."""
+
+        state = self._states.pop(session_id, None)
+        if state is not None:
+            state.partition.close()
 
     # ---- enqueue (same execution transaction as the caller) ---------------------------
 
@@ -236,9 +246,13 @@ class SessionIndexCoordinator:
         results = []
         for job in claimed:
             if job.kind != "INDEX":
-                # Other kinds belong to later slices; give the lease back untouched.
-                with self.uow.database.transaction() as connection:
-                    store.complete_job_locked(connection, job, state="PENDING", owner_id=self.owner_id, next_at_ms=now_ms + LEASE_MS)
+                handler = self.handlers.get(job.kind)
+                if handler is None:
+                    # No consumer assembled for this kind: give the lease back untouched.
+                    with self.uow.database.transaction() as connection:
+                        store.complete_job_locked(connection, job, state="PENDING", owner_id=self.owner_id, next_at_ms=now_ms + LEASE_MS)
+                    continue
+                results.append(handler(job))
                 continue
             results.append(self._process_guarded(job, now_ms))
         return tuple(results)
@@ -377,40 +391,11 @@ class SessionIndexCoordinator:
         generation: GenerationRow | None = None,
         source_highwater: int = 0,
     ) -> Mapping[str, Any]:
-        result = {
-            "schema_version": 1,
-            "job_id": job.job_id,
-            "payload_hash": job.payload_hash,
-            "result_kind": {"DONE": "INDEX_COMMITTED", "BLOCKED": "BLOCKED", "CANCELLED": "CANCELLED"}[state],
-            "original_invocation_refs": [p.to_json() for p in invocations],
-            "result_refs": [p.to_json() for p in result_refs],
-            "source_generation": session.generation,
-            "observed_at_ms": self.clock_ms(),
-            "reason_code": reason,
-        }
-        value = check("JobResult", result)
-        result_ref = Pin("receipt", f"job:{job.job_id}", job.row_version, digest(value))
         with self.uow.database.transaction() as connection:
-            current = store.read_job(connection, job.job_id) or job
-            # The JobResult body itself is kept as an original receipt so a BLOCKED reason
-            # can be read back, not only its hash.
-            store.append_original_receipt_locked(connection, run_id=session.agent_id, kind="job_result", receipt_key=f"{job.job_id}:{job.row_version}", body=value, now=self.clock())
-            after = store.complete_job_locked(connection, current, state=state, owner_id=self.owner_id, result_receipt_ref=result_ref)
-            store.append_runtime_event_locked(
-                connection,
-                run_id=session.agent_id,
-                event_type="RuntimeJobChanged",
-                body={
-                    "session_ref": session.pin.to_json(),
-                    "job_id": job.job_id,
-                    "row_version": after.row_version,
-                    "kind": job.kind,
-                    "state": after.state,
-                    "source_receipt_ref": result_ref.to_json(),
-                },
-                source_receipt_ref=result_ref,
-                dedupe_key=f"{job.job_id}:{after.row_version}",
-                now=self.clock(),
+            value, result_ref = finish_job_locked(
+                connection, job, state, session=session, owner_id=self.owner_id, clock=self.clock, clock_ms=self.clock_ms,
+                result_kind={"DONE": "INDEX_COMMITTED", "BLOCKED": "BLOCKED", "CANCELLED": "CANCELLED"}[state],
+                reason=reason, invocations=invocations, result_refs=result_refs,
             )
             if state == "DONE" and generation is not None:
                 self._publish_locked(connection, session, generation, source_highwater, result_ref)
@@ -441,6 +426,66 @@ class SessionIndexCoordinator:
         )
 
 
+def finish_job_locked(
+    connection: sqlite3.Connection,
+    job: store.JobRow,
+    state: str,
+    *,
+    session: store.SessionRow,
+    owner_id: str,
+    clock: Callable[[], float],
+    clock_ms: Callable[[], int],
+    result_kind: str,
+    reason: str | None = None,
+    invocations: Sequence[Pin] = (),
+    result_refs: Sequence[Pin] = (),
+    next_at_ms: int | None = None,
+) -> tuple[Mapping[str, Any], Pin]:
+    """Central ACK of one job (J2): JobResult receipt + row transition + ``RuntimeJobChanged``.
+    ``PENDING`` hands the lease back (no result) and only records the event."""
+
+    if state == "PENDING":
+        current = store.read_job(connection, job.job_id) or job
+        after = store.complete_job_locked(connection, current, state="PENDING", owner_id=owner_id, next_at_ms=next_at_ms)
+        stub = {"job_id": job.job_id, "state": "PENDING", "reason": reason}
+        return stub, Pin("receipt", f"job:{job.job_id}", after.row_version, digest(stub))
+    result = {
+        "schema_version": 1,
+        "job_id": job.job_id,
+        "payload_hash": job.payload_hash,
+        "result_kind": result_kind,
+        "original_invocation_refs": [p.to_json() for p in invocations],
+        "result_refs": [p.to_json() for p in result_refs],
+        "source_generation": session.generation,
+        "observed_at_ms": clock_ms(),
+        "reason_code": reason,
+    }
+    value = check("JobResult", result)
+    result_ref = Pin("receipt", f"job:{job.job_id}", job.row_version, digest(value))
+    current = store.read_job(connection, job.job_id) or job
+    # The JobResult body itself is kept as an original receipt so a BLOCKED reason
+    # can be read back, not only its hash.
+    store.append_original_receipt_locked(connection, run_id=session.agent_id, kind="job_result", receipt_key=f"{job.job_id}:{job.row_version}", body=value, now=clock())
+    after = store.complete_job_locked(connection, current, state=state, owner_id=owner_id, result_receipt_ref=result_ref, next_at_ms=next_at_ms)
+    store.append_runtime_event_locked(
+        connection,
+        run_id=session.agent_id,
+        event_type="RuntimeJobChanged",
+        body={
+            "session_ref": session.pin.to_json(),
+            "job_id": job.job_id,
+            "row_version": after.row_version,
+            "kind": job.kind,
+            "state": after.state,
+            "source_receipt_ref": result_ref.to_json(),
+        },
+        source_receipt_ref=result_ref,
+        dedupe_key=f"{job.job_id}:{after.row_version}",
+        now=clock(),
+    )
+    return value, result_ref
+
+
 def _records_by_id(connection: sqlite3.Connection, agent_id: str, record_ids: Sequence[str]) -> tuple[AgentJournalRecord, ...]:
     if not record_ids:
         return ()
@@ -458,4 +503,5 @@ __all__ = (
     "VIEW_POLICY_HASH",
     "chunk_text",
     "chunker_fingerprint",
+    "finish_job_locked",
 )

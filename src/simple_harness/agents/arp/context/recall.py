@@ -250,8 +250,12 @@ class ContextRecallCoordinator:
         row = store.read_context_recall(self.uow.database.connection, recall_key)
         if row is None:
             raise ArpError("RECALL_BINDING_INVALID", "unknown recall key")
-        if row.session_id != access.session_id or row.agent_id != access.agent_id or row.control_generation != access.control_generation:
+        if row.session_id != access.session_id or row.agent_id != access.agent_id:
             raise ArpError("RECALL_SOURCE_STALE", "access differs from the coordinated request")
+        if row.control_generation != access.control_generation and not row.terminal:
+            # The Session was fenced (destroy / quarantine) after this recall was coordinated:
+            # the row records STALE by name (J7) instead of failing every later pass.
+            row = self._block(row, ArpError("RECALL_SOURCE_STALE", "session generation advanced"), clock_receipt_ref=clock_receipt_ref, now_ms=max(now_ms, self.clock_ms()))
         while not row.terminal:
             try:
                 row = self._step(row, access, now_ms=max(now_ms, self.clock_ms()), clock_receipt_ref=clock_receipt_ref)
