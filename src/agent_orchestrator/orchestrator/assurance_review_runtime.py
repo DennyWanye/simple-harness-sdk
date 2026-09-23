@@ -31,9 +31,15 @@ from .assurance_review_consumer import AssuranceReviewConsumer
 from .assurance_review_import import read_official_review_binding_locked
 
 # One review turn: the initial request plus a bounded number of tool rounds.
-# The per-call cap on the gateway binding is MAX_EVIDENCE_TOOL_CALLS.
-REVIEW_MODEL_CALLS = 6
-REVIEW_TOOL_CALLS = 8
+# The per-call cap on the gateway binding is MAX_EVIDENCE_TOOL_CALLS; the turn's
+# own tool cap matches it. Host real model run 13 (2026-09-23): a real reviewer
+# listed the catalogue and read the candidate plus five evidence items (3+2+5 = 10
+# tool calls) before concluding, and the old cap of 8 ended every such turn with
+# react_max_tool_calls_exceeded → TURN_FAILED.
+from ..verification.reviewer_evidence_tools import MAX_EVIDENCE_TOOL_CALLS
+
+REVIEW_MODEL_CALLS = 8
+REVIEW_TOOL_CALLS = MAX_EVIDENCE_TOOL_CALLS
 
 
 class AssuranceReviewRuntime:
