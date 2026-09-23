@@ -291,3 +291,75 @@ def approve_check_policy(
                 payload={"check_policy_ref": ref.to_json(), "approval_receipt_id": receipt_id},
             )
         return ref
+
+
+def lossless_scope_mapping(
+    commit: CommitService, *, mission_id: str, scope_id: str
+) -> tuple[AssuranceRef, AssuranceRef, tuple[CriterionPolicy, ...]]:
+    """The candidate mapping a deployment derives *losslessly* from the original
+    requirements for one frozen completion Scope (plan §5.1 无损旧适配).
+
+    ``(requirements_ref, completion_scope_ref, mapping)``: a criterion with
+    ``required_check_ids`` becomes CHECKED with one AND group holding every
+    registered CheckSpec it names; a criterion with none is SEMANTIC only when
+    its original ``evaluation_kind`` is semantic. Anything else, an unregistered
+    checker or a Scope whose projection is not current raises
+    ``CHECK_POLICY_UNRESOLVED`` — nothing is invented or dropped. The result is
+    still approved through :func:`approve_check_policy` by the authenticated
+    Host caller under its own command; this only spells out the original.
+    """
+    from .scoped_composition_review import read_compound_projection
+    from .scoped_content_review import read_task_check_policy_projection
+
+    text(mission_id)
+    text(scope_id)
+    store = commit.store
+    row = store.connection.execute(
+        "SELECT scope_id, occurrence_id, task_id, scope_hash, document_json "
+        "FROM operation_completion_scopes WHERE mission_id=? AND scope_id=?",
+        (mission_id, scope_id),
+    ).fetchone()
+    if row is None:
+        raise AssuranceError("CHECK_POLICY_UNRESOLVED", scope_id)
+    scope = OccurrenceCompletionScopeV1.from_json(decode(row["document_json"]))
+    requirements_ref = AssuranceRef(
+        "requirements",
+        Pin(
+            str(scope.requirements_ref.id),
+            int(scope.requirements_ref.revision),
+            str(scope.requirements_ref.content_hash),
+        ),
+    )
+    scope_ref = AssuranceRef("completion_scope", Pin(str(row["scope_id"]), 0, str(row["scope_hash"])))
+    binding = HtnStore(store).task_semantics_of(mission_id, str(row["task_id"]))
+    if binding is None:
+        raise AssuranceError("CHECK_POLICY_UNRESOLVED", scope_id)
+    if binding.form is TaskForm.PRIMITIVE:
+        projection = read_task_check_policy_projection(store, mission_id, str(row["task_id"]))
+    else:
+        projection = read_compound_projection(
+            store, mission_id, str(row["occurrence_id"]), str(row["task_id"])
+        )
+    registry: dict[str, Any] | None = None
+    mapping: list[CriterionPolicy] = []
+    for criterion in projection.criteria:
+        required_ids = tuple(criterion.required_evidence_policy.required_check_ids)
+        if not required_ids:
+            if criterion.evaluation_kind is not EvaluationKind.SEMANTIC:
+                raise AssuranceError("CHECK_POLICY_UNRESOLVED", criterion.criterion_id)
+            mapping.append(CriterionPolicy(criterion.criterion_id, "SEMANTIC", ()))
+            continue
+        if registry is None:
+            importer = commit._assurance_check_importer
+            if importer is None:
+                raise AssuranceError("CHECKER_UNAVAILABLE")
+            importer._require_deployment()
+            registry = importer._registry(mission_id)
+        group = []
+        for name in required_ids:
+            entry = registry.get(name)
+            if entry is None:
+                raise AssuranceError("CHECK_POLICY_UNRESOLVED", name)
+            group.append(entry.binding.spec_ref)
+        mapping.append(CriterionPolicy(criterion.criterion_id, "CHECKED", (tuple(group),)))
+    return requirements_ref, scope_ref, tuple(sorted(mapping, key=lambda c: c.criterion_id))
