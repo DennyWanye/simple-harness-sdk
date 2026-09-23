@@ -118,6 +118,7 @@ class AssembledRuntime:
     retriever: object = None
     indexer: object = None
     provider_admission: ProviderAdmissionPort | None = None
+    registry: object = None
 
 
 def assemble_runtime(
@@ -126,6 +127,9 @@ def assemble_runtime(
     extra_tools: tuple[FunctionTool, ...] = (),
     delegation_counter=None,  # type: ignore[no-untyped-def]
     delegation_reconciliation=None,  # type: ignore[no-untyped-def]
+    context_factory=None,  # type: ignore[no-untyped-def]
+    wire_factory=None,  # type: ignore[no-untyped-def]
+    exposure_reader=None,  # type: ignore[no-untyped-def]
 ) -> AssembledRuntime:
     """Compose the kernel for BaseAgents; root and child profiles both drive ``base_agent``."""
 
@@ -154,7 +158,7 @@ def assemble_runtime(
 
     registry = BaseAgentToolRegistry(
         (*tools, *cast(tuple[Tool, ...], extra_tools)),
-        exposure_reader=_exposure,
+        exposure_reader=_exposure if exposure_reader is None else exposure_reader(_exposure),
         max_concurrent=ports.max_concurrent_tool_calls,
     )
     # An SDK-native authorization port (prepare/bind_decision, able to require a
@@ -184,7 +188,9 @@ def assemble_runtime(
         admission = LocalProviderAdmission(
             ports.max_concurrent_model_calls, ports.provider_handoff_fence
         )
-    wire = AgentProviderWire(
+    # The native runtime plane (ARP) swaps the wire / Context port through these
+    # factories; legacy assembly keeps the exact original objects.
+    wire = (AgentProviderWire if wire_factory is None else wire_factory)(
         ports.provider,
         database,
         request_guard=guard,
@@ -227,7 +233,7 @@ def assemble_runtime(
         clock=ports.clock,
     )
     recall_messages = _RecallAdapter(retriever, tokenizer, ports.recall_limit)
-    context = JournalContextPort(
+    context = (JournalContextPort if context_factory is None else context_factory)(
         uow,
         tokenizer=tokenizer,
         policy=ports.context_policy,
@@ -300,6 +306,7 @@ def assemble_runtime(
         retriever,
         indexer,
         provider_admission=admission,
+        registry=registry,
     )
 
 
@@ -484,6 +491,15 @@ class AgentRuntime:
                     settled = await self.indexer.run_once()
                 except Exception:  # noqa: BLE001 - the pump must survive a bad batch
                     settled = 0
+                arp = getattr(self, "arp", None)
+                if arp is not None:
+                    # Native plane tick: due INDEX jobs (embedding outside every lock) and
+                    # non-terminal recalls are driven here, not only inside prepare.
+                    try:
+                        outcome = arp.tick()
+                        settled = settled or bool(outcome.get("jobs") or outcome.get("recalls"))
+                    except Exception:  # noqa: BLE001 - a tick defect must not kill the pump
+                        pass
                 await asyncio.sleep(0.05 if settled else 0.25)
         except asyncio.CancelledError:
             return
@@ -506,13 +522,28 @@ class AgentRuntime:
 
         await self._assembled.runtime.recover()
 
-    async def create(self, config: AgentConfig, *, creation_key: str) -> BaseAgent:
-        """Create one Agent (no model call).  Same key + same config replays the same Agent."""
+    async def create(
+        self, config: AgentConfig, *, creation_key: str, caller: object | None = None
+    ) -> BaseAgent:
+        """Create one Agent (no model call).  Same key + same config replays the same Agent.
+
+        With the native runtime plane attached (``build_arp_runtime``) every creation
+        goes through ``NativeCreationService`` (durable intent → kernel → one activation
+        transaction); ``caller`` is then the authenticated ``TrustedCaller``.
+        """
 
         if not isinstance(config, AgentConfig):
             raise TypeError("config must use AgentConfig")
         if not isinstance(creation_key, str) or not creation_key.strip():
             raise ValueError("creation_key is required")
+        arp = getattr(self, "arp", None)
+        if arp is not None:
+            receipt = await arp.creation.create(
+                config, creation_key=creation_key, caller=caller, owner_scope=self._owner_scope
+            )
+            return BaseAgent(self, receipt.binding)
+        if caller is not None:
+            raise ValueError("caller is only accepted by ARP runtimes")
         agent_id = agent_id_for(self._owner_scope, creation_key)
         existing = self.uow.read_agent_binding(agent_id)
         if existing is not None:
@@ -575,7 +606,7 @@ class AgentRuntime:
         return self._assembled.tool_names
 
     async def create_many(
-        self, configs: Sequence[AgentConfig], *, batch_key: str
+        self, configs: Sequence[AgentConfig], *, batch_key: str, caller: object | None = None
     ) -> tuple[BaseAgent, ...]:
         """Idempotent batch creation (BA02/BA03/BA04): no model call, no partial batch.
 
@@ -654,7 +685,9 @@ class AgentRuntime:
             raise AgentBatchIdentityConflict("reserved batch names different agent ids")
         agents = []
         for index, config in enumerate(configs):
-            agents.append(await self.create(config, creation_key=f"{batch_key}:{index}"))
+            agents.append(
+                await self.create(config, creation_key=f"{batch_key}:{index}", caller=caller)
+            )
         self.uow.commit_agent_batch(
             batch_id=record.batch_id,
             receipt={"agent_ids": list(agent_ids), "batch_fingerprint": fingerprint},
@@ -817,7 +850,15 @@ class AgentRuntime:
         return binding
 
 
-def build_agent_runtime(ports: AgentRuntimePorts, *, owner_scope: str = "default") -> AgentRuntime:
+def build_agent_runtime(
+    ports: AgentRuntimePorts,
+    *,
+    owner_scope: str = "default",
+    context_factory=None,  # type: ignore[no-untyped-def]
+    wire_factory=None,  # type: ignore[no-untyped-def]
+    session_tools_factory=None,  # type: ignore[no-untyped-def]
+    exposure_reader=None,  # type: ignore[no-untyped-def]
+) -> AgentRuntime:
     """Assemble a BaseAgent runtime with no user Memory; use ``async with``.
 
     ``agent.delegate`` is registered before the tool registry seals and late-bound
@@ -828,12 +869,15 @@ def build_agent_runtime(ports: AgentRuntimePorts, *, owner_scope: str = "default
     from .tools.session_history import SessionHistoryTools
 
     delegate = AgentDelegateTool(clock=ports.clock)
-    session_tools = SessionHistoryTools()
+    session_tools = (SessionHistoryTools if session_tools_factory is None else session_tools_factory)()
     assembled = assemble_runtime(
         ports,
         extra_tools=(delegate.function_tool(), *session_tools.function_tools()),
         delegation_counter=lambda turn_id: delegate.runtime.uow.count_agent_delegations(turn_id),
         delegation_reconciliation=AgentDelegationReconciliation,
+        context_factory=context_factory,
+        wire_factory=wire_factory,
+        exposure_reader=exposure_reader,
     )
     runtime = AgentRuntime(assembled, ports, owner_scope=owner_scope)
     delegate.bind(runtime)

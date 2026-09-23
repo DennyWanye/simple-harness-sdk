@@ -53,6 +53,11 @@ class Database:
             connection.execute("PRAGMA foreign_keys = ON")
             if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
                 raise RuntimeError("SQLite foreign key enforcement is unavailable")
+            # ARP-EXEC-1.1.1 §11: every writer/recovery connection sets and reads back
+            # recursive_triggers before any transaction (SQL_PRAGMA_UNSUPPORTED otherwise).
+            connection.execute("PRAGMA recursive_triggers = ON")
+            if connection.execute("PRAGMA recursive_triggers").fetchone()[0] != 1:
+                raise RuntimeError("SQL_PRAGMA_UNSUPPORTED: recursive_triggers")
             existing = database._has_schema_descriptor()
             if existing:
                 # Validate before any persistent PRAGMA.  In particular, opening a v4
