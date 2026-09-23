@@ -56,7 +56,13 @@ from ..storage.assurance_reads import (
 from ..storage.assurance_store import AssuranceStore
 from ..storage.assurance_work import atomic
 from ..storage.htn_store import HtnStore
-from .assurance_check_use import CurrentAuthority, PreparedCheckUse, _merge_reads, _permission
+from .assurance_check_use import (
+    CurrentAuthority,
+    PreparedCheckUse,
+    _merge_reads,
+    _permission,
+    _require_same_permission,
+)
 from .assurance_review_transport import read_review_invocation_locked
 
 
@@ -454,8 +460,7 @@ class PreparedOfficialReview:
             if reader.read_exact_metadata(item.ref) != item:
                 raise AssuranceError("RECHECK_REQUIRED")
         for ref, permission in self.permissions:
-            if _permission(self.authority, self.identity, ref, now_ms) != permission:
-                raise AssuranceError("RECHECK_REQUIRED")
+            _require_same_permission(self.authority, self.identity, ref, permission, now_ms)
         for blob in self.blobs:
             blob.require_current_locked(
                 reader,

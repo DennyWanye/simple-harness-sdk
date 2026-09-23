@@ -53,6 +53,29 @@ def _permission(
     return permission
 
 
+def _require_same_permission(
+    authority: CurrentAuthority,
+    identity: UseIdentity,
+    ref: AssuranceRef,
+    captured: CurrentReadPermission,
+    now_ms: int,
+) -> None:
+    """Final barrier: the captured grant is still in force and CURRENT authority
+    still grants the same access under the same policy.
+
+    ``not_after_ms`` is a lease on the captured grant, not part of its identity: a
+    production authority re-issues it relative to *now*, so comparing it would
+    fail every re-check that is not in the same millisecond (Host real model run
+    10, 2026-09-23). The captured lease is enforced; the fresh one is checked by
+    ``_permission``.
+    """
+    if now_ms >= captured.not_after_ms:
+        raise AssuranceError("CHECK_USE_EXPIRED")
+    current = _permission(authority, identity, ref, now_ms)
+    if (current.access, current.policy) != (captured.access, captured.policy):
+        raise AssuranceError("RECHECK_REQUIRED")
+
+
 def _merge_reads(rows: list[ReadItem]) -> tuple[ReadItem, ...]:
     # A source used twice is one read. Conflicting observations never collapse.
     # The wire contract still rejects duplicate keys rather than normalizing it.

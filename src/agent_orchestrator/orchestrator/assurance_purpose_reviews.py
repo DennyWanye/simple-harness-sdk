@@ -48,7 +48,7 @@ from ..storage.assurance_reads import (
 )
 from ..storage.assurance_store import AssuranceStore
 from ..storage.htn_store import HtnStore
-from .assurance_check_use import CurrentAuthority, _merge_reads, _permission
+from .assurance_check_use import CurrentAuthority, _merge_reads, _permission, _require_same_permission
 from .assurance_review_pins import ensure_review_blob_pins, release_failed_preparation
 from .assurance_review_transport import assurance_formula, read_review_invocation_locked
 
@@ -363,8 +363,7 @@ def prepare_purpose_review(
                 if reader.read_exact_metadata(item.ref) != item:
                     raise AssuranceError("RECHECK_REQUIRED")
             for ref, previous in permissions:
-                if _permission(authority, identity, ref, current_ms) != previous:
-                    raise AssuranceError("RECHECK_REQUIRED")
+                _require_same_permission(authority, identity, ref, previous, current_ms)
             for blob in blobs:
                 blob.require_current_locked(
                     reader,

@@ -69,6 +69,7 @@ from .assurance_check_use import (
     PreparedCheckUse,
     _merge_reads,
     _permission,
+    _require_same_permission,
     prepare_local_check_use,
 )
 from .assurance_review_import import (
@@ -617,8 +618,7 @@ class AssuranceValidity:
             if reader.read_exact_metadata(item.ref) != item:
                 raise AssuranceError("RECHECK_REQUIRED")
         for ref, captured in candidate.permissions:
-            if _permission(self.authority, identity, ref, now_ms) != captured:
-                raise AssuranceError("RECHECK_REQUIRED")
+            _require_same_permission(self.authority, identity, ref, captured, now_ms)
         for use in candidate.check_uses:
             result = use.consume_locked(
                 self.check_adapter, identity=identity, authority=self.authority, now_ms=now_ms
