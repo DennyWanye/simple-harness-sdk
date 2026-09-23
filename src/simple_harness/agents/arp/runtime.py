@@ -72,19 +72,34 @@ class ArpRuntime:
     def protocol(self) -> str:
         return PROTOCOL
 
+    def policy_for(self, session: store.SessionRow) -> tuple[store.PolicyAdoptionRow, store.PolicyObjectRow]:
+        """The Session's currently adopted policy (settings update = next request only); the
+        frozen profile policy is only its first revision."""
+
+        connection = self.index.uow.database.connection
+        adoption = store.latest_adoption(connection, session.session_id)
+        if adoption is None:
+            raise ArpError("POLICY_CONFLICT", "session has no adopted context policy")
+        row = store.read_policy_object(connection, adoption.policy_ref.id, adoption.policy_ref.revision)
+        if row is None or row.content_hash != adoption.policy_ref.content_hash:
+            raise ArpError("POLICY_CONFLICT", "adopted policy object is missing or differs")
+        return adoption, row
+
     def search_for(self, session: store.SessionRow):  # type: ignore[no-untyped-def]
         """(SessionSearchService, FileGuard, GenerationRow) for one live Session."""
 
         state = self.index.state_for(session)
+        _, policy = self.policy_for(session)
         service = self._services.get(session.session_id)
         if service is None:
             service = SessionSearchService(
                 state.partition,
                 clock_ms=self.ports.clock_ms,
                 charge=self.index.count,
-                cursor_ttl_ms=int(self.policy.body["query_cursor_ttl_ms"]),
+                cursor_ttl_ms=int(policy.body["query_cursor_ttl_ms"]),
             )
             self._services[session.session_id] = service
+        service._ttl = int(policy.body["query_cursor_ttl_ms"])  # the adopted policy's TTL governs new cursors
         return service, state.guard, state.generation
 
     def release_session(self, session_id: str) -> None:

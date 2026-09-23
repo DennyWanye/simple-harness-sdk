@@ -1320,6 +1320,39 @@ def publish_index_generation_locked(
     return created
 
 
+# ---- host command ledger (HOST-DTOS §1) -------------------------------------------------------
+
+
+def read_host_command(connection: sqlite3.Connection, command_id: str) -> Mapping[str, Any] | None:
+    row = connection.execute(
+        "SELECT verb,subject_id,command_hash,body_json,body_hash FROM arp_host_commands WHERE command_id=?", (command_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return {"command_id": command_id, "verb": str(row[0]), "subject_id": str(row[1]), "command_hash": str(row[2]), "body": _load(row[3]), "body_hash": str(row[4])}
+
+
+def put_host_command_locked(
+    connection: sqlite3.Connection, *, command_id: str, verb: str, subject_id: str, command_hash: str, body: Json
+) -> Mapping[str, Any]:
+    """First write wins; the same command id with another command hash is a conflict."""
+
+    require_transaction(connection)
+    existing = read_host_command(connection, command_id)
+    if existing is not None:
+        if existing["command_hash"] != command_hash:
+            raise ArpError("EXPECTED_REVISION_MISMATCH", "command id reused with another body")
+        return existing
+    value = dict(body)
+    connection.execute(
+        "INSERT INTO arp_host_commands(command_id,verb,subject_id,command_hash,body_json,body_hash) VALUES (?,?,?,?,?,?)",
+        (_text(command_id, "command_id"), _text(verb, "verb"), _text(subject_id, "subject_id"), command_hash, _json_column(value), digest(value)),
+    )
+    created = read_host_command(connection, command_id)
+    assert created is not None
+    return created
+
+
 # ---- retention permits (R1: the only key that opens a retained row's DELETE guard) -------------
 
 

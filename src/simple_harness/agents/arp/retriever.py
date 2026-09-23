@@ -36,6 +36,7 @@ class SessionRetriever:
             raise ArpError("ENUM", field_path="purpose")
         arp = self.arp
         authority = arp.policy.approval_ref
+        _, policy = arp.policy_for(session)
         return SessionAccess(
             session_ref=session.pin,
             agent_ref=Pin("agent", session.agent_id, 0, digest(session.agent_id)),
@@ -46,7 +47,7 @@ class SessionRetriever:
             authority_refs=(authority,),
             authority_readset_hash=digest({"authority": authority.to_json(), "profile": session.profile_ref.to_json(), "session": session.pin.to_json()}),
             control_generation=session.generation,
-            expires_at_ms=arp.ports.clock_ms() + int(arp.policy.body["query_cursor_ttl_ms"]),
+            expires_at_ms=arp.ports.clock_ms() + int(policy.body["query_cursor_ttl_ms"]),
         )
 
     def _session(self, agent_id: str) -> store.SessionRow:
@@ -78,7 +79,8 @@ class SessionRetriever:
         # A fresh query: freeze the Session's index snapshot (highwater, full expected set).
         highwater = self.arp.index.uow.agent_journal_highwater(session.agent_id)
         snapshot_groups = self.capture(session, highwater)
-        policy = self.arp.policy.body
+        _, policy_row = self.arp.policy_for(session)
+        policy = policy_row.body
         identity = {"purpose": access.purpose, "owner": access.owner_scope_hash, "query": query_hash, "issued_at_ms": self.arp.ports.clock_ms(), "nonce": digest(value)}
         query_id = f"{access.purpose.lower()}-{digest(identity)[:32]}"
         with guard.held():
@@ -118,7 +120,7 @@ class SessionRetriever:
             "mandatory_group_ids": [],
             "protected_group_ids": [],
             "journal_highwater": highwater,
-            "policy_ref": self.arp.policy.pin.to_json(),
+            "policy_ref": policy_row.pin.to_json(),
             "control_generation": session.generation,
             "limits": {
                 "page_rows": int(policy["max_scan_rows_per_page"]),

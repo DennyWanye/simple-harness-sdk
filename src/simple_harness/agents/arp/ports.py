@@ -216,6 +216,9 @@ class ArpPorts:
     # RUNNER_UNAVAILABLE; the SDK never spawns processes itself).
     acceptance: Any | None = None
     script_runner: Any | None = None
+    # RP-D2: the Host's authenticated artifact reader (``Pin -> bytes``) for
+    # ``HostRequest.payload_ref`` and Skill bundle installs; None → ARTIFACT_UNAVAILABLE.
+    artifacts: Any | None = None
 
 
 __all__ = (

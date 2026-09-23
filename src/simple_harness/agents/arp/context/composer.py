@@ -139,7 +139,7 @@ class ArpContextPort(JournalContextPort):
             authority_refs=(authority,),
             authority_readset_hash=digest({"authority": authority.to_json(), "profile": session.profile_ref.to_json(), "session": session.pin.to_json()}),
             control_generation=session.generation,
-            expires_at_ms=arp.ports.clock_ms() + int(arp.policy.body["query_cursor_ttl_ms"]),
+            expires_at_ms=arp.ports.clock_ms() + int(arp.policy_for(session)[1].body["query_cursor_ttl_ms"]),
         )
 
     @staticmethod
@@ -191,7 +191,20 @@ class ArpContextPort(JournalContextPort):
         adoption = store.latest_adoption(connection, session.session_id)
         if adoption is None:
             raise ArpError("POLICY_CONFLICT", "session has no adopted context policy")
-        policy = arp.policy.body
+        # RP-D2: the Session's *adopted* policy governs every request frozen after the
+        # adoption (settings update = next request only); the profile policy is its origin.
+        # A request whose recall was already coordinated (C0 done, crash, re-sent prepare)
+        # keeps the policy / adoption frozen in that request, never today's.
+        existing_recall = store.get_context_recall_exact(connection, request_key)
+        adoption_revision = adoption.adoption_revision
+        policy_ref = adoption.policy_ref
+        if existing_recall is not None:
+            adoption_revision = int(existing_recall.request["adoption_revision"])
+            policy_ref = Pin.from_json(existing_recall.request["policy_ref"])
+        policy_row = store.read_policy_object(connection, policy_ref.id, policy_ref.revision)
+        if policy_row is None or policy_row.content_hash != policy_ref.content_hash:
+            raise ArpError("POLICY_CONFLICT", "adopted policy object is missing or differs")
+        policy = policy_row.body
         limits = arp.meter.binding.model_limits
         prior = arp.meter.binding.prior_for(run_id)
         # Index: enqueue closed groups (short exec txn) and run due jobs in-band.
@@ -230,7 +243,6 @@ class ArpContextPort(JournalContextPort):
         protected = tuple(g.id for g in pre.recent if not g.mandatory)
         access = self._access(session, turn_id)
         clock_ref = self._clock_receipt(session, request_key)
-        existing_recall = store.get_context_recall_exact(connection, request_key)
         if existing_recall is not None:
             # C0 already happened for this request key (crash after C0, or a re-sent
             # prepare): continue the frozen request; never build a second one.
@@ -246,8 +258,8 @@ class ArpContextPort(JournalContextPort):
                 turn_id=turn_id,
                 original_request_key=request_key,
                 provider_request_ordinal=ordinal,
-                policy_ref=arp.policy.pin,
-                adoption_revision=adoption.adoption_revision,
+                policy_ref=policy_row.pin,
+                adoption_revision=adoption_revision,
                 source_snapshot_ref=Pin("artifact", f"source-snapshot:{session.session_id}:{highwater}", highwater, snapshot.snapshot_hash),
                 source_snapshot_hash=snapshot.snapshot_hash,
                 group_snapshot_ref=snapshot.pin,
@@ -282,7 +294,7 @@ class ArpContextPort(JournalContextPort):
         selection = allocate(budget, fixed, rule_groups, candidates, turns=rule_turns, current_turn_id=turn_id, enumeration_complete=bool(snapshot.body["enumeration_complete"]))
         prepared = PreparedContext(highwater, turn_id, snapshot, session, selection, result, texts, budget, fixed, (), tool_snapshot, tool_witnesses, skill_blocks)
         wire, measurement = self._render_and_measure(prepared, request, instructions)
-        self._write_manifest(prepared, wire, measurement, request_key, ordinal, adoption.adoption_revision, tool_tokens, instructions)
+        self._write_manifest(prepared, wire, measurement, request_key, ordinal, adoption_revision, tool_tokens, instructions, policy_row=policy_row)
         self.prepared.append(request_key)
         return wire
 
@@ -320,10 +332,11 @@ class ArpContextPort(JournalContextPort):
             return wire, measurement
         raise ArpError("CONTEXT_ASSEMBLY_LIMIT", "no fitting request within 256 reductions")
 
-    def _write_manifest(self, prepared: PreparedContext, wire: ProviderRequest, measurement: Any, request_key: str, ordinal: int, adoption_revision: int, tool_tokens: int, instructions: Sequence[AgentJournalRecord]) -> None:
+    def _write_manifest(self, prepared: PreparedContext, wire: ProviderRequest, measurement: Any, request_key: str, ordinal: int, adoption_revision: int, tool_tokens: int, instructions: Sequence[AgentJournalRecord], *, policy_row: store.PolicyObjectRow | None = None) -> None:
         arp = self.arp
         session = prepared.session
-        policy = arp.policy.body
+        policy_row = policy_row or arp.policy
+        policy = policy_row.body
         selection = prepared.selection
         snapshot = prepared.snapshot
         result = prepared.recall_result
@@ -375,7 +388,7 @@ class ArpContextPort(JournalContextPort):
         read_set = {
             "journal_highwater": prepared.highwater,
             "group_snapshot": snapshot.snapshot_hash,
-            "policy": arp.policy.pin.to_json(),
+            "policy": policy_row.pin.to_json(),
             "adoption_revision": adoption_revision,
             "tool_snapshot": tool_snapshot_hash,
             "recall_result": digest(result),
@@ -411,10 +424,10 @@ class ArpContextPort(JournalContextPort):
             "tool_headroom_tokens": int(policy["tool_headroom_tokens"]),
             "counter_mode": arp.meter.binding.count_mode,
             "registry_epoch": 0 if prepared.tool_snapshot is None else int(prepared.tool_snapshot["registry_epoch"]),
-            "authority_refs": [arp.policy.approval_ref.to_json()],
+            "authority_refs": [policy_row.approval_ref.to_json()],
             "source_read_set_ref": Pin("artifact", f"readset:{context_id}", 0, digest(read_set)).to_json(),
             "creation_root_id": session.creation_root_id,
-            "effective_context_policy_ref": arp.policy.pin.to_json(),
+            "effective_context_policy_ref": policy_row.pin.to_json(),
             "token_receipt": dict(measurement.receipt),
             "prior_output_reserve_tokens": int(measurement.receipt["prior_output_reserve_tokens"]),
             "adoption_revision": adoption_revision,

@@ -305,6 +305,14 @@ CREATE TABLE arp_skill_import_commands (
  skill_id TEXT NOT NULL, skill_revision INTEGER NOT NULL CHECK(skill_revision>0), PRIMARY KEY(namespace_id,command_id)
 ) STRICT;
 CREATE TRIGGER arp_skill_import_commands_update_deny BEFORE UPDATE ON arp_skill_import_commands BEGIN SELECT RAISE(ABORT,'immutable skill import command'); END;
+-- Host command ledger (HOST-DTOS §1): one immutable receipt + original result per write command id.
+CREATE TABLE arp_host_commands (
+ command_id TEXT PRIMARY KEY NOT NULL, verb TEXT NOT NULL, subject_id TEXT NOT NULL,
+ command_hash TEXT NOT NULL CHECK(length(command_hash)=64), body_json TEXT NOT NULL CHECK(json_valid(body_json)),
+ body_hash TEXT NOT NULL CHECK(length(body_hash)=64)
+) STRICT;
+CREATE TRIGGER arp_host_commands_update_deny BEFORE UPDATE ON arp_host_commands BEGIN SELECT RAISE(ABORT,'immutable host command receipt'); END;
+CREATE TRIGGER arp_host_commands_delete_deny BEFORE DELETE ON arp_host_commands BEGIN SELECT RAISE(ABORT,'host command receipt retained'); END;
 -- Skill trial bindings (§9.6): one immutable SkillEvaluationBinding per trial command.
 CREATE TABLE arp_skill_evaluations (
  namespace_id TEXT NOT NULL, evaluation_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0),
