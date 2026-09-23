@@ -2,7 +2,9 @@
   {
     "id": "A01",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_strict_boundary",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_strict_boundary"
+    ],
     "given": "本scope一份可审候选，来源与请求身份固定",
     "when": "给Review codec重复key、未知official、bool版本、NaN/溢出、surrogate、超深度",
     "then": "逐项拒绝；无official Review/Acceptance/新调用，raw审计与真实费用可保存",
@@ -25,14 +27,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A01/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A02",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_formula_truth_tables",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_formula_truth_tables"
+    ],
     "given": "批准的非空ALL/ANY+独立mandatory",
     "when": "穷举PASS/FAIL/UNKNOWN；包含未知criterion/空formula",
     "then": "mandatory不得被ANY绕过；未评估UNKNOWN；非法公式不进入正式要求",
@@ -55,14 +60,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A02/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A03",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_requirement_authority",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_requirement_authority"
+    ],
     "given": "用户明确两平台、当前要求hash固定",
     "when": "Planner删一平台或把delivered降received；真实用户再确认新版",
     "then": "前者无权改变；后者新revision+receipt，旧bytes保持",
@@ -85,14 +93,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A03/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A04",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_check_receipt_scope",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_check_receipt_scope"
+    ],
     "given": "同一次真实checker执行的两个assertion",
     "when": "把平台/target/env/manifest/assertion/checkspec任一换掉",
     "then": "错误回执不能满足准则；真实失败/ERROR/未跑不记PASS",
@@ -115,14 +126,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A04/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A05",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_any_branch_not_mandatory",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_any_branch_not_mandatory"
+    ],
     "given": "批准A或B；privacy mandatory；B实际成功",
     "when": "A失败或未测；随后privacy失败；两个分支模型均PASS但第一分支缺真实check，第二分支完整",
     "then": "B成功时A不阻塞；privacy失败必阻塞；未运行检查不得伪造结果；后者可选择第二分支，不能因数组次序无条件拒绝或放宽第一分支",
@@ -145,14 +159,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A05/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A06",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_review_dispatch_atomic",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_review_dispatch_atomic"
+    ],
     "given": "真实package、Task预算owner、CAS pins",
     "when": "在reserve、package、binding、intent、receipt各点失败；CAS读取与GC争用、PREPARING后崩溃、提交前后重复事件",
     "then": "同事务全回滚；CAS孤儿无权；重送一次真实dispatch；durable pin与原GC真实门互斥，未知工作不得TTL释放；同logical slot不重复review/预算",
@@ -177,14 +194,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A06/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A07",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_reviewer_independence",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_reviewer_independence"
+    ],
     "given": "作者agent A已有Result",
     "when": "A自审、作者可写工作区、自报official；独立B正常审阅",
     "then": "拒绝前三者；B沿正式turn回流；不得通过换显示名伪造独立",
@@ -207,14 +227,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A07/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A08",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_review_source_binding",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_review_source_binding"
+    ],
     "given": "真实review_key/intent/turn/raw/package",
     "when": "错Mission、turn、input hash、raw output、purpose及重放",
     "then": "错绑定不official；同来源幂等；记录真实消耗不丢",
@@ -237,14 +260,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A08/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A09",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_review_new_round_identity",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_review_new_round_identity"
+    ],
     "given": "一份package已有official REWORK",
     "when": "请求真正第二独立review；并发重送第一轮",
     "then": "新round新package/intent；旧official不覆盖；原round重送无新费用预留；不同通知event ID不能当作独立复审轮次，新独立轮需真实授权",
@@ -267,14 +293,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A09/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A10",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_extra_evidence_exposure",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_extra_evidence_exposure"
+    ],
     "given": "reviewer获准工具返回新证据",
     "when": "引用已返回ref、猜未披露真实ID、撤权后取材",
     "then": "前者可在追加manifest使用；后两者阻断且不泄露对象内容；原请求bytes保持",
@@ -297,14 +326,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A10/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A11",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_scope_pinned_not_latest",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_scope_pinned_not_latest"
+    ],
     "given": "current task有v2，review冻结v1",
     "when": "收v1迟到结果；无关plan更新对比输入更新",
     "then": "保存原v1 Review与费用；不能批准v2；无关变化精确复核可继续",
@@ -327,14 +359,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A11/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A12",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_check_budget_and_format_bounds",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_check_budget_and_format_bounds"
+    ],
     "given": "真实剩余预算/格式重试累计",
     "when": "超长包/缺尾额度/两次坏格式/无限新review key",
     "then": "明确BLOCKED或INCONCLUSIVE，不能免费调用或重置Obligation计数",
@@ -357,14 +392,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A12/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A13",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_preparation_does_not_complete",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_preparation_does_not_complete"
+    ],
     "given": "MIXED scope生成报告且明确delivery MUST",
     "when": "正式内容Review接受报告；随后查询所有完成reader",
     "then": "Attempt可结束、准备贡献可读；Task VERIFYING、Obligation/Mission不满足、action未自动发生",
@@ -387,14 +425,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A13/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A14",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_preparation_data_not_order",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_preparation_data_not_order"
+    ],
     "given": "CONTENT producer与MIXED producer有准备Acceptance",
     "when": "明确DATA取准备产物；纯ORDER等完整producer；缺manifest",
     "then": "DATA按purpose可读；ORDER不提前释放；缺manifest不回退空",
@@ -417,14 +458,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A14/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A15",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_composition_not_all_children",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_composition_not_all_children"
+    ],
     "given": "子任务各自通过但组合接口/输入版本不同",
     "when": "运行正式COMPOSITION与root readiness",
     "then": "不以all(children.completed)通过；不同Obligation/occurrence范围不能混用",
@@ -447,14 +491,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A15/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A16",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_pending_effect_no_worker_loop",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_pending_effect_no_worker_loop"
+    ],
     "given": "准备已接受，等待真实审批/效果",
     "when": "连续调度tick、worker队列为空、预算查询",
     "then": "等待仍可见；不重复生成报告，不false complete/no-progress失败，正式Review/核对可推进",
@@ -477,14 +524,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A16/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A17",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_root_requirement_effect_catalogue",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_root_requirement_effect_catalogue"
+    ],
     "given": "批准spec含两MUST但尚无intent/action",
     "when": "请求根审阅/结束；某未选方法存在失败记录",
     "then": "没有intent仍欠两效果；未选路线不强制内容完成，但已发危险动作仍收尾",
@@ -507,14 +557,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A17/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "A18",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_direct_final_commit_guard",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_direct_final_commit_guard"
+    ],
     "given": "伪造ready缓存/绕过根ready入口",
     "when": "直接调用真正最终Commit、带CURRENT准备Acceptance",
     "then": "事务内同样拒绝；Mission/Task不误完成，保留预算/未决责任",
@@ -537,14 +590,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/A18/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "f79815f26a30c2a6",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V01",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_anchors_and_explicit_negation",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_anchors_and_explicit_negation"
+    ],
     "given": "真实Source/Observer不同来源",
     "when": "文献引用X、空查询、实际反向观察",
     "then": "source_says仅来源陈述；空查询不是FALSE；合格负观察建立负literal",
@@ -567,14 +623,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V01/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V02",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_rule_admission_required",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_rule_admission_required"
+    ],
     "given": "LLM提出A→K与已批准同规则",
     "when": "逐一尝试写Justification和用于执行",
     "then": "未准入规则不参与；rule policy/独立蕴含review具体来源可追",
@@ -597,14 +656,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V02/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V03",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_cycle_without_anchor",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_cycle_without_anchor"
+    ],
     "given": "A↔B及A∧E→A",
     "when": "无A锚只有E；随后加/撤真实A锚",
     "then": "无锚不自证；撤后重新从当前源计算，不保活旧VERIFIED",
@@ -627,14 +689,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V03/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V04",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_alternate_support",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_alternate_support"
+    ],
     "given": "K由A∧B或独立C充分支持",
     "when": "撤A，C仍完整；报告却明确错误引用A",
     "then": "K可继续；原报告引用不能悄悄替换；不重跑无关Worker",
@@ -657,14 +722,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V04/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V05",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_conflicted_paths",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_conflicted_paths"
+    ],
     "given": "A正负冲突，A→K；另有E→K",
     "when": "先无E后有E，再K本身加入反证",
     "then": "冲突路径不用于执行；clean E路径可用；K本身冲突阻断；无逻辑爆炸",
@@ -687,14 +755,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V05/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V06",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_complete_collection_not_topk",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_complete_collection_not_topk"
+    ],
     "given": "反证在列表后页/隐藏受控元数据/新规则",
     "when": "限制TopK、超容量、缺索引、未完成receipt导入",
     "then": "不得写COMPLETE/USABLE；明确INCOMPLETE/UNAVAILABLE，不显示隐私证据",
@@ -717,14 +788,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V06/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V07",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_insert_counterevidence_barrier",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_insert_counterevidence_barrier"
+    ],
     "given": "old proof钉正证据但无负证据ID",
     "when": "在accept/dispatch前另一连接插入负观察",
     "then": "源+epoch同事务；旧proof失效；最终guard检测新的集合而非只查旧ref",
@@ -747,14 +821,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V07/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V08",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_authority_and_expiry",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_authority_and_expiry"
+    ],
     "given": "source当前、purpose START/ACCEPT/HISTORICAL",
     "when": "ACL撤权、TTL等于now、时钟回退、MAINTAIN采样",
     "then": "新用阻断；历史事实仍在；采样无连续保证；不靠timer刷新窗口延迟放行",
@@ -777,14 +854,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V08/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V09",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_all_consumers_share_validity",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_all_consumers_share_validity"
+    ],
     "given": "同一准备/知识支持将过期",
     "when": "分别走HTN、Task input、Context、Review、handoff、root Commit",
     "then": "每个都核同一源与用途；查库VERIFIED/summary不能绕过",
@@ -807,14 +887,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V09/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V10",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_read_certificate_context",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_read_certificate_context"
+    ],
     "given": "真实consumer/purpose/scope证书",
     "when": "转移Mission/consumer/scope/purpose、参数token、修改expiry",
     "then": "全部拒绝；hash不是authority；同上下文新鲜重读可用",
@@ -837,14 +920,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V10/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V11",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_invalidation_racing_cache",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_invalidation_racing_cache"
+    ],
     "given": "重算epoch7时另writer提交epoch8",
     "when": "发布epoch7结果到当前索引",
     "then": "CAS拒旧投影；保留历史诊断但不清epoch8 dirty",
@@ -867,14 +953,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V11/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V12",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_independent_provenance_roots",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_independent_provenance_roots"
+    ],
     "given": "同一实验的10份复制和独立实验",
     "when": "要求两次独立证据，换format/hash",
     "then": "复制不凑独立计数；真正不同执行来源按批准policy判断",
@@ -897,14 +986,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V12/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V13",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_restore_quarantine_and_current_reauthorization",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_restore_quarantine_and_current_reauthorization"
+    ],
     "given": "t0完整离线备份；t1原库撤权/删除；t2原库可丢失，restore_offline到新root。测试当前授权通过真实固定Principal入口产生。",
     "when": "第一启动先尝试全文/摘要/Context/下载/通知；再按原权限规则确认部分精确只读对象，随后授权过期及部分库恢复",
     "then": "隔离根在新授权前只允许非披露诊断；旧备份grant/证书不放行。新授权仅匹配new_root+manifest+exact refs+scope/expiry；不恢复执行。无法得到来源当前权威保持隔离，不声称恢复最新撤权。",
@@ -928,14 +1020,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V13/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "V14",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_bounded_restartable_evaluation",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_bounded_restartable_evaluation"
+    ],
     "given": "上限内完整grounded图及超界一项",
     "when": "闭包/超限/恢复相同变更事件",
     "then": "边界可计算；超界不宣称无反证；事件重放不重复bump和派发",
@@ -958,14 +1053,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/V14/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "390732428f7e6548",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "E01",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_completion_spec_before_intent",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_completion_spec_before_intent"
+    ],
     "given": "生成并送达，尚无OperationId",
     "when": "批准Spec+Scope、准备Review+T0",
     "then": "不要求Mission先完成，无循环；缺Spec不推CONTENT_ONLY",
@@ -988,14 +1086,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/E01/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "be84001394b8a892",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "E02",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_profile_does_not_choose_milestone",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_profile_does_not_choose_milestone"
+    ],
     "given": "要求delivered，profile仅received",
     "when": "T0/Review试图自动降级",
     "then": "明确能力不足；不改变批准准则、不把HTTP200记delivered",
@@ -1018,14 +1119,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/E02/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "be84001394b8a892",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "E03",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_exact_outcome_chain",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_exact_outcome_chain"
+    ],
     "given": "真实服务回执与一个effect slot",
     "when": "受信T3准备official OPERATION_OUTCOME再接受",
     "then": "原effect Acceptance+Contribution+必要Delivery原子，root仍需组合",
@@ -1048,14 +1152,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/E03/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "be84001394b8a892",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "E04",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_outcome_identity_variants",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_outcome_identity_variants"
+    ],
     "given": "合法T3输入全链",
     "when": "变更op/occurrence/action version/link/effect/namespace/target/三hash之一",
     "then": "均不能效果完成；真实执行事实照存；非空operation_id不充分",
@@ -1078,14 +1185,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/E04/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "be84001394b8a892",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "E05",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_multiple_effects_single_receipt",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_multiple_effects_single_receipt"
+    ],
     "given": "两个MUST effect slots",
     "when": "同一action/OutcomeBinding克隆给第二slot",
     "then": "拒绝重复/歧义；两项各有合法链才完成；UNKNOWN/待审批单独可见",
@@ -1108,14 +1218,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/E05/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "be84001394b8a892",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "E06",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_late_fact_new_requirement",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_late_fact_new_requirement"
+    ],
     "given": "原动作已发生，用户要求或输入变化",
     "when": "旧回执晚到并重新使用；另试图重发",
     "then": "保存原事实/费用；旧接受不满足新要求；可新scope审原事实，禁止重发凑证据",
@@ -1138,14 +1251,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/E06/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "be84001394b8a892",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "E07",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_delivery_writer_bypass",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_delivery_writer_bypass"
+    ],
     "given": "准备Acceptance和裸SENT DeliveryReceipt",
     "when": "绕过T3调用原Delivery/最终引用writer",
     "then": "新lane必须完整来源链；PERSISTED/ENQUEUED通知不冒充动作效果",
@@ -1168,14 +1284,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/E07/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "be84001394b8a892",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "E08",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_content_legacy_compatibility",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_content_legacy_compatibility"
+    ],
     "given": "纯报告新lane、legacy两类Mission",
     "when": "相同任务跑旧/new；Worker附额外actions文件",
     "then": "新CONTENT_ONLY正常完成但不加效果或启动action；legacy bytes/事件/ID不变",
@@ -1198,14 +1317,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/E08/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "be84001394b8a892",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "C01",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_acceptance_atomic_faults",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_acceptance_atomic_faults"
+    ],
     "given": "实际Store和准备/effect接受链",
     "when": "在Acceptance/Contribution/cert/event/receipt/notification切点异常及进程退出",
     "then": "未commit整组回滚；commit后重送同receipt，不重复通知/扣费",
@@ -1228,14 +1350,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/C01/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "4204447f4d2d8b5c",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "C02",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_two_connection_concurrency",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_two_connection_concurrency"
+    ],
     "given": "两个真实SQLite connection",
     "when": "同command/不同body、两review、撤权vs接受、proof发布竞态",
     "then": "唯一采用、异体冲突、最新源guard、无lost update，无新副作用",
@@ -1258,14 +1383,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/C02/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "4204447f4d2d8b5c",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "C03",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_review_cold_resume",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_review_cold_resume"
+    ],
     "given": "真实review intent已commit结果尚未导入",
     "when": "进程强退/重启/过期协调lease",
     "then": "原intent/raw/request/费用恢复；不能凭lease过期新发模型或重新编码",
@@ -1288,14 +1416,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/C03/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "4204447f4d2d8b5c",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "C04",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_event_cursor_atomicity",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_event_cursor_atomicity"
+    ],
     "given": "一个变更事件触发review/validity/closeout",
     "when": "处理后ACK前退出、两个consumer竞争、cursor丢失",
     "then": "同源命令幂等；缺cursor显式重建；不先ACK内存工作，无无限自触发",
@@ -1318,14 +1449,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/C04/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "4204447f4d2d8b5c",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "C05",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_closeout_and_notification",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_closeout_and_notification"
+    ],
     "given": "root已接受但有弃分支危险在途、UNKNOWN",
     "when": "request_closeout、晚回执、权限在通知前撤回",
     "then": "保留未决责任；正确收敛后事务结束；不推过期正文，通知队列不等于送达；只能READY→FINALIZED；不能从NOT_READY直接跳成功",
@@ -1348,14 +1482,17 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/C05/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "4204447f4d2d8b5c",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "C06",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_real_migration_and_legacy",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_real_migration_and_legacy"
+    ],
     "given": "真实完整SDK schema+非空legacy fixture",
     "when": "新建/升级/reopen/trigger/错checksum/FK/失败rollback/杀进程",
     "then": "旧DDL hash/数据/预算/Event保持；不以参考parent schema结果充数",
@@ -1378,14 +1515,18 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/C06/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "4204447f4d2d8b5c",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   },
   {
     "id": "C07",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_host_snapshot_history",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c07_host_api.py::test_snapshot_review_use_check_contracts_and_errors",
+      "tests/orchestrator/full_target/assurance_exec/test_c07_host_api.py::test_contract_checker_rejects_drift"
+    ],
     "given": "实际认证Host route与UI",
     "when": "重连、错误字段、历史/当前revision、跨租户、查询失败",
     "then": "同快照水位、权限隔离、旧画面标stale；不由UI自行宣布完成；另有原生实际点击/截图/断线与冷恢复记录，接口pytest不能代替。",
@@ -1413,14 +1554,18 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/C07/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "d043d8fd4fe8379c",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/sdk-avce-occ-groups.junit.xml (+ host-assurance/sdk-c07-host-api.txt)",
+    "nodeid_note": "target_nodeid 写的是 test_c_assurance.py::test_host_snapshot_history；实际实现落在 test_c07_host_api.py 两个用例（第九段已交付）。"
   },
   {
     "id": "C08",
     "target_nodeid": "tests/orchestrator/full_target/assurance_exec/test_c_integration.py::test_late_accounting_is_separate",
-    "actual_nodeids": [],
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_integration.py::test_late_accounting_is_separate"
+    ],
     "given": "原调用费用已在真实本地execution ledger记录，回流结论随后被拒绝或Mission进入终态",
     "when": "离线驱动重复/迟到usage import，强退后重放",
     "then": "原责任正确计费一次；未知费用保留hold；不复活任务/权限；本例不包含真实模型12局",
@@ -1443,8 +1588,9 @@
     ],
     "phase": "AS-VERIFY_AFTER_BODY_WIRED",
     "evidence_relative": "assurance/C08/",
-    "execution_status": "PENDING_SDK_EXECUTION",
+    "execution_status": "EXECUTED_PASS_2026-09-23",
     "assertion_review": "NOT_REVIEWED",
-    "source_fingerprint": null
+    "source_fingerprint": "da43a274ceee8a00",
+    "evidence_index": ".local-test-evidence/2026-09-23/assurance-1.1-verify/ (sdk-avce-occ-groups / sdk-vc-groups junit)"
   }
 ]

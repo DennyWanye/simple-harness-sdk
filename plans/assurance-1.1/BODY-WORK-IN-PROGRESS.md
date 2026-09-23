@@ -1174,3 +1174,46 @@ e06f712437b7  backend/tests/orchestration/test_assurance_host_api.py（新）
 
 下一段：第 10 项合成一次完整验收（§14 顺序：SDK 确定性场景 + 继承 MUST → SQL 迁移/并发/kill → 变异 → stateful → legacy/全量 H1 →
 隔离原生 Host 点击 → 真实模型 12 局 ×3（日卡）→ 独立审阅 → 默认 ON + 出厂回归 → 文档）。
+
+## 第十段（一）（二）：第 10 项集中验收——SDK 确定性 48 组 + OCC 12 + 继承 66 映射（2026-09-23）
+
+**本段做了什么（代码存在 + 本机实际执行）**
+- 第十段（一）（提交 `7befa6b9`）：V 组 14 例（`test_v_assurance.py`，含 V13 root-gate 接缝子进程、V14 有界重启两半）+ C 组 C01–C06（`test_c_assurance.py`：
+  真实 Store/Commit 上的接受原子切点、双连接并发/CAS 冲突、评审冷恢复接缝、事件游标原子性、closeout+通知、真实迁移/触发器/外键/校验和/SIGKILL 子进程）。
+- 第十段（二）（本提交）：A 组 18 例（`test_a_assurance.py`：严格 codec 边界、公式真值表与强制准则、需求修订权威、检查回执作用域 +
+  executor 接缝、ANY 分支、评审派发原子、评审者独立性（伪造评审者=作者时官方导入拒绝且无正式记录）、来源绑定与重放、轮次身份、证据曝光接缝、
+  作用域钉版（需求变更后接受写入口拒绝 `OP_EFFECT_SCOPE_STALE`、Attempt 终态后主题停止）、格式修复预算接缝、准备≠完成、DATA/ORDER、
+  组合主题、待决效果不重开 Worker、根要求效果目录、最终提交守卫 `USE_CERTIFICATE_REQUIRED/IDENTITY`）；
+  E 组 8 例（`test_e_assurance.py`，共享真实操作世界 `_operation_world.py`：Spec 批准→冻结 MIXED 作用域→生产内容接受→T0 提交→官方 ACTION_PROPOSAL
+  评审→T1 物化与人工批准→生产调度器 + 真实 `ActionExecutor`/`FilePublishConnector`→T3 准备/官方 OPERATION_OUTCOME 评审/`accept_operation_outcome`）：
+  Spec 先于 intent 且无循环、profile 不选里程碑（要求 DELIVERED 时 T0 明确 `OP_CAPABILITY_UNSUPPORTED`）、精确结果链一步原子、
+  19 个身份轴逐一篡改均拒绝且原事实照存、两效果不合并（A 的绑定克隆到 B 拒绝/回放无效，B 自己走完整链）、迟到事实与新要求
+  （旧链不满足新要求、不重发、新 Spec 是新批准而非改写）、Delivery 直写旁路（裸 SENT/PERSISTED/ENQUEUED 回执不构成效果、T3 writer 无链拒绝）、
+  纯内容新 lane 与 legacy 兼容（CONTENT_ONLY 完成不发明动作、对 CONTENT_ONLY 提交操作意图拒绝、legacy Mission 零新增表行零事件变化）；
+  C08 `test_c_integration.py`（迟到/重复计费独立：重复导入 0 行、未知费用 hold 保留、`import_late_accounting` 不复活工作、Mission 取消后同样、
+  后到已知价格只落一次、第二连接读到同一事实）；OCC-01…OCC-12 十二个目标 nodeid 追加到 `operation_completion/test_completion_contract.py`
+  （OCC-06 用"服务已应用但回复丢失"→ UNKNOWN → 对账从连接器账本读回真实结果，不重发；OCC-08 伪造根解决命令在写事务内被拒且预留不变；
+  OCC-09 三个 T3 写点切断均整体回滚、连接器只调用一次；OCC-12 超时未应用保持 UNKNOWN 且对账无证据不清 UNKNOWN、迟到应用由账本对账入账）。
+- 共 113 passed（A 18 + V 15 + C 6 + C08 1 + E 8 + C07 2 + OCC 12 + 既有 occ02 51）；证据 `.local-test-evidence/2026-09-23/assurance-1.1-verify/`
+  （`sdk-avce-occ-groups.{txt,junit.xml}`、`sdk-a-group.*`、`sdk-e-group.*`、`sdk-vc-groups.*`）。
+- 三份覆盖清单已回写：`sdk-cases.json` 48/48 `EXECUTED_PASS_2026-09-23`（C07 实际落在 `test_c07_host_api.py` 两例，已注明）；
+  `occ-coverage.json` 12/12（OCC-02 另挂既有 8 个 occ02 用例）；`inherited-coverage.json` 48/66 经映射用例执行、18 个 X 组
+  （既有 D3 操作/回执语义）**未重映射**，注明候选套件，归 legacy/全量回归阶段整体执行；`coverage_review` 一律未改（逐断言核验待独立审阅）。
+
+**明确没有证明 / 边界**
+- E06/OCC-05 的"可新 scope 审原事实"只做到新 Spec 批准落库且旧冻结作用域不采纳；新计划修订下的重审未驱动。
+- E07/OCC-08 的"最终引用 writer"用伪造 `CommitGoalResolutionCommand` 证明拒绝在写事务内、状态/预留不变；未构造合法根评审链。
+- 评审全部是脚本化 service intent / 脚本化模型回复；真实模型 12 局、原生 Host 点击、变异、stateful、legacy/全量 H1 都还没跑。
+- SDK venv 缺 `jsonschema`（接缝脚本 executor-check/critic-format-repair 需要），本段已装进 `.venv`（未改 pyproject 依赖声明）。
+- Ruff：新测试文件与既有 V/C 文件同样只剩 E501（100 列），未改。
+
+**改动文件 sha256（前 12 位）**
+```
+f79815f26a30  tests/…/assurance_exec/test_a_assurance.py（新）   be84001394b8  test_e_assurance.py（新）
+da43a274ceee  test_c_integration.py（新）                        6e86774cceb4  _operation_world.py（新）
+0ea04c236a23  tests/…/operation_completion/test_completion_contract.py
+690c1a270631  plans/assurance-1.1/sdk-cases.json   1edbd9b8beda  occ-coverage.json   7fd6a29b8150  inherited-coverage.json
+```
+
+下一段：§14 顺序继续——变异（16+ 定点）→ stateful → legacy/全量 H1（含 Host `tests/orchestration` 26 个既有失败的处置）→
+隔离原生 Host 点击 → 真实模型 12 局（日卡）→ 独立 opus 审阅 → 默认 ON + 出厂回归 → 文档。

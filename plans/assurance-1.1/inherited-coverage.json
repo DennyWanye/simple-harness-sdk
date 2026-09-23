@@ -28,7 +28,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -40,8 +40,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a01",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_formula_truth_tables",
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_strict_boundary"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A02",
@@ -72,7 +76,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -84,8 +88,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a02",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_formula_truth_tables",
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_strict_boundary"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A03",
@@ -116,7 +124,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -130,8 +138,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a03",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_any_branch_not_mandatory"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A04",
@@ -162,7 +173,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -174,8 +185,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a04",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_any_branch_not_mandatory"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A05",
@@ -206,7 +220,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -220,8 +234,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a05",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_direct_final_commit_guard",
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_formula_truth_tables"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A06",
@@ -251,7 +269,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -263,8 +281,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a06",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_check_receipt_scope"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A07",
@@ -294,7 +315,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -306,8 +327,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a07",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_reviewer_independence"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A08",
@@ -337,7 +361,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -349,8 +373,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a08",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_scope_pinned_not_latest"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A09",
@@ -381,7 +408,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -393,8 +420,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a09",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_requirement_authority",
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_scope_pinned_not_latest"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A10",
@@ -425,7 +456,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -437,8 +468,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a10",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_scope_pinned_not_latest",
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_two_connection_concurrency"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A11",
@@ -469,7 +504,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -481,8 +516,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a11",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_review_source_binding",
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_strict_boundary"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A12",
@@ -512,7 +551,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -524,8 +563,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a12",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_composition_not_all_children"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A13",
@@ -556,7 +598,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -568,8 +610,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a13",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_preparation_does_not_complete",
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_root_requirement_effect_catalogue"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A14",
@@ -599,7 +645,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -611,8 +657,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a14",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_acceptance_atomic_faults"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A15",
@@ -642,7 +691,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -654,8 +703,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a15",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_two_connection_concurrency"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A16",
@@ -686,7 +738,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -698,8 +750,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a16",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_check_budget_and_format_bounds"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A17",
@@ -729,7 +784,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -741,8 +796,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a17",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_closeout_and_notification"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A18",
@@ -773,7 +831,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -785,8 +843,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a18",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_acceptance_atomic_faults",
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_closeout_and_notification"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A19",
@@ -816,7 +878,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -830,8 +892,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a19",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_restore_quarantine_and_current_reauthorization"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-A20",
@@ -861,7 +926,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -873,8 +938,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_acceptance.py::test_a20",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_strict_boundary"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K01",
@@ -903,7 +971,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -917,8 +985,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k01",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_anchors_and_explicit_negation"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K02",
@@ -948,7 +1019,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -962,8 +1033,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k02",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_anchors_and_explicit_negation",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_insert_counterevidence_barrier"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K03",
@@ -993,7 +1068,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -1007,8 +1082,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k03",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_conflicted_paths"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K04",
@@ -1038,7 +1116,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -1052,8 +1130,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k04",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_alternate_support",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_anchors_and_explicit_negation"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K05",
@@ -1083,7 +1165,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1097,8 +1179,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k05",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_alternate_support"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K06",
@@ -1128,7 +1213,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1142,8 +1227,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k06",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_independent_provenance_roots"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K07",
@@ -1172,7 +1260,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1186,8 +1274,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k07",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_cycle_without_anchor"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K08",
@@ -1217,7 +1308,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1231,8 +1322,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k08",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_cycle_without_anchor"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K09",
@@ -1262,7 +1356,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -1275,8 +1369,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k09",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_conflicted_paths"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K10",
@@ -1306,7 +1403,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -1319,8 +1416,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k10",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_rule_admission_required"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K11",
@@ -1350,7 +1450,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1364,8 +1464,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k11",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_insert_counterevidence_barrier"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K12",
@@ -1396,7 +1499,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -1410,8 +1513,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k12",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_insert_counterevidence_barrier",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_invalidation_racing_cache"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K13",
@@ -1441,7 +1548,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1455,8 +1562,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k13",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_authority_and_expiry"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K14",
@@ -1487,7 +1597,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -1500,8 +1610,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k14",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_authority_and_expiry",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_read_certificate_context"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K15",
@@ -1532,7 +1646,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1546,8 +1660,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k15",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_all_consumers_share_validity",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_authority_and_expiry"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K16",
@@ -1577,7 +1695,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1591,8 +1709,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k16",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_anchors_and_explicit_negation"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K17",
@@ -1622,7 +1743,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -1635,8 +1756,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k17",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_read_certificate_context"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-K18",
@@ -1667,7 +1791,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -1681,8 +1805,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_validity.py::test_k18",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_bounded_restartable_evaluation",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_complete_collection_not_topk"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-X01",
@@ -1710,7 +1838,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -1725,7 +1853,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x01",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X02",
@@ -1753,7 +1893,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -1768,7 +1908,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x02",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X03",
@@ -1796,7 +1948,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -1811,7 +1963,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x03",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X04",
@@ -1839,7 +2003,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -1853,7 +2017,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x04",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X05",
@@ -1880,7 +2056,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -1895,7 +2071,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x05",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X06",
@@ -1922,7 +2110,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -1936,7 +2124,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x06",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X07",
@@ -1965,7 +2165,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -1980,7 +2180,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x07",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X08",
@@ -2007,7 +2219,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -2022,7 +2234,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x08",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X09",
@@ -2050,7 +2274,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -2065,7 +2289,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x09",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X10",
@@ -2093,7 +2329,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -2108,7 +2344,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x10",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X11",
@@ -2136,7 +2384,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2150,7 +2398,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x11",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X12",
@@ -2177,7 +2437,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -2192,7 +2452,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x12",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X13",
@@ -2221,7 +2493,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -2236,7 +2508,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x13",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X14",
@@ -2263,7 +2547,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2277,7 +2561,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x14",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X15",
@@ -2305,7 +2601,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2319,7 +2615,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x15",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X16",
@@ -2348,7 +2656,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -2363,7 +2671,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x16",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X17",
@@ -2392,7 +2712,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2406,7 +2726,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x17",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-X18",
@@ -2434,7 +2766,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "NOT_REMAPPED_ORIGINAL_D3_OPERATION_SEMANTICS_2026-09-23",
     "rule": "本专项消费原Operation恢复证据，不重写CA-X生产链；原验收仍必须由OPS执行，不删除、不用Assurance测试替代。",
     "trigger_entry": "原call/turn receipt导入→_collect_root_review/profile collector→原usage importer；针对过期claim的late result",
     "production_paths": [
@@ -2449,7 +2781,19 @@
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_operations.py::test_x18",
     "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "原 core_assurance nodeid 不存在于本仓，Assurance 1.1 计划也未给 X 组分配新用例 id。这些是既有 D3 操作/回执语义，由既有套件承接（候选文件见 candidate_suites），在 legacy/全量回归阶段整体执行；本段不伪造逐条映射。",
+    "candidate_suites": [
+      "tests/integration/execution/test_effect_reconcile.py",
+      "tests/integration/runtime/test_handoff_runtime_lease.py",
+      "tests/integration/runtime/test_run_operation_audit.py",
+      "tests/orchestrator/full_target/test_after_handoff_unknown_bounded.py",
+      "tests/orchestrator/full_target/test_terminal_unknown_release.py",
+      "tests/orchestrator/full_target/test_provider_grant_rehandoff.py",
+      "tests/orchestrator/full_target/test_h1h_action_handoff.py",
+      "tests/orchestrator/full_target/test_h1h_operation_current_gates.py",
+      "tests/orchestrator/full_target/operation_completion/test_scoped_reconciliation.py"
+    ]
   },
   {
     "original_id": "CA-I01",
@@ -2482,7 +2826,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -2496,8 +2840,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i01",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_closeout_and_notification",
+      "tests/orchestrator/full_target/assurance_exec/test_e_assurance.py::test_exact_outcome_chain"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-I02",
@@ -2527,7 +2875,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2539,8 +2887,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i02",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_composition_not_all_children"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-I03",
@@ -2570,7 +2921,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2582,8 +2933,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i03",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_two_connection_concurrency"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-I04",
@@ -2615,7 +2969,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2627,8 +2981,13 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i04",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_extra_evidence_exposure",
+      "tests/orchestrator/full_target/assurance_exec/test_a_assurance.py::test_review_source_binding",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_all_consumers_share_validity"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-I05",
@@ -2658,7 +3017,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original Operation intent/handoff/receipt/outcome entry + Assurance closeout recheck, matching original When",
     "production_paths": [
@@ -2672,8 +3031,13 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i05",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c07_host_api.py::test_snapshot_review_use_check_contracts_and_errors",
+      "tests/orchestrator/full_target/assurance_exec/test_c07_host_api.py::test_contract_checker_rejects_drift",
+      "tauri-app/src/views/MissionAssurance.test.tsx (9 个 vitest 用例，第九段证据 frontend-vitest-typecheck-eslint.txt)"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "C07 两用例（SDK 固定 caller 三读 verb）+ 前端 MissionAssurance 9 个 vitest（stale/坏 DTO 保留画面、不显示完成）。逐断言核验待独立审阅。"
   },
   {
     "original_id": "CA-I06",
@@ -2704,7 +3068,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2716,8 +3080,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i06",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_real_migration_and_legacy"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-I07",
@@ -2748,7 +3115,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2760,8 +3127,12 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i07",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_event_cursor_atomicity",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_invalidation_racing_cache"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-I08",
@@ -2794,7 +3165,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2806,8 +3177,13 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i08",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_real_migration_and_legacy",
+      "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py::test_review_cold_resume",
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_restore_quarantine_and_current_reauthorization"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-I09",
@@ -2836,7 +3212,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "Store.put_source / HtnStore.insert_observation / insert_justification_set or exact lifecycle writer identified by original When",
     "production_paths": [
@@ -2850,8 +3226,11 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i09",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py::test_restore_quarantine_and_current_reauthorization"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   },
   {
     "original_id": "CA-I10",
@@ -2881,7 +3260,7 @@
       ]
     },
     "coverage_review": "ASSERTIONS_SPECIFIED_RUNTIME_REVIEW_PENDING",
-    "execution": "PENDING_SDK_EXECUTION",
+    "execution": "EXECUTED_VIA_MAPPED_ASSURANCE_CASES_2026-09-23",
     "rule": "原given/when/then全部保留。映射不是等价/PASS；执行者可复用原nodeid但须逐断言核验。",
     "trigger_entry": "original scoped builder / official collector / ResolutionCommits or final judge, matching original When",
     "production_paths": [
@@ -2893,7 +3272,10 @@
       "保存该测试产生的原状态/事件/回执/费用行身份与前后差异；涉及拒绝必须无新增非法接受/调用。"
     ],
     "target_nodeid": "tests/orchestrator/core_assurance/test_integration.py::test_i10",
-    "actual_nodeids": [],
-    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED"
+    "actual_nodeids": [
+      "tests/orchestrator/full_target/assurance_exec/test_c_integration.py::test_late_accounting_is_separate"
+    ],
+    "acceptance_gate": "AS_VERIFY_INHERITED_AFTER_BODY_WIRED",
+    "execution_note": "映射的 Assurance 用例已在 SDK 实际执行并通过；原 core_assurance nodeid 不存在于本仓。逐断言核验仍待独立审阅（coverage_review 未改）。"
   }
 ]
