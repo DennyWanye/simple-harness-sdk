@@ -379,6 +379,11 @@ def record_disclosure_batch(
     message_ids: tuple[str, ...],
 ) -> None:
     """Append one batch bound to this exact turn/input; same-body replay adds nothing."""
+    # DisclosureBatch keeps visible_message_ids as a sorted set; the delivery
+    # event must carry the same canonical order or the store's event/batch
+    # binding refuses it (Host real model run 14, 2026-09-23: two tool-result
+    # messages in request order ≠ lexical order → DISCLOSURE_INPUT_BINDING).
+    message_ids = tuple(sorted(message_ids))
     with atomic(commit.store):
         side = AssuranceStore(commit.store)
         chain = side.disclosure_chain(reader.mission_id, review_key)
