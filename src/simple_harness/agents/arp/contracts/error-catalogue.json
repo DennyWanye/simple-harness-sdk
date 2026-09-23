@@ -1,0 +1,1235 @@
+{
+  "PROFILE_SOURCE_MISSING": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "PROFILE_SOURCE_MISSING",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "JOURNAL_SOURCE_UNAVAILABLE": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "JOURNAL_SOURCE_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SOURCE_UNAVAILABLE": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SOURCE_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RUNTIME_CREATION_MARKER_MISSING": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RUNTIME_CREATION_MARKER_MISSING",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RUNTIME_BINDING_CORRUPT": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RUNTIME_BINDING_CORRUPT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "TOKEN_COUNT_UNAVAILABLE": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "TOKEN_COUNT_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "PRIOR_RESERVE_UNAVAILABLE": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "PRIOR_RESERVE_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "EMBEDDING_RESOURCE_MISSING": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "EMBEDDING_RESOURCE_MISSING",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RUNNER_UNAVAILABLE": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RUNNER_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "FTS_UNAVAILABLE": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "FTS_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RESTORE_AUTHORITY_REQUIRED": {
+    "stage": "SOURCE",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RESTORE_AUTHORITY_REQUIRED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REF_KIND_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REF_KIND_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REF_IDENTITY_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REF_IDENTITY_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "DUPLICATE_JSON_KEY": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "DUPLICATE_JSON_KEY",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "UNKNOWN_FIELD": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "UNKNOWN_FIELD",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INVALID_JSON": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INVALID_JSON",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "TYPE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "TYPE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "ENUM": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "ENUM",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "UNION_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "UNION_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "MISSING_FIELD": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "MISSING_FIELD",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INVALID_BUDGET": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INVALID_BUDGET",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INVALID_OUTPUT_RESERVE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INVALID_OUTPUT_RESERVE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "BAD_GROUP_SIZE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "BAD_GROUP_SIZE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "GROUP_HASH_CONFLICT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "GROUP_HASH_CONFLICT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "DEPENDENCY_CYCLE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "DEPENDENCY_CYCLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "DEPENDENCY_DIAMOND_CONFLICT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "DEPENDENCY_DIAMOND_CONFLICT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_PATH_INVALID": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_PATH_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_FRONTMATTER_INVALID": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_FRONTMATTER_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_OUTPUT_INVALID": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_OUTPUT_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "STATE_COMBINATION_INVALID": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "STATE_COMBINATION_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "DOCUMENT_TOO_LARGE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "DOCUMENT_TOO_LARGE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "ITEM_TOO_LARGE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "ITEM_TOO_LARGE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "MEDIA_UNSUPPORTED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "MEDIA_UNSUPPORTED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "FORMAT_UNSUPPORTED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "FORMAT_UNSUPPORTED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "GENERIC_TOKEN_BOUND_UNCERTIFIED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "GENERIC_TOKEN_BOUND_UNCERTIFIED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "BAD_TOKEN_RECEIPT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "BAD_TOKEN_RECEIPT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INVALID_EMBEDDING": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INVALID_EMBEDDING",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "ZERO_EMBEDDING": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "ZERO_EMBEDDING",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "EMBEDDING_DIM_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "EMBEDDING_DIM_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REQUEST_BYTES_LIMIT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REQUEST_BYTES_LIMIT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REQUIRED_CONTEXT_TOO_LARGE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REQUIRED_CONTEXT_TOO_LARGE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CONTEXT_ASSEMBLY_LIMIT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CONTEXT_ASSEMBLY_LIMIT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "HISTORY_BYTE_RANGE_INVALID": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "HISTORY_BYTE_RANGE_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "EXPECTED_REVISION_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "EXPECTED_REVISION_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "ACCESS_DENIED": {
+    "stage": "AUTHORIZATION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 403,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "ACCESS_DENIED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SUBJECT_NOT_ACCESSIBLE": {
+    "stage": "AUTHORIZATION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 403,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SUBJECT_NOT_ACCESSIBLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REF_OUTSIDE_SCOPE": {
+    "stage": "AUTHORIZATION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 403,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REF_OUTSIDE_SCOPE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CURSOR_SCOPE_MISMATCH": {
+    "stage": "AUTHORIZATION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 403,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CURSOR_SCOPE_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CURSOR_STALE": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CURSOR_STALE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CURSOR_EXPIRED": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CURSOR_EXPIRED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CURSOR_UNKNOWN": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CURSOR_UNKNOWN",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "POLICY_CONFLICT": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "POLICY_CONFLICT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CATALOGUE_STALE": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CATALOGUE_STALE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REQUEST_SOURCE_STALE": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REQUEST_SOURCE_STALE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REQUEST_HASH_MISMATCH": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REQUEST_HASH_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REQUEST_UNSENT_TERMINATION_REQUIRED": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REQUEST_UNSENT_TERMINATION_REQUIRED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "UNKNOWN_REQUIRES_RECONCILIATION": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "UNKNOWN_REQUIRES_RECONCILIATION",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "DEPENDENCY_UNRESOLVED": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "DEPENDENCY_UNRESOLVED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_NOT_ADMITTED": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_NOT_ADMITTED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_TRIAL_REQUIRED": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_TRIAL_REQUIRED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "WORKFLOW_UNAVAILABLE": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "WORKFLOW_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SESSION_NOT_READABLE": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SESSION_NOT_READABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SESSION_DRAINING": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SESSION_DRAINING",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SESSION_PURGED": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SESSION_PURGED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "GENERATION_STALE": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "GENERATION_STALE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "JOB_STALE": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "JOB_STALE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "JOB_INVOCATION_UNKNOWN": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "JOB_INVOCATION_UNKNOWN",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RETENTION_BLOCKED": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RETENTION_BLOCKED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CAPABILITY_UNAVAILABLE": {
+    "stage": "ADMISSION",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CAPABILITY_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INDEX_DISK_PRESSURE": {
+    "stage": "RUNTIME",
+    "retry": "BOUNDED_SAME_ID",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INDEX_DISK_PRESSURE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INDEX_SCAN_LIMIT": {
+    "stage": "RUNTIME",
+    "retry": "BOUNDED_SAME_ID",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INDEX_SCAN_LIMIT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "EMBEDDING_TIMEOUT": {
+    "stage": "RUNTIME",
+    "retry": "BOUNDED_SAME_ID",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "EMBEDDING_TIMEOUT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "EMBEDDING_UNAVAILABLE": {
+    "stage": "RUNTIME",
+    "retry": "BOUNDED_SAME_ID",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "EMBEDDING_UNAVAILABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "FILE_BUSY": {
+    "stage": "RUNTIME",
+    "retry": "BOUNDED_SAME_ID",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "FILE_BUSY",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "LOCK_TIMEOUT": {
+    "stage": "RUNTIME",
+    "retry": "BOUNDED_SAME_ID",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "LOCK_TIMEOUT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "JOBS_BACKPRESSURE": {
+    "stage": "RUNTIME",
+    "retry": "BOUNDED_SAME_ID",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "JOBS_BACKPRESSURE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SQL_PRAGMA_UNSUPPORTED": {
+    "stage": "RUNTIME",
+    "retry": "BOUNDED_SAME_ID",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SQL_PRAGMA_UNSUPPORTED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "NATIVE_SOURCE_MAP_UNVERIFIED": {
+    "stage": "ENVIRONMENT",
+    "retry": "AFTER_RESOURCE_OR_AUTH",
+    "http_status": 503,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "NATIVE_SOURCE_MAP_UNVERIFIED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CONST": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CONST",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "ARRAY_LIMIT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "ARRAY_LIMIT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "DUPLICATE_ITEM": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "DUPLICATE_ITEM",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "STRING_LIMIT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "STRING_LIMIT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "STRING_PATTERN": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "STRING_PATTERN",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "NUMBER_LIMIT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "NUMBER_LIMIT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "NONFINITE_JSON": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "NONFINITE_JSON",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "JSON_TOO_DEEP": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "JSON_TOO_DEEP",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INVALID_MODEL_TOTAL": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INVALID_MODEL_TOTAL",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "NO_INPUT_BUDGET": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "NO_INPUT_BUDGET",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INVALID_FIXED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INVALID_FIXED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "BAD_REQUIRED_TAIL": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "BAD_REQUIRED_TAIL",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "DUPLICATE_GROUP": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "DUPLICATE_GROUP",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "DUPLICATE_RECALL": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "DUPLICATE_RECALL",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "BAD_RECALL": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "BAD_RECALL",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INTERNAL_CONTEXT_OVERFLOW": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INTERNAL_CONTEXT_OVERFLOW",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "FINAL_CONTEXT_OVERFLOW": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "FINAL_CONTEXT_OVERFLOW",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SESSION_IDENTITY_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SESSION_IDENTITY_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_PATH_NONCANONICAL": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_PATH_NONCANONICAL",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_PATH_RESERVED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_PATH_RESERVED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_PATH_COLLISION": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_PATH_COLLISION",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "AUTHORITY_SOURCE_MISSING": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "AUTHORITY_SOURCE_MISSING",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "TOOL_NOT_EXPOSED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "TOOL_NOT_EXPOSED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "EFFECT_CLASS_UNKNOWN": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "EFFECT_CLASS_UNKNOWN",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RETENTION_PROOF_INCOMPLETE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RETENTION_PROOF_INCOMPLETE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SQL_INCOMPLETE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SQL_INCOMPLETE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SOURCE_HASH_CONFLICT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SOURCE_HASH_CONFLICT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "TOKEN_SERIALIZER_CHANGED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "TOKEN_SERIALIZER_CHANGED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "MODEL_CONTEXT_UNSUPPORTED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "MODEL_CONTEXT_UNSUPPORTED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RETRIEVAL_NOT_REQUESTED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RETRIEVAL_NOT_REQUESTED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SETTINGS_EFFECTIVE_REF_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SETTINGS_EFFECTIVE_REF_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CREATION_IDENTITY_CONFLICT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CREATION_IDENTITY_CONFLICT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "INDEX_SOURCE_IMMUTABLE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "INDEX_SOURCE_IMMUTABLE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_EVALUATION_INCOMPLETE": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_EVALUATION_INCOMPLETE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SKILL_MANIFEST_CONFLICT": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SKILL_MANIFEST_CONFLICT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CURSOR_REQUEST_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CURSOR_REQUEST_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "REQUEST_PHASE_UNMAPPED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "REQUEST_PHASE_UNMAPPED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "UNSUPPORTED_HOST_VERB": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "UNSUPPORTED_HOST_VERB",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "HOST_PAYLOAD_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "HOST_PAYLOAD_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CATALOGUE_KIND_MISMATCH": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CATALOGUE_KIND_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SOURCE_MAP_PENDING": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SOURCE_MAP_PENDING",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "AUTHORIZATION_REQUIRED": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "AUTHORIZATION_REQUIRED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "STRUCTURE_INVALID": {
+    "stage": "CONTRACT",
+    "retry": "NEVER",
+    "http_status": 422,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "STRUCTURE_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "PURGE_STATE_INVALID": {
+    "stage": "DISPOSAL",
+    "retry": "AFTER_EXACT_INSPECTION",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "PURGE_STATE_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "PURGE_IDENTITY_MISMATCH": {
+    "stage": "DISPOSAL",
+    "retry": "MANUAL_SAME_DESTROY",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "PURGE_IDENTITY_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RETRIEVAL_STATE_INVALID": {
+    "stage": "CONTRACT",
+    "retry": "FIX_PRODUCER",
+    "http_status": 500,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RETRIEVAL_STATE_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RECALL_BINDING_INVALID": {
+    "stage": "PREPARE",
+    "retry": "FIX_BINDING",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RECALL_BINDING_INVALID",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RECALL_AGGREGATE_MISMATCH": {
+    "stage": "RETRIEVAL",
+    "retry": "FIX_SOURCE_CHAIN",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RECALL_AGGREGATE_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RECALL_AGGREGATE_LIMIT": {
+    "stage": "RETRIEVAL",
+    "retry": "NEXT_LEGITIMATE_REQUEST",
+    "http_status": 413,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RECALL_AGGREGATE_LIMIT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RECALL_QUERY_LIMIT": {
+    "stage": "PREPARE",
+    "retry": "FIX_QUERY_RECIPE",
+    "http_status": 413,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RECALL_QUERY_LIMIT",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RECALL_SOURCE_STALE": {
+    "stage": "PREPARE",
+    "retry": "ORIGINAL_UNSENT_PROTOCOL",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RECALL_SOURCE_STALE",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "RECALL_PREPARE_BLOCKED": {
+    "stage": "PREPARE",
+    "retry": "AFTER_ORIGINAL_SOURCE_RESOLVED",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "RECALL_PREPARE_BLOCKED",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "PURGE_DUAL_DIRECTORY": {
+    "stage": "DISPOSAL",
+    "retry": "MANUAL_SAME_DESTROY",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "RETAIN_ORIGINAL_UNRESOLVED_FACTS",
+    "public_message": "PURGE_DUAL_DIRECTORY",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "PURGE_MARKER_MISMATCH": {
+    "stage": "DISPOSAL",
+    "retry": "MANUAL_SAME_DESTROY",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "RETAIN_ORIGINAL_UNRESOLVED_FACTS",
+    "public_message": "PURGE_MARKER_MISMATCH",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "PURGE_DELETE_STATE_AMBIGUOUS": {
+    "stage": "DISPOSAL",
+    "retry": "MANUAL_SAME_DESTROY",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "RETAIN_ORIGINAL_UNRESOLVED_FACTS",
+    "public_message": "PURGE_DELETE_STATE_AMBIGUOUS",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "PURGE_FILE_BUSY": {
+    "stage": "DISPOSAL",
+    "retry": "SAME_DESTROY_BACKOFF",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "RETAIN_ORIGINAL_UNRESOLVED_FACTS",
+    "public_message": "PURGE_FILE_BUSY",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "PURGE_IO_ERROR": {
+    "stage": "DISPOSAL",
+    "retry": "MANUAL_SAME_DESTROY",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "RETAIN_ORIGINAL_UNRESOLVED_FACTS",
+    "public_message": "PURGE_IO_ERROR",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "CLOCK_ROLLBACK": {
+    "stage": "SOURCE",
+    "retry": "AFTER_ORIGINAL_SOURCE_RESOLVED",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "CLOCK_ROLLBACK",
+    "ws_type": "RUNTIME_ERROR"
+  },
+  "SESSION_NOT_ACTIVE": {
+    "stage": "SOURCE",
+    "retry": "AFTER_ORIGINAL_SOURCE_RESOLVED",
+    "http_status": 409,
+    "new_identity_allowed": false,
+    "budget": "SETTLE_ACTUAL_INCURRED_ONLY",
+    "public_message": "SESSION_NOT_ACTIVE",
+    "ws_type": "RUNTIME_ERROR"
+  }
+}

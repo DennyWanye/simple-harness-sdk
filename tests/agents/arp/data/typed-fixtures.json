@@ -1,0 +1,2801 @@
+{
+  "scope": "SYNTHETIC_CONTRACT_FIXTURES_NOT_REAL_AUTHORITY",
+  "fixtures": {
+    "Pin": {
+      "kind": "agent",
+      "id": "fixture-id",
+      "revision": 1,
+      "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+    },
+    "Json": {},
+    "Policy": {
+      "schema_version": 1,
+      "policy_id": "fixture-policy-id",
+      "max_context_tokens": 524288,
+      "output_reserve_tokens": 16384,
+      "safety_reserve_tokens": 2048,
+      "tool_headroom_tokens": 8192,
+      "recent_min_tokens": 65536,
+      "recall_max_tokens": 65536,
+      "fixed_soft_max_tokens": 131072,
+      "section_soft_caps": {
+        "A": 16384,
+        "B": 32768,
+        "C": 32768,
+        "D": 32768,
+        "E": 16384
+      },
+      "max_candidates": 128,
+      "max_recall_items": 32,
+      "max_group_count": 8192,
+      "max_manifest_bytes": 8388608,
+      "max_request_bytes": 16777216,
+      "embedding_chunk_tokens": 384,
+      "embedding_overlap_tokens": 32,
+      "max_session_disk_bytes": 2147483648,
+      "max_retrieval_ms": 200,
+      "index_mode": "ON_CLOSED_GROUP",
+      "embedding_required_for_activation": true,
+      "max_scan_rows_per_page": 256,
+      "query_cursor_ttl_ms": 300000,
+      "max_query_candidates": 128,
+      "max_query_total_ms": 30000,
+      "max_search_cursors": 16
+    },
+    "RuntimeProfile": {
+      "schema_version": 1,
+      "profile_id": "fixture-profile-id",
+      "profile_revision": 1,
+      "context_policy": {
+        "schema_version": 1,
+        "policy_id": "fixture-policy-id",
+        "max_context_tokens": 524288,
+        "output_reserve_tokens": 16384,
+        "safety_reserve_tokens": 2048,
+        "tool_headroom_tokens": 8192,
+        "recent_min_tokens": 65536,
+        "recall_max_tokens": 65536,
+        "fixed_soft_max_tokens": 131072,
+        "section_soft_caps": {
+          "A": 16384,
+          "B": 32768,
+          "C": 32768,
+          "D": 32768,
+          "E": 16384
+        },
+        "max_candidates": 128,
+        "max_recall_items": 32,
+        "max_group_count": 8192,
+        "max_manifest_bytes": 8388608,
+        "max_request_bytes": 16777216,
+        "embedding_chunk_tokens": 384,
+        "embedding_overlap_tokens": 32,
+        "max_session_disk_bytes": 2147483648,
+        "max_retrieval_ms": 200,
+        "index_mode": "ON_CLOSED_GROUP",
+        "embedding_required_for_activation": true,
+        "max_scan_rows_per_page": 256,
+        "query_cursor_ttl_ms": 300000,
+        "max_query_candidates": 128,
+        "max_query_total_ms": 30000,
+        "max_search_cursors": 16
+      },
+      "owner_mode": "MISSION",
+      "retention_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "capability_registry_ref": {
+        "kind": "catalogue",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "activation_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "default_skill_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "parallel_model_per_agent": 1,
+      "allow_lexical_degradation": true,
+      "protocol": "ARP_V1_1_1",
+      "embedding_deployment_ref": {
+        "kind": "deployment",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "catalogue_namespace_id": "fixture-catalogue-namespace-id"
+    },
+    "ModelLimits": {
+      "schema_version": 1,
+      "provider_ref": {
+        "kind": "provider",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "model_ref": "fixture-model-ref",
+      "input_limit_tokens": 524288,
+      "combined_limit_tokens": 524288,
+      "max_output_tokens": 16384,
+      "supports_tools": true,
+      "supports_images": false,
+      "counter_id": "fixture-counter-id",
+      "counter_revision": 1,
+      "count_mode": "EXACT",
+      "renderer_hash": "3ee7a08aee45d3788444802ee0af9bbc02523c3e08e11cb52c253779af76f1bf",
+      "capability_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "input_limit_scope": "WIRE_ONLY",
+      "requires_prior_output_reserve": true,
+      "tokenizer_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "serializer_hash": "334ce5d30283aeccefc83e07f14a1935b7eda6951572712e7000a9fa1173bce0",
+      "endpoint_protocol_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "supported_response_formats": [
+        "json_object"
+      ],
+      "supported_tool_schema_modes": [
+        "native-tools-v1"
+      ]
+    },
+    "Section": {
+      "section": "A",
+      "block_id": "fixture-block-id",
+      "source_refs": [],
+      "view_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "trust": "CONTROL",
+      "required": false,
+      "budget_charge": 1,
+      "validity_witness_ref": null
+    },
+    "JournalGroup": {
+      "session_id": "S1",
+      "group_id": "G1",
+      "seq_from": 1,
+      "seq_to": 1,
+      "source_hash": "5cb1936e761da0295827bbe9500adc536d865b4364b89f9edfb6b51f94ce210d",
+      "closed": true,
+      "record_ids": [
+        "jr1"
+      ],
+      "rendered_view_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "budget_charge": 100,
+      "turn_id": "T1",
+      "kind": "USER_ANCHOR",
+      "mandatory": true,
+      "closure_receipt_ref": {
+        "kind": "receipt",
+        "id": "closed",
+        "revision": 1,
+        "content_hash": "46af16ae7a2d4c570a4069d92092bc5c63a9c47416122b3b755035a4516d7ad3"
+      },
+      "call_ids": [],
+      "result_call_ids": [],
+      "indexable": true
+    },
+    "RecallItem": {
+      "chunk_id": "fixture-chunk-id",
+      "source_group_ids": [],
+      "source_record_refs": [],
+      "view_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "budget_charge": 1,
+      "rank_ordinal": 1,
+      "provenance": "USER_INPUT",
+      "source_epoch": 1
+    },
+    "RetrievalReceipt": {
+      "schema_version": 2,
+      "session_id": "S1",
+      "generation": 1,
+      "query_hash": "06feb02eefd6aa4a58d5500b27fb503d79e713757ff62481e3807e4c552730a7",
+      "journal_highwater": 1,
+      "index_snapshot_id": "fixture-index-snapshot-id",
+      "embedding_ref": null,
+      "searched_closed_groups": 0,
+      "indexed_closed_groups": 0,
+      "status": "COMPLETE_EMPTY",
+      "degradations": [],
+      "returned_count": 0,
+      "excluded_group_ids": [],
+      "elapsed_ms": 1,
+      "policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "index_generation": 1,
+      "index_upper_commit": 1,
+      "authority_readset_hash": "f3461b0d49e285f978bf1228dfe015060661edd9d688dee301352f0f1009b54f",
+      "coverage": {
+        "phase": "RESULTS",
+        "rank_scope": "FROZEN_INDEX_CHANNEL_TOPK",
+        "index_coverage": "COMPLETE",
+        "mode": "HYBRID",
+        "scanned_chunks": 0,
+        "snapshot_chunks": 0,
+        "expected_groups": 0,
+        "indexed_groups": 0,
+        "vector_ready_groups": 0,
+        "ranking_final": true,
+        "algorithm_id": "arp-rrf-snapshot-v1"
+      },
+      "source_snapshot_hash": "67a96ec40de752f468a83c27e0f36124a7fc1ddd3d193c87c7d6f61322dd8dd3",
+      "query_result_count": 0,
+      "page_offset": 0,
+      "has_more": false
+    },
+    "ContextManifest": {
+      "schema_version": 2,
+      "context_id": "fixture-context-id",
+      "session_id": "S1",
+      "agent_id": "A1",
+      "turn_id": "T1",
+      "provider_request_ordinal": 1,
+      "session_generation": 1,
+      "profile_ref": {
+        "kind": "profile",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "model_limits": {
+        "schema_version": 1,
+        "provider_ref": {
+          "kind": "provider",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "model_ref": "fixture-model-ref",
+        "input_limit_tokens": 524288,
+        "combined_limit_tokens": 524288,
+        "max_output_tokens": 16384,
+        "supports_tools": true,
+        "supports_images": false,
+        "counter_id": "fixture-counter-id",
+        "counter_revision": 1,
+        "count_mode": "EXACT",
+        "renderer_hash": "3ee7a08aee45d3788444802ee0af9bbc02523c3e08e11cb52c253779af76f1bf",
+        "capability_receipt_ref": {
+          "kind": "receipt",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "input_limit_scope": "WIRE_ONLY",
+        "requires_prior_output_reserve": true,
+        "tokenizer_ref": {
+          "kind": "artifact",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "serializer_hash": "334ce5d30283aeccefc83e07f14a1935b7eda6951572712e7000a9fa1173bce0",
+        "endpoint_protocol_ref": {
+          "kind": "policy",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "supported_response_formats": [
+          "json_object"
+        ],
+        "supported_tool_schema_modes": [
+          "native-tools-v1"
+        ]
+      },
+      "owner_contract_ref": {
+        "kind": "task",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "journal_highwater": 1,
+      "sections": [],
+      "recent_group_ids": [
+        "G1"
+      ],
+      "recent_complete_turn_count": 0,
+      "recalled_chunk_ids": [],
+      "retrieval_receipt_ref": {
+        "kind": "retrieval",
+        "id": "recall-1",
+        "revision": 1,
+        "content_hash": "8524476dce1433f6ec88637b065b951996f5e100c073389ad03bac4e221e5c67"
+      },
+      "tool_snapshot_ref": {
+        "kind": "tool_snapshot",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "skill_refs": [],
+      "planned_request_hash": "fd3d99bf54b675585263073a38fa0fb5b3b7881801d5a3bdc1e7205a7baadf19",
+      "input_token_charge": 12000,
+      "effective_input_budget": 495616,
+      "reserved_output_tokens": 16384,
+      "safety_reserve_tokens": 1,
+      "tool_headroom_tokens": 1,
+      "counter_mode": "EXACT",
+      "registry_epoch": 1,
+      "authority_refs": [],
+      "source_read_set_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "creation_root_id": "fixture-creation-root-id",
+      "effective_context_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "token_receipt": {
+        "schema_version": 1,
+        "meter_ref": {
+          "kind": "policy",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "request_hash": "fd3d99bf54b675585263073a38fa0fb5b3b7881801d5a3bdc1e7205a7baadf19",
+        "wire_input_tokens": 12000,
+        "prior_output_reserve_tokens": 2048,
+        "requested_output_tokens": 16384,
+        "billed_input_allowance_tokens": 14048,
+        "count_mode": "EXACT",
+        "input_limit_scope": "WIRE_ONLY",
+        "tokenizer_hash": "f755b93a87d4fc7ec59f747d09ba21adf62086cd28756a41bfc5e55033e83b17",
+        "renderer_hash": "3ee7a08aee45d3788444802ee0af9bbc02523c3e08e11cb52c253779af76f1bf",
+        "serializer_hash": "334ce5d30283aeccefc83e07f14a1935b7eda6951572712e7000a9fa1173bce0",
+        "prior_basis_ref": {
+          "kind": "receipt",
+          "id": "fixture-prior",
+          "revision": 1,
+          "content_hash": "4754964df3fcae1b441c0fe8c0448b49d1ca85935ffbcc33875b5e956bf8c950"
+        },
+        "proof_ref": {
+          "kind": "receipt",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "coverage": "TEXT_TOOLS_JSON",
+        "max_input_budget": 495616
+      },
+      "prior_output_reserve_tokens": 2048,
+      "adoption_revision": 1,
+      "index_generation_ref": null,
+      "N_count_complete": true,
+      "selected_turn_ids": [],
+      "group_snapshot_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "catalogue_witness_refs": []
+    },
+    "Capability": {
+      "schema_version": 1,
+      "capability_id": "fixture-capability-id",
+      "version": 1,
+      "input_schema_ref": {
+        "kind": "schema",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "output_schema_ref": {
+        "kind": "schema",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "description": "fixture-description",
+      "required_semantics": [],
+      "verification_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "provider_refs": []
+    },
+    "Deployment": {
+      "schema_version": 1,
+      "provider_ref": {
+        "kind": "provider",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "implementation_digest": "9dd37b0084fc6a6913cf95cb0dc95167297cdf20b1df367967bb1be188298144",
+      "endpoint_namespace": "fixture-endpoint-namespace",
+      "credential_ref_name": null,
+      "health": "READY",
+      "registered": false,
+      "configured": false,
+      "compatible": false,
+      "supported_capabilities": [],
+      "supported_effect_classes": [],
+      "platforms": [],
+      "observed_at_ms": 1,
+      "expires_at_ms": 1,
+      "runtime_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "version": 1,
+      "semantic_epoch": 1,
+      "health_revision": 1,
+      "health_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "scope_ref": {
+        "kind": "scope",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "approval_ref": {
+        "kind": "authority",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "CapabilityBinding": {
+      "schema_version": 1,
+      "binding_id": "fixture-binding-id",
+      "session_id": "fixture-session-id",
+      "owner_contract_ref": {
+        "kind": "task",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "requirement_key": "fixture-requirement-key",
+      "capability_ref": {
+        "kind": "capability",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "provider_ref": {
+        "kind": "provider",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "deployment_ref": {
+        "kind": "deployment",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "input_manifest_ref": {
+        "kind": "input_manifest",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "authority_refs": [],
+      "registry_epoch": 1,
+      "invocation_mode": "MODEL",
+      "verification_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "Tool": {
+      "schema_version": 1,
+      "tool_id": "fixture-tool-id",
+      "version": 1,
+      "description": "fixture-description",
+      "input_schema_ref": {
+        "kind": "schema",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "output_schema_ref": {
+        "kind": "schema",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "provider_ref": {
+        "kind": "provider",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "effect_class": "READ_ONLY",
+      "required_capabilities": [],
+      "scope_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "timeout_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "retry_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "result_bytes_limit": 1,
+      "inline_result_tokens": 1,
+      "implementation_digest": "9dd37b0084fc6a6913cf95cb0dc95167297cdf20b1df367967bb1be188298144"
+    },
+    "ToolSnapshot": {
+      "schema_version": 1,
+      "snapshot_id": "fixture-snapshot-id",
+      "session_id": "fixture-session-id",
+      "generation": 1,
+      "registry_epoch": 1,
+      "tools": [],
+      "catalogue_hash": "cc0dfd9cd44c97ff7dd65d859dab949d7447b73f8a513806c47ae391eddc8f04"
+    },
+    "SkillFile": {
+      "relative_path": "SKILL.md",
+      "size_bytes": 18,
+      "sha256": "a6064a26b2b11f2b51c7da59f50ef3df8ae33d27f4823f1b8445646d1755c7b4",
+      "role": "INSTRUCTIONS"
+    },
+    "Skill": {
+      "schema_version": 1,
+      "skill_id": "fixture-skill",
+      "version": 1,
+      "name": "fixture-skill",
+      "description": "Synthetic instruction-only fixture.",
+      "files": [
+        {
+          "relative_path": "SKILL.md",
+          "size_bytes": 18,
+          "sha256": "a6064a26b2b11f2b51c7da59f50ef3df8ae33d27f4823f1b8445646d1755c7b4",
+          "role": "INSTRUCTIONS"
+        }
+      ],
+      "instructions_path": "SKILL.md",
+      "input_schema_ref": {
+        "kind": "schema",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "output_schema_ref": {
+        "kind": "schema",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "capability_ref": {
+        "kind": "capability",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "required_tool_refs": [],
+      "required_skill_refs": [],
+      "implementation": {
+        "kind": "INSTRUCTIONS"
+      },
+      "requested_permission_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "verification_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "origin_refs": []
+    },
+    "SkillUse": {
+      "schema_version": 1,
+      "use_id": "fixture-use-id",
+      "session_id": "fixture-session-id",
+      "turn_id": "fixture-turn-id",
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "bundle_digest": "53c8a80c393d987e69566f08161bf5786842e476d61c0eafc550b027b58e1caf",
+      "owner_contract_ref": {
+        "kind": "task",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "input_manifest_ref": {
+        "kind": "input_manifest",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "dependency_lock_refs": [],
+      "tool_snapshot_ref": {
+        "kind": "tool_snapshot",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "evaluation_ref": null,
+      "authority_refs": [],
+      "mode": "INSTRUCTIONS",
+      "reservation_fact_ref": null
+    },
+    "SessionDelete": {
+      "schema_version": 1,
+      "session_id": "fixture-session-id",
+      "expected_generation": 1,
+      "command_id": "fixture-command-id",
+      "reason": "OWNER_CLOSED",
+      "retention_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "SessionView": {
+      "schema_version": 2,
+      "session_id": "fixture-session-id",
+      "agent_id": "fixture-agent-id",
+      "root_id": "fixture-root-id",
+      "generation": 1,
+      "state": "CREATING",
+      "journal_seq_from": 1,
+      "sealed_highwater": null,
+      "pending_index_groups": 1,
+      "embedding_available": false,
+      "deletable": false,
+      "blocking_refs": [],
+      "row_version": 1,
+      "adoption_revision": 1,
+      "effective_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "active_index_generation": null,
+      "last_lifecycle_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "purge_progress": null
+    },
+    "ToolResultView": {
+      "schema_version": 1,
+      "call_ref": {
+        "kind": "invocation",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "tool_ref": {
+        "kind": "tool",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "status": "SUCCEEDED",
+      "result_artifact_ref": null,
+      "operation_intent_ref": null,
+      "inline_text": "fixture-inline-text",
+      "representation": "INLINE",
+      "source_hash": null,
+      "error_code": null
+    },
+    "Error": {
+      "schema_version": 1,
+      "code": "ACCESS_DENIED",
+      "stage": "fixture-stage",
+      "retry": "NEVER",
+      "field_path": null,
+      "message": "fixture-message",
+      "source_refs": []
+    },
+    "HostRequest": {
+      "schema_version": 1,
+      "verb": "agent_context_settings_get",
+      "command_id": "read1",
+      "subject_id": "A1",
+      "expected_revision": null,
+      "cursor": null,
+      "limit": 8,
+      "payload_ref": null,
+      "payload": {
+        "session_id": "S1"
+      }
+    },
+    "HostResponse": {
+      "schema_version": 1,
+      "request_verb": "agent_context_settings_get",
+      "subject_id": "A1",
+      "view_revision": 3,
+      "as_of_context_id": null,
+      "items": [
+        {
+          "schema_version": 1,
+          "agent_id": "A1",
+          "session_id": "S1",
+          "session_generation": 1,
+          "adoption_revision": 3,
+          "effective_policy_ref": {
+            "kind": "policy",
+            "id": "P7",
+            "revision": 7,
+            "content_hash": "0156e3b899f8c1525b8e9d7b097708bcf07f9d1838aaa34c86e518eda757d846"
+          },
+          "configured_policy": {
+            "schema_version": 1,
+            "policy_id": "fixture-policy-id",
+            "max_context_tokens": 524288,
+            "output_reserve_tokens": 16384,
+            "safety_reserve_tokens": 2048,
+            "tool_headroom_tokens": 8192,
+            "recent_min_tokens": 65536,
+            "recall_max_tokens": 65536,
+            "fixed_soft_max_tokens": 131072,
+            "section_soft_caps": {
+              "A": 16384,
+              "B": 32768,
+              "C": 32768,
+              "D": 32768,
+              "E": 16384
+            },
+            "max_candidates": 128,
+            "max_recall_items": 32,
+            "max_group_count": 8192,
+            "max_manifest_bytes": 8388608,
+            "max_request_bytes": 16777216,
+            "embedding_chunk_tokens": 384,
+            "embedding_overlap_tokens": 32,
+            "max_session_disk_bytes": 2147483648,
+            "max_retrieval_ms": 200,
+            "index_mode": "ON_CLOSED_GROUP",
+            "embedding_required_for_activation": true,
+            "max_scan_rows_per_page": 256,
+            "query_cursor_ttl_ms": 300000,
+            "max_query_candidates": 128,
+            "max_query_total_ms": 30000,
+            "max_search_cursors": 16
+          },
+          "activation_ref": {
+            "kind": "receipt",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          },
+          "policy_approval_ref": {
+            "kind": "authority",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          },
+          "next_request_only": true,
+          "last_context_ref": null,
+          "view_revision": 3
+        }
+      ],
+      "next_cursor": null,
+      "error": null,
+      "command_receipt": null
+    },
+    "AuthorizationReceipt": {
+      "schema_version": 1,
+      "authorization_id": "fixture-authorization-id",
+      "request_key": "fixture-request-key",
+      "session_id": "fixture-session-id",
+      "agent_id": "fixture-agent-id",
+      "caller_ref": {
+        "kind": "principal",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "owner_contract_ref": {
+        "kind": "task",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "purpose": "CONTEXT_DISCLOSE",
+      "subject_refs": [],
+      "input_hash": "00c0a70f999c7185d5fc23e0c64a1c10cd911fa71b27d9f71b5a661936df1776",
+      "decision": "ALLOW",
+      "scope_ref": {
+        "kind": "scope",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "original_decision_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "observed_at_ms": 1,
+      "expires_at_ms": 1
+    },
+    "SkillAdmitCommand": {
+      "schema_version": 1,
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "evaluation_acceptance_ref": {
+        "kind": "acceptance",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "evaluation_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "scope_ref": {
+        "kind": "scope",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "SkillSuspendCommand": {
+      "schema_version": 1,
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "reason": "fixture-reason"
+    },
+    "ContextSettingsCommand": {
+      "schema_version": 1,
+      "session_id": "S1",
+      "candidate_policy_ref": {
+        "kind": "policy",
+        "id": "P8",
+        "revision": 8,
+        "content_hash": "be268d7d6a73a8a62309e649f2d6e20408d6281ac21e4c76e577971367f1e8d6"
+      },
+      "expected_effective_policy_ref": {
+        "kind": "policy",
+        "id": "P7",
+        "revision": 7,
+        "content_hash": "0156e3b899f8c1525b8e9d7b097708bcf07f9d1838aaa34c86e518eda757d846"
+      },
+      "expected_adoption_revision": 3
+    },
+    "ContextSummaryView": {
+      "schema_version": 2,
+      "session_id": "S1",
+      "context_id": null,
+      "historical": false,
+      "manifest_ref": null,
+      "input_charge": null,
+      "input_budget": null,
+      "output_reserve": null,
+      "recent_complete_turns": null,
+      "recall_count": null,
+      "retrieval_status": null,
+      "session_state": "ACTIVE",
+      "current_access": "ALLOWED",
+      "degradations": [],
+      "adoption_revision": 3,
+      "current_effective_policy_ref": {
+        "kind": "policy",
+        "id": "P7",
+        "revision": 7,
+        "content_hash": "0156e3b899f8c1525b8e9d7b097708bcf07f9d1838aaa34c86e518eda757d846"
+      },
+      "manifest_policy_ref": null,
+      "configured_context_tokens": 524288,
+      "last_count_mode": null,
+      "prior_output_reserve_tokens": null,
+      "next_request_policy_ref": {
+        "kind": "policy",
+        "id": "P7",
+        "revision": 7,
+        "content_hash": "0156e3b899f8c1525b8e9d7b097708bcf07f9d1838aaa34c86e518eda757d846"
+      },
+      "session_generation": 1,
+      "retrieval_summary": null
+    },
+    "CapabilityCatalogueItem": {
+      "kind": "CAPABILITY",
+      "definition_ref": {
+        "kind": "capability",
+        "id": "fixture-capability",
+        "revision": 1,
+        "content_hash": "eae8d02920ce0be56ef05d79e3b3c60460e83d6dd87f5672dac6ad78eae09998"
+      },
+      "name": "fixture-entry",
+      "description": "Synthetic definition for conformance only.",
+      "state": "ADMITTED",
+      "state_revision": 1,
+      "current_usable": true,
+      "reason_codes": [],
+      "registry_epoch": 1,
+      "file_count": 0,
+      "total_payload_bytes": 0,
+      "detail_ref": {
+        "kind": "capability",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "access_view": "MODEL"
+    },
+    "ToolCatalogueItem": {
+      "kind": "TOOL",
+      "definition_ref": {
+        "kind": "tool",
+        "id": "fixture-tool",
+        "revision": 1,
+        "content_hash": "eb2b460a90bbd554a68642ede115b5a45c14bce46225a1c446c278fc7a708480"
+      },
+      "name": "fixture-entry",
+      "description": "Synthetic definition for conformance only.",
+      "state": "ADMITTED",
+      "state_revision": 1,
+      "current_usable": true,
+      "reason_codes": [],
+      "registry_epoch": 1,
+      "file_count": 0,
+      "total_payload_bytes": 0,
+      "detail_ref": {
+        "kind": "tool",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "access_view": "MODEL"
+    },
+    "SkillCatalogueItem": {
+      "kind": "SKILL",
+      "definition_ref": {
+        "kind": "skill",
+        "id": "fixture-skill",
+        "revision": 1,
+        "content_hash": "1b8b648b6fdf178391a054b867d9a39aeb6d0af2a19a3add41608c9e7d111aac"
+      },
+      "name": "fixture-entry",
+      "description": "Synthetic definition for conformance only.",
+      "state": "ADMITTED",
+      "state_revision": 1,
+      "current_usable": true,
+      "reason_codes": [],
+      "registry_epoch": 1,
+      "file_count": 0,
+      "total_payload_bytes": 0,
+      "detail_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "access_view": "MODEL"
+    },
+    "TokenReceipt": {
+      "schema_version": 1,
+      "meter_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "request_hash": "fd3d99bf54b675585263073a38fa0fb5b3b7881801d5a3bdc1e7205a7baadf19",
+      "wire_input_tokens": 12000,
+      "prior_output_reserve_tokens": 2048,
+      "requested_output_tokens": 16384,
+      "billed_input_allowance_tokens": 14048,
+      "count_mode": "EXACT",
+      "input_limit_scope": "WIRE_ONLY",
+      "tokenizer_hash": "f755b93a87d4fc7ec59f747d09ba21adf62086cd28756a41bfc5e55033e83b17",
+      "renderer_hash": "3ee7a08aee45d3788444802ee0af9bbc02523c3e08e11cb52c253779af76f1bf",
+      "serializer_hash": "334ce5d30283aeccefc83e07f14a1935b7eda6951572712e7000a9fa1173bce0",
+      "prior_basis_ref": {
+        "kind": "receipt",
+        "id": "fixture-prior",
+        "revision": 1,
+        "content_hash": "4754964df3fcae1b441c0fe8c0448b49d1ca85935ffbcc33875b5e956bf8c950"
+      },
+      "proof_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "coverage": "TEXT_TOOLS_JSON",
+      "max_input_budget": 495616
+    },
+    "TurnCoverage": {
+      "turn_id": "T0",
+      "completed": true,
+      "required_group_ids": [
+        "G0"
+      ],
+      "source_highwater": 2
+    },
+    "ProtocolGroupSnapshot": {
+      "session_ref": {
+        "kind": "session",
+        "id": "S1",
+        "revision": 1,
+        "content_hash": "db647804d8dae7d029b380f1f2dc9ed94f21df427d2bf88073851ea0d118b3ff"
+      },
+      "journal_highwater": 2,
+      "groups": [
+        {
+          "session_id": "S1",
+          "group_id": "G1",
+          "seq_from": 1,
+          "seq_to": 1,
+          "source_hash": "5cb1936e761da0295827bbe9500adc536d865b4364b89f9edfb6b51f94ce210d",
+          "closed": true,
+          "record_ids": [
+            "jr1"
+          ],
+          "rendered_view_ref": {
+            "kind": "artifact",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          },
+          "budget_charge": 100,
+          "turn_id": "T1",
+          "kind": "USER_ANCHOR",
+          "mandatory": true,
+          "closure_receipt_ref": {
+            "kind": "receipt",
+            "id": "closed",
+            "revision": 1,
+            "content_hash": "46af16ae7a2d4c570a4069d92092bc5c63a9c47416122b3b755035a4516d7ad3"
+          },
+          "call_ids": [],
+          "result_call_ids": [],
+          "indexable": true
+        }
+      ],
+      "turns": [],
+      "enumeration_complete": true,
+      "omitted_optional_groups": 0,
+      "current_turn_id": "T1",
+      "mandatory_group_ids": [
+        "G1"
+      ],
+      "snapshot_hash": "bf9691e8da416ad7eb0a398da90bfcda15cf34d10c8e8e04feee4f433aeb556d"
+    },
+    "SearchRequest": {
+      "schema_version": 1,
+      "query": "索引历史",
+      "cursor": null,
+      "limit": 8,
+      "max_bytes": 16384
+    },
+    "SearchCoverage": {
+      "phase": "RESULTS",
+      "rank_scope": "FROZEN_INDEX_CHANNEL_TOPK",
+      "index_coverage": "COMPLETE",
+      "mode": "HYBRID",
+      "scanned_chunks": 0,
+      "snapshot_chunks": 0,
+      "expected_groups": 0,
+      "indexed_groups": 0,
+      "vector_ready_groups": 0,
+      "ranking_final": true,
+      "algorithm_id": "arp-rrf-snapshot-v1"
+    },
+    "SearchPage": {
+      "schema_version": 2,
+      "receipt": {
+        "schema_version": 2,
+        "session_id": "S1",
+        "generation": 1,
+        "query_hash": "06feb02eefd6aa4a58d5500b27fb503d79e713757ff62481e3807e4c552730a7",
+        "journal_highwater": 1,
+        "index_snapshot_id": "fixture-index-snapshot-id",
+        "embedding_ref": null,
+        "searched_closed_groups": 0,
+        "indexed_closed_groups": 0,
+        "status": "COMPLETE_EMPTY",
+        "degradations": [],
+        "returned_count": 0,
+        "excluded_group_ids": [],
+        "elapsed_ms": 1,
+        "policy_ref": {
+          "kind": "policy",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "index_generation": 1,
+        "index_upper_commit": 1,
+        "authority_readset_hash": "f3461b0d49e285f978bf1228dfe015060661edd9d688dee301352f0f1009b54f",
+        "coverage": {
+          "phase": "RESULTS",
+          "rank_scope": "FROZEN_INDEX_CHANNEL_TOPK",
+          "index_coverage": "COMPLETE",
+          "mode": "HYBRID",
+          "scanned_chunks": 0,
+          "snapshot_chunks": 0,
+          "expected_groups": 0,
+          "indexed_groups": 0,
+          "vector_ready_groups": 0,
+          "ranking_final": true,
+          "algorithm_id": "arp-rrf-snapshot-v1"
+        },
+        "source_snapshot_hash": "67a96ec40de752f468a83c27e0f36124a7fc1ddd3d193c87c7d6f61322dd8dd3",
+        "query_result_count": 0,
+        "page_offset": 0,
+        "has_more": false
+      },
+      "items": [],
+      "has_more": false,
+      "next_cursor": null,
+      "cursor_purpose": "MODEL_SEARCH",
+      "page_semantics": "APPEND_FINAL",
+      "body_bytes": 1241
+    },
+    "HistoryReadRequest": {
+      "schema_version": 1,
+      "seq_from": 1,
+      "seq_to": 1,
+      "cursor": null,
+      "max_bytes": 8192
+    },
+    "HistorySlice": {
+      "record_ref": {
+        "kind": "journal_record",
+        "id": "jr1",
+        "revision": 1,
+        "content_hash": "e889f930be39643b6ced1d89fab45b0446b2bdbb7c8dada5bf24034e32c22ec4"
+      },
+      "seq": 1,
+      "utf8_start": 0,
+      "utf8_end": 6,
+      "total_utf8_bytes": 6,
+      "text": "你好",
+      "slice_hash": "670d9743542cae3ea7ebe36af56bd53648b0a1126162e78d81a32934a711302e",
+      "record_complete": true,
+      "provenance": "USER_INPUT"
+    },
+    "HistoryReadPage": {
+      "schema_version": 1,
+      "session_ref": {
+        "kind": "session",
+        "id": "S1",
+        "revision": 1,
+        "content_hash": "db647804d8dae7d029b380f1f2dc9ed94f21df427d2bf88073851ea0d118b3ff"
+      },
+      "source_snapshot_hash": "67a96ec40de752f468a83c27e0f36124a7fc1ddd3d193c87c7d6f61322dd8dd3",
+      "journal_highwater": 1,
+      "requested_seq_from": 1,
+      "requested_seq_to": 1,
+      "covered_seq_from": 1,
+      "covered_seq_to": 1,
+      "items": [
+        {
+          "record_ref": {
+            "kind": "journal_record",
+            "id": "jr1",
+            "revision": 1,
+            "content_hash": "e889f930be39643b6ced1d89fab45b0446b2bdbb7c8dada5bf24034e32c22ec4"
+          },
+          "seq": 1,
+          "utf8_start": 0,
+          "utf8_end": 6,
+          "total_utf8_bytes": 6,
+          "text": "你好",
+          "slice_hash": "670d9743542cae3ea7ebe36af56bd53648b0a1126162e78d81a32934a711302e",
+          "record_complete": true,
+          "provenance": "USER_INPUT"
+        }
+      ],
+      "has_more": false,
+      "next_cursor": null,
+      "cursor_purpose": "MODEL_READ",
+      "hidden_seq_ranges": [],
+      "authority_readset_hash": "f3461b0d49e285f978bf1228dfe015060661edd9d688dee301352f0f1009b54f",
+      "body_bytes": 911
+    },
+    "ContextSettingsView": {
+      "schema_version": 1,
+      "agent_id": "A1",
+      "session_id": "S1",
+      "session_generation": 1,
+      "adoption_revision": 3,
+      "effective_policy_ref": {
+        "kind": "policy",
+        "id": "P7",
+        "revision": 7,
+        "content_hash": "0156e3b899f8c1525b8e9d7b097708bcf07f9d1838aaa34c86e518eda757d846"
+      },
+      "configured_policy": {
+        "schema_version": 1,
+        "policy_id": "fixture-policy-id",
+        "max_context_tokens": 524288,
+        "output_reserve_tokens": 16384,
+        "safety_reserve_tokens": 2048,
+        "tool_headroom_tokens": 8192,
+        "recent_min_tokens": 65536,
+        "recall_max_tokens": 65536,
+        "fixed_soft_max_tokens": 131072,
+        "section_soft_caps": {
+          "A": 16384,
+          "B": 32768,
+          "C": 32768,
+          "D": 32768,
+          "E": 16384
+        },
+        "max_candidates": 128,
+        "max_recall_items": 32,
+        "max_group_count": 8192,
+        "max_manifest_bytes": 8388608,
+        "max_request_bytes": 16777216,
+        "embedding_chunk_tokens": 384,
+        "embedding_overlap_tokens": 32,
+        "max_session_disk_bytes": 2147483648,
+        "max_retrieval_ms": 200,
+        "index_mode": "ON_CLOSED_GROUP",
+        "embedding_required_for_activation": true,
+        "max_scan_rows_per_page": 256,
+        "query_cursor_ttl_ms": 300000,
+        "max_query_candidates": 128,
+        "max_query_total_ms": 30000,
+        "max_search_cursors": 16
+      },
+      "activation_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "policy_approval_ref": {
+        "kind": "authority",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "next_request_only": true,
+      "last_context_ref": null,
+      "view_revision": 3
+    },
+    "CommandReceiptView": {
+      "schema_version": 1,
+      "command_id": "fixture-command-id",
+      "command_hash": "fc4eaad709f0985b8398ddce1286e3829d28aee32397fea8caf3eef71535086f",
+      "receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "subject_agent_id": null,
+      "subject_session_id": null,
+      "outcome": "APPLIED",
+      "result_ref": null,
+      "result_revision": 1,
+      "observed_at_ms": 1
+    },
+    "ContextPolicySubmit": {
+      "schema_version": 1,
+      "policy": {
+        "schema_version": 1,
+        "policy_id": "fixture-policy-id",
+        "max_context_tokens": 524288,
+        "output_reserve_tokens": 16384,
+        "safety_reserve_tokens": 2048,
+        "tool_headroom_tokens": 8192,
+        "recent_min_tokens": 65536,
+        "recall_max_tokens": 65536,
+        "fixed_soft_max_tokens": 131072,
+        "section_soft_caps": {
+          "A": 16384,
+          "B": 32768,
+          "C": 32768,
+          "D": 32768,
+          "E": 16384
+        },
+        "max_candidates": 128,
+        "max_recall_items": 32,
+        "max_group_count": 8192,
+        "max_manifest_bytes": 8388608,
+        "max_request_bytes": 16777216,
+        "embedding_chunk_tokens": 384,
+        "embedding_overlap_tokens": 32,
+        "max_session_disk_bytes": 2147483648,
+        "max_retrieval_ms": 200,
+        "index_mode": "ON_CLOSED_GROUP",
+        "embedding_required_for_activation": true,
+        "max_scan_rows_per_page": 256,
+        "query_cursor_ttl_ms": 300000,
+        "max_query_candidates": 128,
+        "max_query_total_ms": 30000,
+        "max_search_cursors": 16
+      },
+      "expected_policy_ref": null
+    },
+    "PolicySubmissionView": {
+      "policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "approval_ref": {
+        "kind": "authority",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "command_receipt": {
+        "schema_version": 1,
+        "command_id": "fixture-command-id",
+        "command_hash": "fc4eaad709f0985b8398ddce1286e3829d28aee32397fea8caf3eef71535086f",
+        "receipt_ref": {
+          "kind": "receipt",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "subject_agent_id": null,
+        "subject_session_id": null,
+        "outcome": "APPLIED",
+        "result_ref": null,
+        "result_revision": 1,
+        "observed_at_ms": 1
+      }
+    },
+    "ContextManifestPage": {
+      "context_ref": {
+        "kind": "context",
+        "id": "fixture-context",
+        "revision": 1,
+        "content_hash": "bef521752f04e1acfab00abb3a7463ed6f57f8ffea4ab7a2acf45d607c421367"
+      },
+      "manifest_hash": "dffac3fb849214c2ec8a37561bd09b2027966d5b7cca8860f324489eb64e09ef",
+      "field": "SECTIONS",
+      "offset": 0,
+      "items": [],
+      "has_more": false,
+      "next_cursor": null
+    },
+    "ProviderDefinition": {
+      "schema_version": 1,
+      "provider_id": "fixture-provider-id",
+      "version": 1,
+      "kind": "MODEL",
+      "capability_refs": [
+        {
+          "kind": "capability",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        }
+      ],
+      "input_schema_ref": {
+        "kind": "schema",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "output_schema_ref": {
+        "kind": "schema",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "implementation_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "selection_priority": 1,
+      "priority_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "supported_semantics": [],
+      "scope_ref": {
+        "kind": "scope",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "source_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "CatalogueScope": {
+      "realm_id": "fixture-realm-id",
+      "owner_id": "fixture-owner-id",
+      "project_id": null,
+      "namespace_id": "fixture-namespace-id",
+      "catalogue_owner_root_id": "fixture-catalogue-owner-root-id"
+    },
+    "CatalogueSummary": {
+      "kind": "SKILL",
+      "definition_ref": {
+        "kind": "skill",
+        "id": "fixture-skill",
+        "revision": 1,
+        "content_hash": "1b8b648b6fdf178391a054b867d9a39aeb6d0af2a19a3add41608c9e7d111aac"
+      },
+      "name": "fixture-entry",
+      "description": "Synthetic definition for conformance only.",
+      "state": "ADMITTED",
+      "state_revision": 1,
+      "current_usable": true,
+      "reason_codes": [],
+      "registry_epoch": 1,
+      "file_count": 0,
+      "total_payload_bytes": 0,
+      "detail_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "access_view": "MODEL"
+    },
+    "CataloguePage": {
+      "schema_version": 1,
+      "namespace_id": "fixture-namespace-id",
+      "registry_epoch": 1,
+      "items": [
+        {
+          "kind": "SKILL",
+          "definition_ref": {
+            "kind": "skill",
+            "id": "fixture-skill",
+            "revision": 1,
+            "content_hash": "1b8b648b6fdf178391a054b867d9a39aeb6d0af2a19a3add41608c9e7d111aac"
+          },
+          "name": "fixture-entry",
+          "description": "Synthetic definition for conformance only.",
+          "state": "ADMITTED",
+          "state_revision": 1,
+          "current_usable": true,
+          "reason_codes": [],
+          "registry_epoch": 1,
+          "file_count": 0,
+          "total_payload_bytes": 0,
+          "detail_ref": {
+            "kind": "skill",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          },
+          "access_view": "MODEL"
+        }
+      ],
+      "has_more": false,
+      "next_cursor": null,
+      "access_view": "MODEL",
+      "body_bytes": 712
+    },
+    "SkillDetailsPage": {
+      "schema_version": 1,
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "bundle_digest": "53c8a80c393d987e69566f08161bf5786842e476d61c0eafc550b027b58e1caf",
+      "metadata_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "dependency_lock_ref": {
+        "kind": "dependency_lock",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "files": [
+        {
+          "relative_path": "SKILL.md",
+          "size_bytes": 18,
+          "sha256": "a6064a26b2b11f2b51c7da59f50ef3df8ae33d27f4823f1b8445646d1755c7b4",
+          "role": "INSTRUCTIONS"
+        }
+      ],
+      "has_more": false,
+      "next_cursor": null,
+      "body_bytes": 761
+    },
+    "DependencyLock": {
+      "schema_version": 1,
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "scope_ref": {
+        "kind": "scope",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "nodes": [],
+      "edges": [],
+      "unresolved": [],
+      "complete": true,
+      "lock_hash": "79bad8e8c8ad0d3f6138bed3c6dcb9c664ee39ba5a602ef2b79244087c5adc49"
+    },
+    "SkillTrialCommand": {
+      "schema_version": 1,
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "expected_activation_revision": 1,
+      "dependency_lock_ref": {
+        "kind": "dependency_lock",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "evaluation_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "SkillEvaluationBinding": {
+      "schema_version": 1,
+      "evaluation_ref": {
+        "kind": "evaluation",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "lock_ref": {
+        "kind": "dependency_lock",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "scope_ref": {
+        "kind": "scope",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "source_authority_ref": {
+        "kind": "authority",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "allowed_tool_refs": [],
+      "credential_policy": "NO_PRODUCTION_CREDENTIALS",
+      "invocation_refs": [],
+      "budget_owner_ref": {
+        "kind": "agent_turn",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "expires_at_ms": 1
+    },
+    "SkillLifecycleCommand": {
+      "schema_version": 1,
+      "action": "TRIAL",
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "expected_activation_revision": 1,
+      "evaluation_ref": null,
+      "dependency_lock_ref": {
+        "kind": "dependency_lock",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "reason": "fixture-reason"
+    },
+    "IndexJobPayload": {
+      "schema_version": 1,
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "control_generation": 1,
+      "source_refs": [],
+      "budget_owner_ref": {
+        "kind": "agent_turn",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "authority_ref": {
+        "kind": "authority",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "deadline_ms": 1,
+      "index_generation": 1,
+      "group_ref": {
+        "kind": "journal_group",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "chunker_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "embedding_deployment_ref": {
+        "kind": "deployment",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "view_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "source_highwater": 1
+    },
+    "PurgeJobPayload": {
+      "schema_version": 1,
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "control_generation": 1,
+      "destroy_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "disposal_ref": null,
+      "deadline_ms": 1
+    },
+    "BindImportJobPayload": {
+      "schema_version": 1,
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "control_generation": 1,
+      "context_ref": {
+        "kind": "context",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "provider_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "destination_kind": "EXPOSURE",
+      "destination_owner_ref": {
+        "kind": "review",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "deadline_ms": 1
+    },
+    "JobResult": {
+      "schema_version": 1,
+      "job_id": "fixture-job-id",
+      "payload_hash": "3f8702060996ed7b4b1c9a0ddb89dded8f7f1267513852f9eb4dcd37be0a6105",
+      "result_kind": "INDEX_COMMITTED",
+      "original_invocation_refs": [],
+      "result_refs": [],
+      "source_generation": 1,
+      "observed_at_ms": 1,
+      "reason_code": null
+    },
+    "CollectionWitness": {
+      "kind": "TURNS",
+      "complete": true,
+      "count": 0,
+      "refs": [],
+      "set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "highwater": 1,
+      "reader_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "CompleteSessionDisposal": {
+      "schema_version": 1,
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "agent_ref": {
+        "kind": "agent",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "root_incarnation": "fixture-root-incarnation",
+      "generation": 1,
+      "journal_highwater": 1,
+      "collections": [
+        {
+          "kind": "TURNS",
+          "complete": true,
+          "count": 0,
+          "refs": [],
+          "set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "highwater": 1,
+          "reader_receipt_ref": {
+            "kind": "receipt",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          }
+        },
+        {
+          "kind": "CALLS",
+          "complete": true,
+          "count": 0,
+          "refs": [],
+          "set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "highwater": 1,
+          "reader_receipt_ref": {
+            "kind": "receipt",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          }
+        },
+        {
+          "kind": "UNKNOWN",
+          "complete": true,
+          "count": 0,
+          "refs": [],
+          "set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "highwater": 1,
+          "reader_receipt_ref": {
+            "kind": "receipt",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          }
+        },
+        {
+          "kind": "PENDING_IMPORTS",
+          "complete": true,
+          "count": 0,
+          "refs": [],
+          "set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "highwater": 1,
+          "reader_receipt_ref": {
+            "kind": "receipt",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          }
+        },
+        {
+          "kind": "INDEX_WRITERS",
+          "complete": true,
+          "count": 0,
+          "refs": [],
+          "set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "highwater": 1,
+          "reader_receipt_ref": {
+            "kind": "receipt",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          }
+        },
+        {
+          "kind": "READ_HANDLES",
+          "complete": true,
+          "count": 0,
+          "refs": [],
+          "set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "highwater": 1,
+          "reader_receipt_ref": {
+            "kind": "receipt",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          }
+        },
+        {
+          "kind": "TEMP_ROOTS",
+          "complete": true,
+          "count": 0,
+          "refs": [],
+          "set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "highwater": 1,
+          "reader_receipt_ref": {
+            "kind": "receipt",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+          }
+        }
+      ],
+      "file_guard_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "source_readset_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "all_safe": true
+    },
+    "SessionMarker": {
+      "schema_version": 2,
+      "session_id": "fixture-session-id",
+      "agent_id": "fixture-agent-id",
+      "root_id": "fixture-root-id",
+      "root_incarnation": "fixture-root-incarnation",
+      "control_generation": 1,
+      "partition_id": "fixture-partition-id",
+      "creation_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "IndexSnapshot": {
+      "schema_version": 1,
+      "snapshot_id": "fixture-snapshot-id",
+      "session_id": "fixture-session-id",
+      "control_generation": 1,
+      "index_generation": 1,
+      "upper_commit": 1,
+      "journal_highwater": 1,
+      "expected_group_set_hash": "215cbb0894243c5b00fd8f78262bc17839cdba55957c255e9ba5740f61794a96",
+      "indexed_group_set_hash": "1b204f8647c65159f0d639fcf5603088163ae5cc4873dae05b15b19f62ff73fa",
+      "embedding_fingerprint": "a0b73fe489257e12c39d90360ee8a94abb4a2350305aea1e290e1916c28ff719",
+      "chunker_fingerprint": "3f9fcf9990161b5db82b2bc9e1922e7d5a83df3c673a44e9967fac7b04b590ca",
+      "view_policy_hash": "ab573b81c1f7aeaef6ee0703dd117c3b7bdb001c93fec1ea7a2e026be80d6e4c",
+      "authority_readset_hash": "f3461b0d49e285f978bf1228dfe015060661edd9d688dee301352f0f1009b54f",
+      "source_snapshot_hash": "67a96ec40de752f468a83c27e0f36124a7fc1ddd3d193c87c7d6f61322dd8dd3",
+      "created_at_ms": 1
+    },
+    "IndexRebuildCommand": {
+      "schema_version": 1,
+      "session_id": "fixture-session-id",
+      "expected_generation": 1,
+      "old_index_generation": 1,
+      "embedding_deployment_ref": {
+        "kind": "deployment",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "chunker_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "view_policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "reason": "fixture-reason"
+    },
+    "PreparedRequestDisposition": {
+      "schema_version": 1,
+      "old_request_ref": {
+        "kind": "invocation",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "action": "KEEP_FROZEN",
+      "reason_code": "fixture-reason-code",
+      "no_send_receipt_ref": null,
+      "replacement_ordinal": null,
+      "reservation_settlement_ref": null
+    },
+    "EmbeddingResource": {
+      "schema_version": 1,
+      "provider_ref": {
+        "kind": "provider",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "deployment_ref": {
+        "kind": "deployment",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "model_artifact_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "tokenizer_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "dimension": 1,
+      "normalization": "SCALED_L2_F32_V1",
+      "backend": "LOCAL_BGE_M3",
+      "library_lock_hash": "908862f192551f4ccc29f886b2dd8ad5509bb494c5ee1968b77b9a5939897e24",
+      "device": "cpu",
+      "pricing_mode": "NO_PROVIDER_CHARGE",
+      "max_batch": 1,
+      "max_input_tokens": 1,
+      "resource_fingerprint": "9ccb955ff55fec630861a399481af5d63a2b6837cf791d2ba3809812647b0ea5"
+    },
+    "EmbeddingCallReceipt": {
+      "schema_version": 1,
+      "invocation_ref": {
+        "kind": "invocation",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "resource_ref": {
+        "kind": "deployment",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "purpose": "SESSION_INDEX",
+      "input_hash": "00c0a70f999c7185d5fc23e0c64a1c10cd911fa71b27d9f71b5a661936df1776",
+      "input_count": 1,
+      "status": "SUCCEEDED",
+      "output_ref": {
+        "kind": "artifact",
+        "id": "embedding-output",
+        "revision": 1,
+        "content_hash": "5fb626119210230b3d7409a072eeafe7059f0610a58ac77f7057073fe46335b8"
+      },
+      "input_tokens": null,
+      "elapsed_ms": 1,
+      "pricing_mode": "NO_PROVIDER_CHARGE",
+      "cost_micros": 0,
+      "usage_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "RuntimeEvent": {
+      "schema_version": 1,
+      "event_id": "fixture-event-id",
+      "eventseq": 1,
+      "event_type": "AgentContextPolicyAdopted",
+      "subject_ref": {
+        "kind": "agent",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "body_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "source_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "dedupe_key": "fixture-dedupe-key",
+      "created_at_ms": 1
+    },
+    "ContextReadCommand": {
+      "session_id": "fixture-session-id",
+      "context_id": null,
+      "cursor": null,
+      "limit": 1
+    },
+    "CatalogueReadCommand": {
+      "namespace_id": "fixture-namespace-id",
+      "kind": "CAPABILITY",
+      "cursor": null,
+      "limit": 1
+    },
+    "SkillDetailsCommand": {
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "cursor": null,
+      "limit": 1
+    },
+    "SkillInstallCommand": {
+      "bundle_artifact_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "scope_ref": {
+        "kind": "scope",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "format": "NATIVE",
+      "expected_catalogue_revision": 1
+    },
+    "ReceiptReadCommand": {
+      "command_id": "fixture-command-id"
+    },
+    "PolicyReadCommand": {
+      "policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "SessionReadCommand": {
+      "session_id": "fixture-session-id"
+    },
+    "SkillExecutionRequest": {
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "arguments": {}
+    },
+    "ToolExecutionRequest": {
+      "tool_ref": {
+        "kind": "tool",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "arguments": {}
+    },
+    "SkillLoadRequest": {
+      "skill_ref": {
+        "kind": "skill",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "ErrorCode": "ACCESS_DENIED",
+    "ManagementSearchPage": {
+      "schema_version": 2,
+      "receipt": {
+        "schema_version": 2,
+        "session_id": "S1",
+        "generation": 1,
+        "query_hash": "06feb02eefd6aa4a58d5500b27fb503d79e713757ff62481e3807e4c552730a7",
+        "journal_highwater": 1,
+        "index_snapshot_id": "fixture-index-snapshot-id",
+        "embedding_ref": null,
+        "searched_closed_groups": 0,
+        "indexed_closed_groups": 0,
+        "status": "COMPLETE_EMPTY",
+        "degradations": [],
+        "returned_count": 0,
+        "excluded_group_ids": [],
+        "elapsed_ms": 1,
+        "policy_ref": {
+          "kind": "policy",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "index_generation": 1,
+        "index_upper_commit": 1,
+        "authority_readset_hash": "f3461b0d49e285f978bf1228dfe015060661edd9d688dee301352f0f1009b54f",
+        "coverage": {
+          "phase": "RESULTS",
+          "rank_scope": "FROZEN_INDEX_CHANNEL_TOPK",
+          "index_coverage": "COMPLETE",
+          "mode": "HYBRID",
+          "scanned_chunks": 0,
+          "snapshot_chunks": 0,
+          "expected_groups": 0,
+          "indexed_groups": 0,
+          "vector_ready_groups": 0,
+          "ranking_final": true,
+          "algorithm_id": "arp-rrf-snapshot-v1"
+        },
+        "source_snapshot_hash": "67a96ec40de752f468a83c27e0f36124a7fc1ddd3d193c87c7d6f61322dd8dd3",
+        "query_result_count": 0,
+        "page_offset": 0,
+        "has_more": false
+      },
+      "items": [],
+      "has_more": false,
+      "next_cursor": null,
+      "cursor_purpose": "MANAGEMENT_SEARCH",
+      "page_semantics": "APPEND_FINAL",
+      "body_bytes": 1246
+    },
+    "AgentContextPolicyAdoptedBody": {
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "adoption_revision": 1,
+      "policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "command_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "RuntimeContextPreparedBody": {
+      "context_ref": {
+        "kind": "context",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "request_ref": {
+        "kind": "invocation",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "source_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "RuntimeContextExposedBody": {
+      "context_ref": {
+        "kind": "context",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "request_ref": {
+        "kind": "invocation",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "input_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "import_owner_ref": {
+        "kind": "agent",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "RuntimeSessionStateChangedBody": {
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "row_version": 1,
+      "old_state": "fixture-old-state",
+      "new_state": "fixture-new-state",
+      "source_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "purge_progress_hash": null,
+      "schema_version": 2
+    },
+    "RuntimeIndexGenerationPublishedBody": {
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "index_ref": {
+        "kind": "index_generation",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "source_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "RuntimeJobChangedBody": {
+      "session_ref": {
+        "kind": "session",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "job_id": "fixture-job-id",
+      "row_version": 1,
+      "kind": "INDEX",
+      "state": "PENDING",
+      "source_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "RuntimeCatalogueChangedBody": {
+      "namespace_id": "fixture-namespace-id",
+      "entry_ref": {
+        "kind": "catalogue",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "semantic_epoch": 1,
+      "source_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "DeploymentDefinition": {
+      "schema_version": 1,
+      "provider_ref": {
+        "kind": "provider",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "implementation_digest": "9dd37b0084fc6a6913cf95cb0dc95167297cdf20b1df367967bb1be188298144",
+      "endpoint_namespace": "fixture-endpoint-namespace",
+      "credential_ref_name": null,
+      "supported_capabilities": [],
+      "supported_effect_classes": [],
+      "platforms": [],
+      "version": 1,
+      "scope_ref": {
+        "kind": "scope",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "approval_ref": {
+        "kind": "authority",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "deployment_id": "fixture-deployment-id"
+    },
+    "DeploymentHealthSnapshot": {
+      "schema_version": 1,
+      "health": "READY",
+      "registered": false,
+      "configured": false,
+      "compatible": false,
+      "observed_at_ms": 1,
+      "expires_at_ms": 1,
+      "health_revision": 1,
+      "health_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      },
+      "deployment_ref": {
+        "kind": "deployment",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+      }
+    },
+    "ContextSearchPage": {
+      "schema_version": 2,
+      "receipt": {
+        "schema_version": 2,
+        "session_id": "S1",
+        "generation": 1,
+        "query_hash": "06feb02eefd6aa4a58d5500b27fb503d79e713757ff62481e3807e4c552730a7",
+        "journal_highwater": 1,
+        "index_snapshot_id": "fixture-index-snapshot-id",
+        "embedding_ref": null,
+        "searched_closed_groups": 0,
+        "indexed_closed_groups": 0,
+        "status": "COMPLETE_EMPTY",
+        "degradations": [],
+        "returned_count": 0,
+        "excluded_group_ids": [],
+        "elapsed_ms": 1,
+        "policy_ref": {
+          "kind": "policy",
+          "id": "fixture-id",
+          "revision": 1,
+          "content_hash": "c782b4cea2c99fc868b122c0f0e8d64a852497343471cedfdaddb83eab9ec458"
+        },
+        "index_generation": 1,
+        "index_upper_commit": 1,
+        "authority_readset_hash": "f3461b0d49e285f978bf1228dfe015060661edd9d688dee301352f0f1009b54f",
+        "coverage": {
+          "phase": "RESULTS",
+          "rank_scope": "FROZEN_INDEX_CHANNEL_TOPK",
+          "index_coverage": "COMPLETE",
+          "mode": "HYBRID",
+          "scanned_chunks": 0,
+          "snapshot_chunks": 0,
+          "expected_groups": 0,
+          "indexed_groups": 0,
+          "vector_ready_groups": 0,
+          "ranking_final": true,
+          "algorithm_id": "arp-rrf-snapshot-v1"
+        },
+        "source_snapshot_hash": "67a96ec40de752f468a83c27e0f36124a7fc1ddd3d193c87c7d6f61322dd8dd3",
+        "query_result_count": 0,
+        "page_offset": 0,
+        "has_more": false
+      },
+      "items": [],
+      "has_more": false,
+      "next_cursor": null,
+      "cursor_purpose": "CONTEXT_RECALL",
+      "page_semantics": "APPEND_FINAL",
+      "body_bytes": 1243
+    },
+    "PurgeBlock": {
+      "code": "DUAL_DIRECTORY",
+      "observation_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "retry_mode": "MANUAL",
+      "retry_at_ms": null,
+      "first_seen_at_ms": 1
+    },
+    "PurgeProgress": {
+      "schema_version": 1,
+      "session_id": "s",
+      "agent_id": "a",
+      "root_incarnation": "root",
+      "destroy_command_id": "destroy",
+      "destroy_command_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "destroy_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "control_generation": 2,
+      "source_relative_directory": "sessions/s",
+      "trash_relative_directory": "trash/s-destroy",
+      "expected_marker_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "phase": "DRAINING",
+      "rename_receipt_ref": null,
+      "delete_receipt_ref": null,
+      "blocking": null,
+      "inspection_receipt_ref": null
+    },
+    "PurgePathObservation": {
+      "schema_version": 1,
+      "session_id": "s",
+      "destroy_command_id": "destroy",
+      "control_generation": 2,
+      "expected_marker_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "source_state": "MATCH",
+      "trash_state": "ABSENT",
+      "observed_at_ms": 1,
+      "receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "ContextRecallQueryPart": {
+      "source_kind": "CURRENT_INPUT",
+      "source_ref": {
+        "kind": "journal_record",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "head_chars": 2,
+      "tail_chars": 0,
+      "text_hash": "0bc1fb72ae1be5c5f95031df7a72d2dd795c5405548e9098e81f90c64190f52d",
+      "truncated": false
+    },
+    "ContextRecallLimits": {
+      "page_rows": 256,
+      "page_budget_ms": 200,
+      "total_budget_ms": 30000,
+      "max_scan_pages": 256,
+      "max_result_pages": 16,
+      "channel_top_k": 128,
+      "global_candidates": 128,
+      "max_candidate_bytes": 2097152,
+      "recall_token_ceiling": 65536,
+      "max_recall_items": 32
+    },
+    "ContextRecallRequest": {
+      "schema_version": 1,
+      "recall_key": "recall-1",
+      "original_request_key": "a/t/0",
+      "agent_id": "a",
+      "session_id": "s",
+      "turn_id": "t",
+      "provider_request_ordinal": 0,
+      "root_incarnation": "root",
+      "control_generation": 1,
+      "policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "adoption_revision": 1,
+      "source_snapshot_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "source_snapshot_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "group_snapshot_ref": {
+        "kind": "artifact",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "journal_highwater": 1,
+      "expected_group_set_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "authority_readset_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "mandatory_group_ids": [
+        "g1"
+      ],
+      "protected_group_ids": [],
+      "exclusions_hash": "ea5ba24eb7ee2c352a5f59e7ba6447b2f3bd78b09286021621d49eb319767d88",
+      "query_recipe": "context-query-v1",
+      "query_text": "[CURRENT_INPUT]\n错误",
+      "query_hash": "ffe27ef37867b45933cf6497d947c7a5eb85f4e908ec3a480c5bcacbee0feb79",
+      "query_parts": [
+        {
+          "source_kind": "CURRENT_INPUT",
+          "source_ref": {
+            "kind": "journal_record",
+            "id": "fixture-id",
+            "revision": 1,
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "head_chars": 2,
+          "tail_chars": 0,
+          "text_hash": "0bc1fb72ae1be5c5f95031df7a72d2dd795c5405548e9098e81f90c64190f52d",
+          "truncated": false
+        }
+      ],
+      "embedding_resource_ref": null,
+      "embedding_fingerprint": null,
+      "allow_lexical_degradation": true,
+      "limits": {
+        "page_rows": 256,
+        "page_budget_ms": 200,
+        "total_budget_ms": 30000,
+        "max_scan_pages": 256,
+        "max_result_pages": 16,
+        "channel_top_k": 128,
+        "global_candidates": 128,
+        "max_candidate_bytes": 2097152,
+        "recall_token_ceiling": 65536,
+        "max_recall_items": 32
+      },
+      "created_at_ms": 1000,
+      "deadline_ms": 31000,
+      "clock_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "ContextRecallProgress": {
+      "schema_version": 1,
+      "recall_key": "recall-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "phase": "SCANNING",
+      "scanned_chunks": 0,
+      "snapshot_chunks": 1,
+      "next_wake_at_ms": 1001,
+      "deadline_ms": 31000,
+      "continuation_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "ContextRecallResult": {
+      "schema_version": 1,
+      "recall_key": "recall-1",
+      "request_hash": "74698a44af2c27e9d2641bd919baea248bd42d364281ab7232ce5cc9d69ab825",
+      "original_request_key": "a/t/0",
+      "outcome": "READY",
+      "status": "COMPLETE_EMPTY",
+      "skip_code": null,
+      "source_snapshot_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "journal_highwater": 1,
+      "exclusions_hash": "ea5ba24eb7ee2c352a5f59e7ba6447b2f3bd78b09286021621d49eb319767d88",
+      "policy_ref": {
+        "kind": "policy",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "adoption_revision": 1,
+      "index_snapshot_ref": {
+        "kind": "index_snapshot",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "search_query_id": "q1",
+      "coverage": {
+        "phase": "RESULTS",
+        "rank_scope": "FROZEN_INDEX_CHANNEL_TOPK",
+        "index_coverage": "COMPLETE",
+        "mode": "HYBRID",
+        "scanned_chunks": 0,
+        "snapshot_chunks": 0,
+        "expected_groups": 0,
+        "indexed_groups": 0,
+        "vector_ready_groups": 0,
+        "ranking_final": true,
+        "algorithm_id": "arp-rrf-snapshot-v1"
+      },
+      "query_result_count": 0,
+      "page_refs": [
+        {
+          "kind": "artifact",
+          "id": "page-final",
+          "revision": 1,
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "page_chain_hash": "e802f8d150ed023b51dde1a63add6e464116c1949891928d00933f5f17872023",
+      "candidate_items": [],
+      "candidate_set_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "query_embedding_invocation_ref": null,
+      "unsettled_call_refs": [],
+      "degradations": [],
+      "elapsed_ms": 1,
+      "completed_at_ms": 1001
+    },
+    "RetrievalSummary": {
+      "outcome": "READY",
+      "status": "COMPLETE_EMPTY",
+      "skip_code": null,
+      "coverage": {
+        "phase": "RESULTS",
+        "rank_scope": "FROZEN_INDEX_CHANNEL_TOPK",
+        "index_coverage": "COMPLETE",
+        "mode": "HYBRID",
+        "scanned_chunks": 0,
+        "snapshot_chunks": 0,
+        "expected_groups": 0,
+        "indexed_groups": 0,
+        "vector_ready_groups": 0,
+        "ranking_final": true,
+        "algorithm_id": "arp-rrf-snapshot-v1"
+      },
+      "query_result_count": 0,
+      "candidate_count": 0,
+      "selected_count": 0,
+      "aggregate_ref": {
+        "kind": "retrieval",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "ContextRecallCheckpoint": {
+      "schema_version": 1,
+      "recall_key": "recall-1",
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "phase": "PREPARING",
+      "query_id": "query-fixed",
+      "index_snapshot_ref": null,
+      "mode": null,
+      "query_call_key": null,
+      "embedding_invocation_ref": null,
+      "cursor_token": null,
+      "page_refs": [],
+      "scan_pages_committed": 0,
+      "result_pages_committed": 0,
+      "scanned_chunks": 0,
+      "snapshot_chunks": 0,
+      "next_result_offset": 0,
+      "created_at_ms": 1000,
+      "deadline_ms": 31000,
+      "last_observed_at_ms": 1000,
+      "next_wake_at_ms": 1000,
+      "last_clock_receipt_ref": {
+        "kind": "receipt",
+        "id": "fixture-id",
+        "revision": 1,
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "terminal_error_code": null
+    },
+    "SessionDestroyResume": {
+      "schema_version": 1,
+      "session_id": "s",
+      "agent_id": "a",
+      "expected_generation": 2,
+      "expected_row_version": 5,
+      "destroy_command_id": "destroy",
+      "destroy_command_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "command_id": "resume-destroy-command-1"
+    }
+  }
+}

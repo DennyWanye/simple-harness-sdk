@@ -506,13 +506,28 @@ class AgentRuntime:
 
         await self._assembled.runtime.recover()
 
-    async def create(self, config: AgentConfig, *, creation_key: str) -> BaseAgent:
-        """Create one Agent (no model call).  Same key + same config replays the same Agent."""
+    async def create(
+        self, config: AgentConfig, *, creation_key: str, caller: object | None = None
+    ) -> BaseAgent:
+        """Create one Agent (no model call).  Same key + same config replays the same Agent.
+
+        With the native runtime plane attached (``build_arp_runtime``) every creation
+        goes through ``NativeCreationService`` (durable intent → kernel → one activation
+        transaction); ``caller`` is then the authenticated ``TrustedCaller``.
+        """
 
         if not isinstance(config, AgentConfig):
             raise TypeError("config must use AgentConfig")
         if not isinstance(creation_key, str) or not creation_key.strip():
             raise ValueError("creation_key is required")
+        arp = getattr(self, "arp", None)
+        if arp is not None:
+            receipt = await arp.creation.create(
+                config, creation_key=creation_key, caller=caller, owner_scope=self._owner_scope
+            )
+            return BaseAgent(self, receipt.binding)
+        if caller is not None:
+            raise ValueError("caller is only accepted by ARP runtimes")
         agent_id = agent_id_for(self._owner_scope, creation_key)
         existing = self.uow.read_agent_binding(agent_id)
         if existing is not None:
@@ -575,7 +590,7 @@ class AgentRuntime:
         return self._assembled.tool_names
 
     async def create_many(
-        self, configs: Sequence[AgentConfig], *, batch_key: str
+        self, configs: Sequence[AgentConfig], *, batch_key: str, caller: object | None = None
     ) -> tuple[BaseAgent, ...]:
         """Idempotent batch creation (BA02/BA03/BA04): no model call, no partial batch.
 
@@ -654,7 +669,9 @@ class AgentRuntime:
             raise AgentBatchIdentityConflict("reserved batch names different agent ids")
         agents = []
         for index, config in enumerate(configs):
-            agents.append(await self.create(config, creation_key=f"{batch_key}:{index}"))
+            agents.append(
+                await self.create(config, creation_key=f"{batch_key}:{index}", caller=caller)
+            )
         self.uow.commit_agent_batch(
             batch_id=record.batch_id,
             receipt={"agent_ids": list(agent_ids), "batch_fingerprint": fingerprint},
