@@ -355,6 +355,12 @@ class AssuranceDeploymentPorts:
     # SHA-256 identity of the Host build that reads through the S25 verbs; None
     # binds the constant "unbound" digest (isolated candidates, seams).
     host_fingerprint: str | None = None
+    # Host-side check-policy projection ``(mission_id) -> None``, invoked by the
+    # review runtime *before* it prepares a TASK_CONTENT review, so a Scope the
+    # plan froze inside the same run() gets its policy before the review needs it
+    # (Host real model run 7, 2026-09-23: the after-run projection came too late).
+    # None keeps the human approval verb as the only source of check policies.
+    check_policy_projector: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -426,7 +432,9 @@ def install_assurance(orchestrator: Any, ports: AssuranceDeploymentPorts) -> Ins
         cas=cas,
         check_adapter=local_checks,
     )
-    review_runtime = AssuranceReviewRuntime(orchestrator, review)
+    review_runtime = AssuranceReviewRuntime(
+        orchestrator, review, check_policy_projector=ports.check_policy_projector
+    )
     consumers = {
         "REVIEW": review,
         "VALIDITY": AssuranceValidityConsumer(commit, tenant_id=tenant_id),

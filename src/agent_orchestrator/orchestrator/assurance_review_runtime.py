@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from typing import Any
+from typing import Callable, Any
 
 from simple_harness.agents import AgentConfig, AgentLimits
 from simple_harness.agents.context.budget import policy_hash
@@ -37,12 +37,21 @@ REVIEW_TOOL_CALLS = 8
 
 
 class AssuranceReviewRuntime:
-    def __init__(self, orchestrator: Any, consumer: AssuranceReviewConsumer) -> None:
+    def __init__(
+        self,
+        orchestrator: Any,
+        consumer: AssuranceReviewConsumer,
+        *,
+        check_policy_projector: Callable[[str], None] | None = None,
+    ) -> None:
         if consumer.commit is not orchestrator.commit or consumer.store is not orchestrator.store:
             raise AssuranceError("ASSURANCE_STORE_MISMATCH")
         self.orchestrator = orchestrator
         self.consumer = consumer
         self.store = consumer.store
+        # Deployment port: projects the frozen Scope's check policy under the
+        # Host's caller right before the first review preparation needs it.
+        self._check_policy_projector = check_policy_projector
         from ..verification.reviewer_evidence_tools import ReviewerEvidenceTools
 
         self.evidence_tools = ReviewerEvidenceTools(self)
@@ -404,6 +413,11 @@ class AssuranceReviewRuntime:
                     ),
                 ).to_json(),
             }
+            if self._check_policy_projector is not None and not self.store.connection.in_transaction:
+                # The projector approves through the ordinary verb (receipted,
+                # replay-safe); a projection failure surfaces below as the same
+                # CHECK_POLICY_UNRESOLVED the review would raise without it.
+                self._check_policy_projector(mission.id)
             invocation = ensure_task_content_review(
                 orch.commit,
                 tenant_id=mission.tenant_id,
