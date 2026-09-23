@@ -343,7 +343,7 @@ class MissionSystemTailLedger:
         elif existing.task_id != task_id or existing.status in TERMINAL_ATTEMPT:
             raise BudgetError("system Attempt belongs to another Task or is terminal")
         if critic:
-            ProtectedTailCommitsMixin._protected_critic_subject(attempt_id, subject_id)
+            ProtectedTailCommitsMixin._protected_critic_subject(attempt_id, subject_id, self.store)
         elif subject_id != attempt_id:
             raise BudgetError("system Attempt subject differs")
         return TailBudgetLedger(self.ledger).transfer_tail(

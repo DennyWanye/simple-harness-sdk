@@ -36,14 +36,13 @@ class ProtectedTailCommitsMixin:
         return "system:" + task_id
 
     @staticmethod
-    def _protected_critic_subject(attempt_id: str, subject_id: str) -> None:
-        if (
-            not isinstance(subject_id, str)
-            or re.fullmatch(re.escape(attempt_id) + r":critic:[1-9][0-9]*", subject_id) is None
+    def _protected_critic_subject(attempt_id: str, subject_id: str, store: Any = None) -> None:
+        if isinstance(subject_id, str) and (
+            re.fullmatch(re.escape(attempt_id) + r":critic:[1-9][0-9]*", subject_id) is not None
+            or (store is not None and _assurance_critic_attempt(store, subject_id) == attempt_id)
         ):
-            raise BudgetError(
-                "Critic subject must belong to its actual Attempt and positive ordinal"
-            )
+            return
+        raise BudgetError("Critic subject must belong to its actual Attempt and positive ordinal")
 
     def protected_tail_revision(self, task_id: str) -> str:
         task = self._store.get_task(task_id)
@@ -128,7 +127,7 @@ class ProtectedTailCommitsMixin:
         self._protected_attempt(task_id, attempt_id, allow_next=False)
         if account_id != f"budget:{task_id}":
             raise BudgetError("Critic tail account differs from its original Task")
-        self._protected_critic_subject(attempt_id, subject_id)
+        self._protected_critic_subject(attempt_id, subject_id, self._store)
         hold_id = self.critic_tail_id(attempt_id)
         hold = self.protected_tail_hold(hold_id)
         if hold is None or hold["account_id"] != account_id:
@@ -195,7 +194,7 @@ class ProtectedTailCommitsMixin:
             raise BudgetError("system tail needs an actual system Task and role")
         self._protected_attempt(task_id, attempt_id, allow_next=not critic)
         if critic:
-            self._protected_critic_subject(attempt_id, subject_id)
+            self._protected_critic_subject(attempt_id, subject_id, self._store)
         if not critic and subject_id != attempt_id:
             raise BudgetError("system Attempt subject differs from actual Attempt ID")
         return TailBudgetLedger(self._ledger).transfer_tail(
@@ -299,3 +298,43 @@ class ProtectedTailCommitsMixin:
 
 
 __all__ = ("ProtectedTailCommitsMixin",)
+
+
+_ASSURANCE_CRITIC_SUBJECT = re.compile(
+    r"(?P<mission>[^:]+):assurance:(?P<key>assurance-content:[0-9a-f]{64}):[12]"
+)
+
+
+def _assurance_critic_attempt(store: Any, subject_id: str) -> str | None:
+    """The Attempt an Assurance TASK_CONTENT review intent actually belongs to.
+
+    The Assurance transport names its Critic intent ``<mission>:assurance:<review
+    key>:<ordinal>`` (no Attempt in the name). Ownership is proven from the durable
+    review binding written earlier in the same transaction: its TASK_CONTENT
+    subject is an exact Result, and that Result's Attempt is the owner. Host real
+    model run 12 (2026-09-23): without this the protected first-Critic tail refused
+    every assured review and the loop re-raised forever.
+    """
+    import json
+
+    match = _ASSURANCE_CRITIC_SUBJECT.fullmatch(subject_id)
+    if match is None:
+        return None
+    connection = store.connection
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='assurance_review_bindings'"
+    ).fetchone() is None:
+        return None
+    row = connection.execute(
+        "SELECT binding_json FROM assurance_review_bindings WHERE review_key=? AND mission_id=?",
+        (match["key"], match["mission"]),
+    ).fetchone()
+    if row is None:
+        return None
+    subject = json.loads(row[0]).get("subject") or {}
+    if subject.get("purpose") != "TASK_CONTENT":
+        return None
+    result = store.get_result(((subject.get("target") or {}).get("pin") or {}).get("id"))
+    if result is None or result.envelope.mission_id != match["mission"]:
+        return None
+    return result.envelope.attempt_id

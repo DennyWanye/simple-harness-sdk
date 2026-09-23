@@ -239,7 +239,7 @@ class MissionTailCommitsMixin:
             ):
                 return False
             raise BudgetError("system Critic growth requires its actual Attempt")
-        self._protected_critic_subject(attempt.id, subject_id)
+        self._protected_critic_subject(attempt.id, subject_id, self._store)
         row = self.system_task_hold(attempt.task_id)
         if row is None:
             return False  # Ordinary Critic accounts retain the existing ledger path.
