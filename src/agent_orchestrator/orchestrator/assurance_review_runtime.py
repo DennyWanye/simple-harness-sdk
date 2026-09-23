@@ -20,7 +20,7 @@ from ..assurance.codec import AssuranceError, decode, fingerprint
 from ..assurance.refs import AssuranceRef, Pin
 from ..assurance.review_input import REVIEW_INSTRUCTIONS
 from ..assurance.reviews import REVIEW_CODEC_VERSION
-from ..contracts import ContractError, TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
+from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK, ContractError
 from ..storage.assurance_reads import AssuranceReader
 from ..storage.htn_store import HtnStore
 from ..verification.critics import CriticVerdict
@@ -179,6 +179,156 @@ class AssuranceReviewRuntime:
         if getattr(self.orchestrator.commit, "_assurance_validity", None) is None:
             raise AssuranceError("ASSURANCE_VALIDITY_UNBOUND")
         return verdict
+
+    # ------------------------------------------------ the other five purposes
+    def _purpose_config(self, mission: Any, name: str) -> tuple[Any, dict[str, Any], Any]:
+        orch = self.orchestrator
+        if mission.tenant_id != self.consumer.tenant_id:
+            raise AssuranceError("ASSURANCE_TENANT_MISMATCH")
+        decision = orch._route_service("critic", mission.id)
+        config = {
+            **orch._service_config(decision),
+            "prompt_version": REVIEW_CODEC_VERSION,
+            "agent_config": AgentConfig(
+                name=name,
+                instructions=REVIEW_INSTRUCTIONS,
+                model_profile_ref=decision.profile_id,
+                tool_names=(),
+                limits=AgentLimits(
+                    max_model_calls_per_turn=1,
+                    max_tool_calls_per_turn=1,
+                    turn_deadline_seconds=orch._config.turn_deadline_seconds,
+                ),
+            ).to_json(),
+        }
+        reservation = orch._reservation(orch._config.critic_reserve_tokens, decision.profile_id)
+        return decision, config, reservation
+
+    def _ensure_purpose(
+        self,
+        mission: Any,
+        *,
+        name: str,
+        package: Any,
+        subject: Any,
+        requirements: Any,
+        request_command_id: str,
+        allow_in_transaction: bool = False,
+    ) -> Any:
+        from .assurance_purpose_reviews import prepare_purpose_review
+
+        decision, config, reservation = self._purpose_config(mission, name)
+        return prepare_purpose_review(
+            self.orchestrator.commit,
+            tenant_id=mission.tenant_id,
+            mission_id=mission.id,
+            package=package,
+            subject=subject,
+            requirements=requirements,
+            principal_id=self.consumer.principal_id,
+            authority=self.consumer.authority,
+            cas=self.consumer.cas,
+            config=config,
+            context_policy_ref=self.context_pin(decision.profile_id),
+            reservation=reservation,
+            request_command_id=request_command_id,
+            allow_in_transaction=allow_in_transaction,
+        )
+
+    def ensure_method_plan(
+        self, mission: Any, *, task_id: str, method_ref: Pin, producer_agent_ids: tuple[str, ...]
+    ) -> Any:
+        """METHOD_PLAN from the original method admission (planning subject + registry)."""
+        from .assurance_purpose_reviews import method_plan_package
+
+        package, subject, requirements = method_plan_package(
+            self.store,
+            mission_id=mission.id,
+            task_id=task_id,
+            method_ref=method_ref,
+            producer_agent_ids=producer_agent_ids,
+        )
+        return self._ensure_purpose(
+            mission,
+            name="assurance-method-plan-review",
+            package=package,
+            subject=subject,
+            requirements=requirements,
+            request_command_id="method-plan-review:" + str(package.package_id),
+            allow_in_transaction=True,
+        )
+
+    def ensure_composition(
+        self, mission: Any, *, package: Any, occurrence_id: str, accepted: Mapping[str, Any]
+    ) -> Any:
+        """COMPOSITION from the original composition assembly's package."""
+        from .assurance_purpose_reviews import composition_subject
+
+        subject, requirements = composition_subject(
+            self.store,
+            mission_id=mission.id,
+            package=package,
+            occurrence_id=occurrence_id,
+            accepted=accepted,
+        )
+        return self._ensure_purpose(
+            mission,
+            name="assurance-composition-review",
+            package=package,
+            subject=subject,
+            requirements=requirements,
+            request_command_id="composition-review:" + str(package.package_id),
+        )
+
+    def ensure_action_proposal(self, mission: Any, *, draft: Any, sources: Any, payloads: Any) -> Any:
+        """ACTION_PROPOSAL from T0's frozen draft, inside T0's own UoW."""
+        from .assurance_purpose_reviews import action_proposal_subject
+
+        subject, requirements = action_proposal_subject(
+            self.store, mission_id=mission.id, package=draft.package, sources=sources, payloads=payloads
+        )
+        return self._ensure_purpose(
+            mission,
+            name="assurance-action-proposal-review",
+            package=draft.package,
+            subject=subject,
+            requirements=requirements,
+            request_command_id="action-proposal-review:" + str(draft.package.package_id),
+            allow_in_transaction=True,
+        )
+
+    def ensure_operation_outcome(self, mission: Any, *, prepared: Any) -> Any:
+        """OPERATION_OUTCOME from the original outcome readback, inside its persistence UoW."""
+        from .assurance_purpose_reviews import operation_outcome_subject
+
+        subject, requirements = operation_outcome_subject(
+            self.store, mission_id=mission.id, prepared=prepared
+        )
+        return self._ensure_purpose(
+            mission,
+            name="assurance-operation-outcome-review",
+            package=prepared.package,
+            subject=subject,
+            requirements=requirements,
+            request_command_id="operation-outcome-review:" + str(prepared.package.package_id),
+            allow_in_transaction=True,
+        )
+
+    def ensure_mission_final(self, mission: Any, *, package: Any, dispatch: Any) -> Any:
+        """MISSION_FINAL from the root coordinator's cut package."""
+        from .assurance_purpose_reviews import mission_final_subject
+
+        subject, requirements = mission_final_subject(
+            self.store, mission_id=mission.id, package=package, dispatch=dispatch
+        )
+        return self._ensure_purpose(
+            mission,
+            name="assurance-mission-final-review",
+            package=package,
+            subject=subject,
+            requirements=requirements,
+            request_command_id="mission-final-review:" + str(package.package_id),
+        )
 
     async def run_task(self, mission: Any, task: Any, *, attempt_id: str) -> CriticVerdict:
         orch = self.orchestrator

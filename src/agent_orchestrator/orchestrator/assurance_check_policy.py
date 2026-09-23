@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from ..assurance.checks import CriterionPolicy
 from ..assurance.codec import AssuranceError, canonical, decode, fingerprint, text
@@ -25,6 +26,14 @@ if TYPE_CHECKING:
 ADAPTER_VERSION = "assurance-check-policy-v1"
 
 
+@dataclass(frozen=True, slots=True)
+class _PlanningProjection:
+    """A purpose domain without a content Scope: the criteria it is approved on."""
+
+    requirements: RequirementsRevision
+    criteria: tuple[Any, ...]
+
+
 def approve_check_policy(
     commit: CommitService,
     *,
@@ -33,19 +42,47 @@ def approve_check_policy(
     command_id: str,
     principal: Principal,
     requirements_ref: AssuranceRef,
-    completion_scope: AssuranceRef,
+    completion_scope: AssuranceRef | None = None,
     candidate_mapping: Sequence[CriterionPolicy],
     result_ref: AssuranceRef | None = None,
+    planning_subject: AssuranceRef | None = None,
+    purpose: str = "CONTENT",
+    effect_key: str | None = None,
 ) -> AssuranceRef:
     """Human caller explicitly approves the exact mapping; no inferred authorization.
 
     Alternative check groups require this new approval. Every retained group must
     preserve original mandatory checks; missing deployments are never removed.
+
+    The approved domain is Requirements hash + a domain hash: the frozen Scope for
+    Scope-content purposes (``purpose="CONTENT"``: TASK_CONTENT/COMPOSITION), the
+    exact planning-subject Task for METHOD_PLAN (``planning_subject``; no Scope
+    exists yet and none is borrowed later), and Scope+purpose for MISSION_FINAL
+    (the whole root requirements), ACTION_PROPOSAL and OPERATION_OUTCOME, whose
+    catalogues are not the Scope's content criteria. No Scope is invented.
     """
+    from .assurance_purpose_reviews import policy_domain_hash
+
+    if purpose not in {
+        "CONTENT",
+        "METHOD_PLAN",
+        "MISSION_FINAL",
+        "ACTION_PROPOSAL",
+        "OPERATION_OUTCOME",
+    }:
+        raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID")
+    if (purpose == "METHOD_PLAN") != (planning_subject is not None):
+        raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID")
+    if (purpose == "OPERATION_OUTCOME") != (effect_key is not None):
+        raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID")
+    if (completion_scope is None) != (planning_subject is not None):
+        raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID")
     if (
         not isinstance(principal, Principal)
         or requirements_ref.kind != "requirements"
-        or completion_scope.kind != "completion_scope"
+        or (completion_scope is not None and completion_scope.kind != "completion_scope")
+        or (planning_subject is not None and planning_subject.kind != "task")
+        or (result_ref is not None and purpose != "CONTENT")
     ):
         raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID")
     text(tenant_id)
@@ -65,7 +102,10 @@ def approve_check_policy(
         "principal_id": principal.principal_id,
         "command_id": command_id,
         "requirements_ref": requirements_ref.to_json(),
-        "completion_scope": completion_scope.to_json(),
+        "completion_scope": None if completion_scope is None else completion_scope.to_json(),
+        "planning_subject": None if planning_subject is None else planning_subject.to_json(),
+        "purpose": purpose,
+        "effect_key": effect_key,
         "result_ref": None if result_ref is None else result_ref.to_json(),
         "criteria": [row.to_json() for row in criteria],
         "adapter_version": ADAPTER_VERSION,
@@ -92,21 +132,56 @@ def approve_check_policy(
         requirements = RequirementsRevision.from_json(
             decode(reader.read_exact_metadata(requirements_ref).body_json)
         )
-        scope = OccurrenceCompletionScopeV1.from_json(
-            decode(reader.read_exact_metadata(completion_scope).body_json)
-        )
-        if (
-            scope.requirements_ref.to_json() != requirements_ref.pin.to_json()
-            or OperationCompletionReader(commit.store).read_scope(
-                mission_id, scope.plan_ref, scope.occurrence_id
+        scope = None
+        if completion_scope is not None:
+            scope = OccurrenceCompletionScopeV1.from_json(
+                decode(reader.read_exact_metadata(completion_scope).body_json)
             )
-            != scope
-        ):
-            raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
-        binding = HtnStore(commit.store).task_semantics_of(mission_id, scope.task_ref.id)
+            if (
+                scope.requirements_ref.to_json() != requirements_ref.pin.to_json()
+                or OperationCompletionReader(commit.store).read_scope(
+                    mission_id, scope.plan_ref, scope.occurrence_id
+                )
+                != scope
+            ):
+                raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+        binding = HtnStore(commit.store).task_semantics_of(
+            mission_id, planning_subject.pin.id if scope is None else scope.task_ref.id
+        )
         if binding is None:
             raise AssuranceError("CHECK_POLICY_UNRESOLVED")
-        if binding.form is TaskForm.PRIMITIVE:
+        if planning_subject is not None:
+            reader.read_exact_metadata(planning_subject)
+            if (
+                int(binding.contract_revision) != int(planning_subject.pin.revision)
+                or binding.content_hash() != planning_subject.pin.content_hash
+            ):
+                raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+            covered = set(binding.goal_signature.coverage_criteria)
+            projection = _PlanningProjection(
+                requirements,
+                tuple(c for c in requirements.criteria if c.criterion_id in covered),
+            )
+        elif purpose == "MISSION_FINAL":
+            # The root review judges the whole root requirements, not only the
+            # root Scope's content projection; the Scope names the root Task.
+            projection = _PlanningProjection(requirements, tuple(requirements.criteria))
+        elif purpose == "ACTION_PROPOSAL":
+            from .operation_proposal_review import _criteria as proposal_criteria
+
+            projection = _PlanningProjection(requirements, proposal_criteria())
+        elif purpose == "OPERATION_OUTCOME":
+            from .operation_outcomes import _effect_owner
+
+            owner, spec, owner_requirements = _effect_owner(commit.store, mission_id, effect_key)
+            if owner != scope or owner_requirements != requirements:
+                raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+            slot = spec.effect(effect_key)
+            projection = _PlanningProjection(
+                requirements,
+                tuple(c for c in requirements.criteria if c.criterion_id in slot.criterion_ids),
+            )
+        elif binding.form is TaskForm.PRIMITIVE:
             # This reader supplies the original local criteria/evidence policy.
             # Its absence does not authorize replacing them with root criteria.
             if result_ref is not None:
@@ -128,8 +203,15 @@ def approve_check_policy(
             projection = read_compound_projection(
                 commit.store, mission_id, scope.occurrence_id, scope.task_ref.id
             )
-        if projection.scope != scope or projection.requirements != requirements:
+        if projection.requirements != requirements or (
+            not isinstance(projection, _PlanningProjection) and projection.scope != scope
+        ):
             raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+        domain = policy_domain_hash(
+            "TASK_CONTENT" if purpose == "CONTENT" else purpose,
+            scope_hash=None if scope is None else scope.content_hash(),
+            task_hash=binding.content_hash(),
+        )
         originals = {row.criterion_id: row for row in projection.criteria}
         if set(originals) != {row.criterion_id for row in criteria}:
             raise AssuranceError("POLICY_CATALOGUE_MISMATCH")
@@ -167,7 +249,7 @@ def approve_check_policy(
             {
                 "mission": mission_id,
                 "requirements": requirements_ref.to_json(),
-                "scope": completion_scope.pin.content_hash,
+                "scope": domain,
             }
         )
         receipt_body = {
@@ -191,7 +273,7 @@ def approve_check_policy(
             policy_id,
             mission_id=mission_id,
             requirements=requirements_ref.pin,
-            scope_hash=scope.content_hash(),
+            scope_hash=domain,
             criteria=criteria,
             approval_receipt=AssuranceRef(
                 "commit_receipt", Pin(receipt_id, 0, fingerprint(receipt_body))

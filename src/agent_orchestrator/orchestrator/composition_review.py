@@ -198,6 +198,9 @@ class CompositionAcceptanceAssembly:
         else:
             revision = self._requirements(mission_id, binding, occurrence_id)
         manifest = self._manifest_hash(mission_id, str(spec.task_id))
+        from ..storage.assurance_store import AssuranceStore
+
+        assured = AssuranceStore(self.store).lane(mission_id) == "ASSURANCE_1_1"
         package = self._package(
             mission_id,
             spec,
@@ -209,7 +212,25 @@ class CompositionAcceptanceAssembly:
             method_instance_id=instance_id,
             criteria=None if projection is None else projection.criteria,
             expression=None if projection is None else projection.expression,
+            persist=not assured,
         )
+        if assured:
+            # BW03: an assured Mission's composition is judged by an independent
+            # review on the round transport. The self-composed record and the
+            # legacy witness below never license it; consuming the official
+            # COMPOSITION record in commit_goal_resolution is the terminal-writer
+            # work and is not licensed from here.
+            from ..assurance.codec import AssuranceError
+            from .assurance_purpose_reviews import assurance_review_runtime
+
+            mission = self.store.get_mission(mission_id)
+            try:
+                assurance_review_runtime(self.commit).ensure_composition(
+                    mission, package=package, occurrence_id=str(occurrence_id), accepted=accepted
+                )
+            except AssuranceError as error:
+                raise ContractError(f"Assurance COMPOSITION review unavailable: {error}") from error
+            return None
         record = self._record(mission_id, package, occurrence_id, accepted, gating)
         if record.verdict is not ReviewVerdict.ACCEPT:
             return None
@@ -393,6 +414,7 @@ class CompositionAcceptanceAssembly:
         method_instance_id: str,
         criteria: tuple[Criterion, ...] | None = None,
         expression: Any | None = None,
+        persist: bool = True,
     ) -> ReviewPackage:
         child_refs = tuple(
             TypedRef(
@@ -448,6 +470,8 @@ class CompositionAcceptanceAssembly:
             requirements_content_hash=revision.content_hash(),
             method_instance_id=MethodInstanceId(method_instance_id),
         )
+        if not persist:
+            return package
         try:
             stored = self.semantics.get_review_package(str(package.package_id))
         except StoreError:

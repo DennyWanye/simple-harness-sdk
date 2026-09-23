@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -173,8 +174,8 @@ class AssuranceReviewBinding:
                 "output_manifest_hash",
             },
         )
-        one_of(subject["purpose"], REVIEW_PURPOSES)
-        AssuranceRef.from_json(subject["target"])
+        purpose = one_of(subject["purpose"], REVIEW_PURPOSES)
+        target = AssuranceRef.from_json(subject["target"])
         Pin.from_json(subject["owner_task_ref"])
         for key in ("completion_scope_ref", "method_instance_ref"):
             if subject[key] is not None:
@@ -184,6 +185,7 @@ class AssuranceReviewBinding:
         digest(subject["input_manifest_hash"])
         if subject["output_manifest_hash"] is not None:
             digest(subject["output_manifest_hash"])
+        validate_subject_shape(purpose, target.kind, subject)
         criteria = unique_texts(row["criterion_ids"], maximum=256)
         mandatory = unique_texts(row["mandatory_ids"], maximum=256)
         authors = unique_texts(row["producer_agent_ids"], maximum=256)
@@ -225,6 +227,45 @@ class AssuranceReviewBinding:
     @property
     def content_hash(self) -> str:
         return fingerprint(self.to_json())
+
+
+SUBJECT_TARGET_KINDS: Mapping[str, frozenset[str]] = {
+    "TASK_CONTENT": frozenset({"result"}),
+    "METHOD_PLAN": frozenset({"method"}),
+    "COMPOSITION": frozenset({"task"}),
+    "ACTION_PROPOSAL": frozenset({"artifact"}),
+    "OPERATION_OUTCOME": frozenset({"operation", "tool_receipt"}),
+    "MISSION_FINAL": frozenset({"task"}),
+}
+
+
+def validate_subject_shape(purpose: str, target_kind: str, subject: Mapping[str, Any]) -> None:
+    """Shape/combination rules of the approved contract (reference ``validate_subject_shape``).
+
+    METHOD_PLAN happens before a completion Scope exists and may name neither an
+    occurrence nor a Scope; every other purpose needs both. Content purposes carry
+    the outputs they judge; proposal/outcome purposes never do.
+    """
+    if target_kind not in SUBJECT_TARGET_KINDS.get(purpose, frozenset()):
+        raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
+    if purpose == "METHOD_PLAN":
+        if (subject["occurrence_id"] is None) != (subject["completion_scope_ref"] is None):
+            raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
+        if (
+            subject["method_instance_ref"] is not None
+            or subject["output_manifest_hash"] is not None
+        ):
+            raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
+    elif subject["occurrence_id"] is None or subject["completion_scope_ref"] is None:
+        raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
+    if purpose in {"TASK_CONTENT", "COMPOSITION", "MISSION_FINAL"}:
+        if subject["output_manifest_hash"] is None:
+            raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
+    elif purpose in {"ACTION_PROPOSAL", "OPERATION_OUTCOME"}:
+        if subject["output_manifest_hash"] is not None:
+            raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
+    if purpose == "COMPOSITION" and subject["method_instance_ref"] is None:
+        raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
 
 
 @dataclass(frozen=True, slots=True)

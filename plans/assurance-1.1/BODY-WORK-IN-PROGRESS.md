@@ -568,3 +568,102 @@ f98ef064ee6b5f9efca5af05e7d1fbabbf7e6616fad5a66f04e1dd3142cfac9e  orchestrator/e
 ```
 仍未证明：真实 router 全链（`_verify_result` → recorder → accept_result）只在接缝里按同一顺序手工复现，没有跑
 批量回归；Worker 结算门、consumed check 正例、真实模型、四 consumer、Host/UI 与上一段相同未覆盖。
+
+### 2026-09-23 第三段·handoff §4 第 3 项：其余五 builder 接统一 transport（基线 048632b9）
+
+**做了什么（代码存在，并按下述范围验证）**
+
+1. 新模块 `orchestrator/assurance_purpose_reviews.py`：`prepare_purpose_review` 是五个目的共用的准备器
+   （review_key `assurance-<purpose>:`+指纹、按 (requirements_hash, 目的域) 找已批准策略、目录相等、exact refs /
+   epochs / 完整快照 / 当前 ACL / catalogue / binding、blob pin、`require_current_locked`、
+   `commit.ensure_assurance_review_invocation`、失败释放准备 pin）；各目的的 subject/package 构造器：
+   `method_plan_package`（规划主体合同 + 注册表里的 method + 覆盖 criteria；method 的 goal 必须等于主体 goal
+   签名，否则 `SUBJECT_BINDING_INVALID`；作者不可证明 → `SOURCE_UNAVAILABLE`）、`composition_subject`、
+   `action_proposal_subject`、`operation_outcome_subject`、`mission_final_subject`。
+2. **目的域**（不捏造 Scope）：新纯函数 `assurance/policy_domain.py::policy_domain_hash`：
+   TASK_CONTENT/COMPOSITION = Scope 哈希；METHOD_PLAN = 规划主体 Task 合同的 exact 内容哈希（**始终**，即使
+   admission 时已有 Scope，也不借用 Scope 的内容策略）；MISSION_FINAL/ACTION_PROPOSAL/OPERATION_OUTCOME =
+   fingerprint(purpose, scope_hash)（它们的目录不是 Scope 的内容投影：整份根 Requirements / proposal check /
+   effect slot）。`approve_check_policy` 增加 `purpose`/`planning_subject`/`effect_key`，MISSION_FINAL 投影 =
+   全部 requirements criteria；`storage/assurance_store.record_criterion_policy` 原来硬性要求
+   "策略域 == completion_scope 哈希"，现在按批准回执自己的 purpose/scope/planning_subject 重算期望域再比对
+   （这是接缝暴露的真缺陷：此前 METHOD_PLAN 批准根本落不了库）。
+3. **主体形状**：`assurance/reviews.py::validate_subject_shape` 在 binding 构造时按 spec `semantics.py` 强制
+   （目标 kind、METHOD_PLAN 允许无 occurrence/scope、内容类目的必须有 output_manifest_hash、
+   ACTION_PROPOSAL/OPERATION_OUTCOME 不得有、COMPOSITION 必须有 method_instance_ref）。TASK_CONTENT 补
+   `output_manifest_hash`（result + port_claims + artifacts）。transport `_validate_package` 改为按目的域校验策略，
+   scope 检查仅在有 scope 时做。
+4. **原入口挂钩**（`AssuranceReviewRuntime.ensure_*` → `prepare_purpose_review`）：
+   - METHOD_PLAN：event handler 的 `persist_method` 之后（同一 admission UoW，`allow_in_transaction`），作者 =
+     发起 planning intent 的 agent；
+   - COMPOSITION：`CompositionAcceptanceAssembly.resolve_one` assured 分支不再走旧 `_record`，交 transport；
+   - ACTION_PROPOSAL：`operation_runtime.prepare_review` T0 事务内；
+   - OPERATION_OUTCOME：`advance_operation_outcomes` 持久化 UoW 内；
+   - MISSION_FINAL：`Orchestrator._ask_root_reviewer` assured 分支（旧 root reviewer intent 与 raw verdict
+     collector 对 assured Mission 不再使用）。
+5. **subject stopped 按目的区分**：`assurance_review_import.review_subject_stopped` 现在对 MISSION_FINAL 以
+   "根 duty 已 resolved 或 cut package 已 superseded"判停，根 Task 已 DONE 是它的正常态；其余目的仍绑定
+   存活的 owner Task；TASK_CONTENT 仍看 Attempt。handoff validator 复用同一规则（原先把根 DONE 当 stopped，
+   MISSION_FINAL 意图永远派发不出去）。
+6. task 类 Pin 一律用 binding 的 exact 内容哈希（`content_hash()`），与 `read_exact_metadata("task")` 一致；
+   此前 purpose 模块和 planning_subject 比对用了 `contract_hash`，exact 读必然 `REF_BODY_CONFLICT`。
+
+**接缝**（本机 ignored，`.local-test-evidence/2026-09-23/assurance-integration/`）
+
+- 新共用夹具 `scripts/assurance_seams/_assured_fixture.py`（从 validity seam 抽出：FixtureCommit/AssuranceMissionFactory、
+  `AssuredRuntime` 异步上下文 = 真实 Store/Commit/Scope + 真实 AgentRuntime + ScriptedProvider + 原 runner/collector/
+  REVIEW consumer/validity + 单 consumer pump；可选 `content_only=True` 冻结 CONTENT_ONLY 根 Scope）。
+- 新 `purpose-builders-seam.py` PASS：`purpose-builders-seam-20260923T083636415467.json`
+  （sha256 `a0c0461511e018be45feb19dd7553af1c963b5de00f6718a808b07a5aab12469`）：
+  - 叶子 TASK_CONTENT：原 `_run_critic` → official → 像 router 记录 critic 层 → 生产 `accept_result`（1 证书）。
+  - MISSION_FINAL 全链：`RootReviewCoordinator.state` = CUT_REQUIRED → 原 `cut`（仍会铸旧 ACCEPT witness，
+    本段不消费它，记为第 7 项）→ `_ask_root_reviewer`：无策略 → False 且不留 binding（`CHECK_POLICY_UNRESOLVED`）；
+    同 Scope 的 TASK_CONTENT 策略不许可 MISSION_FINAL（域不同）→ 批准 purpose=MISSION_FINAL 策略 → True，
+    1 个 `assurance-mission-final:` invocation，binding 主体/scope/output_manifest/策略引用全部核对，intent kind=plan
+    且带 `assurance_protocol`，旧 root-review intent 不存在；再问一次幂等；`_dispatch`/`_await_service_turn` →
+    真实 turn（ScriptedProvider）→ `collect_assurance_review` → REVIEW consumer → official MISSION_FINAL record
+    (ACCEPT) 通过 `read_official_review_binding_locked` → `coordinator.state` = READY。
+  - METHOD_PLAN：反例 `task-root`+`plan.outer` 覆盖零 requirements criterion → `SOURCE_UNAVAILABLE`；
+    `task-completion-root`（goal completion.single）+ `plan.outer`（goal plan.goal）→ `SUBJECT_BINDING_INVALID`；
+    正例用 fixture 按 admission 方式登记的 compound 规划主体 `task-seam-plan`（语义绑定 + Task 行）与经真实
+    registry admit/register 的 `seam.method`：作者为空 → `SOURCE_UNAVAILABLE`；未批准 → `CHECK_POLICY_UNRESOLVED`
+    且无 invocation；批准 `planning_subject` 后（策略域 == 主体 exact 哈希）→ 1 个 `assurance-method-plan:`
+    invocation，主体无 scope/occurrence，重放返回同一 invocation。**但**这份 pre-Scope invocation 在原派发 handoff
+    停在 `REVIEW_SCOPE_UNAVAILABLE`（handoff validator 与 REVIEW consumer 仍要求 completion Scope），不花模型调用；
+    这是第 6 项（consumer 生产装配）要做的 pre-Scope 消费，本段如实记录，未伪造 Scope。
+  - COMPOSITION / ACTION_PROPOSAL / OPERATION_OUTCOME：**只有代码**（builder + 挂钩），原入口需要 compound /
+    operation 夹具，本段未跑。ACTION_PROPOSAL 的四条 DETERMINISTIC criteria 需要第 4 项注册 checker，其策略批准
+    现在会如实 `CHECK_POLICY_UNRESOLVED`。
+- 金丝雀重跑 PASS：`validity-accept-seam-20260923T083720667694.json`
+  （sha256 `8fb91c9de2f4f5abcc01b102ad23ab55bb0226f61b6faf49b13644b7e20c7b8a`，已改为用共用夹具）、
+  `critic-format-repair-seam-20260923T083721564960.json`
+  （sha256 `51b46e9f189182c0c6afe91613aadc03a1dc2e15406bb369afc0bca8bf68de24`）。
+- 定向既有测试：`tests/orchestrator/p33/test_g_critic_lease_lifecycle.py` + `test_g_critic_dispatch_recovery.py`
+  10 passed（触及 `_critic_subject_stopped`）。没有跑批量回归。
+
+**改动文件 sha256**
+```
+b9e49fd5d2d2bbd3d52cd7bfd3e58a6a8fba9a2881ad01de0aa2df3b78ef9160  assurance/policy_domain.py
+d00e1cdb6be873da6c72262ca6ff8f3fb01c48050d9dbec4d9e1dead3f86f14a  assurance/reviews.py
+1d086fb5012956b858107e24c163d79d2b954a08b58330387983199ca12abf37  orchestrator/assurance_purpose_reviews.py
+8bff9061b10dadf838b46e376e586cd1071921a1e7b02a12a849ee356223a61a  orchestrator/assurance_check_policy.py
+35005078f85237947b41be395c4f3b4f5025e35bd1b87efce90a0e350cbb07a9  orchestrator/assurance_content_review.py
+ccceac3896dbd36e2984bd0bc925716b2ebe4035a140e9ce84839a3fd4ba8899  orchestrator/assurance_review_handoff.py
+89513be55c551e180469f2a9a55b71f5c4d7c9e9b41a91b60ed67942e4bdfc1d  orchestrator/assurance_review_import.py
+a647b9f528b53ba1048da0b5bb29abe8fd405885b7c837f01646ba8f0871e024  orchestrator/assurance_review_runtime.py
+1549c96ccdd881582ac47af9cc6a40ad8fb93c3815ea114ed278ac2cab35a6cf  orchestrator/assurance_review_transport.py
+74677ce6173a0daa36c6b28a0b4a237813f601fb8f114462d080ca0070bcf898  orchestrator/composition_review.py
+cc89cf65242b0e23174420678e4903a685e409bee877ac84a9522161072e2893  orchestrator/event_handler.py
+f364c3dbdbd5c48d9a0ff4321cf581ffae8714500bb713d3bcf87d474b32f7d6  orchestrator/operation_runtime.py
+87ea6553395e38d02d25e8ef071b48aec6d33fd0f7792e0be7fe4287691b54d1  storage/assurance_store.py
+ca858401959d575b76d053b47bd76b72882a180d65de64977f8240f63cc3a09b  scripts/assurance_seams/_assured_fixture.py
+018900e4a3d4377bdc742789cf6a129409314551934def9a077b266369ca534a  scripts/assurance_seams/purpose-builders-seam.py
+a6f0906d866c05b823c3784bd6c61132817ee9033af3eb4b3b92d3b13ffd9160  scripts/assurance_seams/validity-accept-seam.py
+```
+
+**仍未证明 / 留给后续项**：COMPOSITION、ACTION_PROPOSAL、OPERATION_OUTCOME 三个原入口没有在接缝里跑；
+pre-Scope METHOD_PLAN 的派发与 official（第 6 项）；MIXED 根 Scope 的 MISSION_FINAL 要先有 effect proof
+（operation 路径，第 4/7 项）；`cut` 铸的旧 ACCEPT witness 与 root resolution 的唯一终态写口（第 7 项）；
+Worker 结算门、consumed check 正例、真实模型、四 consumer、Host/UI 与前两段相同未覆盖。
+
+下一段：handoff §4 第 4 项（executor check receipt importer）起。

@@ -34,6 +34,7 @@ from ..assurance.reviews import (
     ReviewRecordBinding,
 )
 from ..assurance.root_gate import CurrentReadPermission
+from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
 from ..contracts.resolution import (
     CheckExecution,
     CriterionOutcome,
@@ -41,7 +42,6 @@ from ..contracts.resolution import (
     ReviewRecord,
     ReviewVerdict,
 )
-from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
 from ..storage.assurance_blobs import PreparedBlob, read_pinned_blob
 from ..storage.assurance_reads import (
     AssuranceReader,
@@ -73,6 +73,14 @@ class ImportedReview:
 
 
 def review_subject_stopped(store: Any, binding: AssuranceReviewBinding) -> bool:
+    """Whether the reviewed subject can no longer use an answer; purpose-aware.
+
+    A stopped Mission stops every review. A TASK_CONTENT review dies with its
+    Attempt or Task. A MISSION_FINAL review is asked *after* the root Task's own
+    work is accepted, so the root being DONE is its normal state; it stops when
+    the root duty is already resolved or the cut package was superseded. The
+    other purposes are bound to a live owner Task.
+    """
     body = binding.to_json()
     mission = store.get_mission(body["mission_id"])
     task = store.get_task(body["subject"]["owner_task_ref"]["id"])
@@ -81,10 +89,29 @@ def review_subject_stopped(store: Any, binding: AssuranceReviewBinding) -> bool:
         or mission.status in TERMINAL_MISSION
         or task is None
         or task.mission_id != mission.id
-        or task.status in TERMINAL_TASK
     ):
         return True
-    if body["subject"]["purpose"] == "TASK_CONTENT":
+    purpose = body["subject"]["purpose"]
+    if purpose == "MISSION_FINAL":
+        from ..storage.htn_store import HtnStore
+        from ..storage.store import StoreError
+        from .hierarchical_dispatch import ROOT_REVIEW_SUPERSEDED
+
+        package_id = body["package_ref"]["id"]
+        try:
+            package = HtnStore(store).get_review_package(package_id)
+        except StoreError:
+            return True
+        if HtnStore(store).adopted_goal_resolution(mission.id, str(package.binding.obligation_id)):
+            return True
+        return any(
+            event.type == ROOT_REVIEW_SUPERSEDED
+            and str((event.payload or {}).get("package_id", "")) == str(package_id)
+            for event in store.list_events(mission.id)
+        )
+    if task.status in TERMINAL_TASK:
+        return True
+    if purpose == "TASK_CONTENT":
         result = store.get_result(body["subject"]["target"]["pin"]["id"])
         attempt = None if result is None else store.get_attempt(result.envelope.attempt_id)
         return attempt is None or attempt.status in TERMINAL_ATTEMPT

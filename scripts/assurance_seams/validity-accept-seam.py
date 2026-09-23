@@ -7,192 +7,34 @@ evaluator and the original acceptance writer. Routing, ACL, lease and the
 single-consumer pump are explicit fixtures; no real model, four-consumer
 deployment, executor checks, Host or UI.
 """
-from seam_paths import SDK, EVIDENCE
+from _assured_fixture import EVIDENCE, SDK, AssuredRuntime, count, refused, source_sha256
 import asyncio
 import dataclasses
-import hashlib
 import json
-import sys
-
-import jsonschema
-from referencing import Registry, Resource
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import MethodType, SimpleNamespace
-from unittest.mock import patch
 
-sys.path[:0] = [str(SDK / 'tests/orchestrator/full_target'),
-                str(SDK / 'tests/orchestrator/full_target/operation_completion'),
-                str(SDK / 'tests/agents'), str(Path(__file__).parent)]
-import test_plan_commits as plans
-import test_completion_spec_approval as approval
-from test_scoped_content_commit import _mixed_world
-from provider_fixture import MODEL, ScriptedProvider
-from simple_harness.agents import build_agent_runtime
-from simple_harness.agents.ports import AgentRuntimePorts, AllowAllAuthorization
-from simple_harness.providers.base import ProviderUsage
-from agent_orchestrator.artifacts.store import ArtifactStore
-from agent_orchestrator.assurance.checks import CriterionPolicy
-from agent_orchestrator.assurance.codec import AssuranceError, canonical, decode, fingerprint
-from agent_orchestrator.assurance.evidence import ReadItem
-from agent_orchestrator.assurance.policy import AssurancePolicy
-from agent_orchestrator.assurance.refs import AssuranceRef, Pin
+import jsonschema
+from referencing import Registry, Resource
+from agent_orchestrator.assurance.codec import decode
 from agent_orchestrator.assurance.reviews import REVIEW_CODEC_VERSION
-from agent_orchestrator.assurance.root_gate import AssuranceRootGate, CurrentReadPermission
 from agent_orchestrator.contracts.evidence_state import ObservationRecord, QueryCompleteness
-from agent_orchestrator.contracts.resolution import (AllExpr, CriterionExpr, EvaluationKind,
-                                                     RequirementsRevision)
 from agent_orchestrator.contracts.semantic_base import TypedRef, TypedRefKind
 from agent_orchestrator.governance.budgets import UsageFact
-from agent_orchestrator.governance.permissions import Principal
-from agent_orchestrator.orchestrator.assurance_factory import AssuranceMissionFactory
-from agent_orchestrator.orchestrator.assurance_review_consumer import AssuranceReviewConsumer
-from agent_orchestrator.orchestrator.assurance_review_runtime import AssuranceReviewRuntime
-from agent_orchestrator.orchestrator.assurance_tick import PreparedAssuranceWork
-from agent_orchestrator.orchestrator.assurance_validity import AssuranceValidity, acceptance_id_for
-from agent_orchestrator.orchestrator.commit_service import CommitService, Reservation
+from agent_orchestrator.orchestrator.assurance_validity import acceptance_id_for
 from agent_orchestrator.orchestrator.completion_inputs import load_completion_result_inputs
-from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.orchestrator.leaf_acceptance import LeafAcceptanceAssembly
-from agent_orchestrator.orchestrator.resolution_commits import ResolutionCommitRejected
-from agent_orchestrator.runtime.agent_worker import AgentBridge
-from agent_orchestrator.storage.assurance_work import CONSUMERS, AssuranceWorkStore
 from agent_orchestrator.storage.htn_store import HtnStore
 
 
-def requirements(mission, spec):
-    return RequirementsRevision(revision_id='completion-requirements-1', mission_id=mission.id, revision=1,
-        criteria=(approval._criterion('criterion-report'), approval._criterion('criterion-delivered')),
-        success_expression=AllExpr((CriterionExpr('criterion-report'), CriterionExpr('criterion-delivered'))),
-        authority_subject='authenticated-user-confirmation')
-
-
-def fixture_requirements(mission, spec):
-    original = requirements(mission, spec)
-    return dataclasses.replace(original, criteria=tuple(
-        dataclasses.replace(c, evaluation_kind=EvaluationKind.SEMANTIC) if c.criterion_id == 'criterion-report' else c
-        for c in original.criteria))
-
-
-class FixtureCommit(CommitService):
-    def __init__(self, store, **kwargs):
-        super().__init__(store, **kwargs)
-        self._assurance_root_gate = AssuranceRootGate(store, store.path.parent)
-        store._assurance_root_gate = self._assurance_root_gate
-        self.install_assurance_root(principal=Principal('fixture-authenticated-user'),
-                                    tenant_id='tenant-p23a', command_id='install')
-        self._assurance_factory = AssuranceMissionFactory(self, tenant_id='tenant-p23a', policy=AssurancePolicy(),
-            require_creation_root=self._assurance_root_gate.require_execution, requirements=fixture_requirements,
-            reconcile=lambda _: {consumer: () for consumer in CONSUMERS})
-
-    def create_mission(self, spec, **kwargs):
-        return super().create_mission(dataclasses.replace(spec, planning_protocol_version='planning-decision-v1'), **kwargs)
-
-
-def refused(call, expected):
-    try:
-        call()
-    except AssuranceError as error:
-        assert error.code in expected, (error.code, expected)
-        return error.code
-    except ResolutionCommitRejected as error:
-        assert error.reason in expected, (error.reason, expected)
-        return error.reason
-    raise AssertionError('not refused: ' + str(expected))
-
-
-class KnownUsageProvider(ScriptedProvider):
-    async def invoke(self, request, *, cancel):
-        result = await super().invoke(request, cancel=cancel)
-        return dataclasses.replace(result, usage=ProviderUsage(10, 10, 20))
-
-
-def build_world(root):
-    with patch.object(plans, 'CommitService', FixtureCommit), \
-         patch.object(approval, '_bind_new_protocol', lambda _: None), \
-         patch.object(approval, '_requirements', lambda w: HtnStore(w.store).get_requirements_revision(w.mission.id, 1)):
-        world, req, _, task, stored, artifact = _mixed_world(root, accept_result=False, with_output=True)
-    store, commit = world.store, world.service
-    scope_row = store.connection.execute('SELECT * FROM operation_completion_scopes WHERE mission_id=?', (world.mission.id,)).fetchone()
-    scope_ref = AssuranceRef('completion_scope', Pin(scope_row['scope_id'], 0, scope_row['scope_hash']))
-    commit.approve_assurance_check_policy(tenant_id=world.mission.tenant_id, mission_id=world.mission.id,
-        command_id='fixture-policy-approval', principal=Principal('fixture-authenticated-user'),
-        requirements_ref=AssuranceRef('requirements', Pin(str(req.revision_id), req.revision, req.content_hash())),
-        completion_scope=scope_ref, candidate_mapping=(CriterionPolicy('criterion-report', 'SEMANTIC', ()),))
-    return world, task, stored, artifact, scope_ref
-
-
-class ReviewPump:
-    # Explicit single-consumer fixture: not the four-consumer deployment.
-    def __init__(self, store, mission_id, consumer):
-        self.store, self.mission_id = store, mission_id
-        self.consumers = {'REVIEW': consumer}
-        self.work = AssuranceWorkStore(store)
-
-    async def tick(self):
-        store = self.store
-        cursor = store.connection.execute("SELECT * FROM assurance_event_cursors WHERE mission_id=? AND consumer='REVIEW'", (self.mission_id,)).fetchone()
-        consumer = self.consumers['REVIEW']
-        self.work.ingest(self.mission_id, 'REVIEW', expected_version=cursor['row_version'], classify=lambda e, c: consumer.classify(e), now_ms=int(store.now * 1000))
-        for claim in self.work.claim_due(self.mission_id, 'REVIEW', owner='runner-fixture', now_ms=int(store.now * 1000), lease_ms=30000, limit=1):
-            prepared = await consumer.prepare(claim)
-            assert isinstance(prepared, PreparedAssuranceWork), prepared
-            self.work.commit(claim, now_ms=int(store.now * 1000), effect=prepared.commit, rejected=prepared.rejected)
-
-
 async def run_review(root, response, authority_state):
-    world, task, stored, artifact, scope_ref = build_world(root)
-    store, commit = world.store, world.service
-    cas = ArtifactStore(root / 'scoped-cas')
-    deadline = int(store.now * 1000) + 60000
-
-    def authority(identity, ref):
-        return CurrentReadPermission(
-            ReadItem('ACCESS', ref.key, fingerprint({'fixture-principal': identity.principal_id, 'purpose': identity.purpose,
-                                                     'ref': ref.to_json(), 'state': authority_state[0]})),
-            ReadItem('POLICY', 'fixture-current-policy', 'f' * 64), deadline)
-
-    provider = KnownUsageProvider([canonical(response)])
-    async with build_agent_runtime(AgentRuntimePorts(provider=provider, authorization=AllowAllAuthorization(),
-                                                     database_path=str(root / 'runtime.db'), model=MODEL, owner_id='runner-seam')) as runtime:
-        bridge = AgentBridge(runtime, unpriced=True)
-        orch = SimpleNamespace(store=store, commit=commit, bridge_for=lambda _: bridge,
-            assembled=SimpleNamespace(workspaces=SimpleNamespace(artifact_store=cas), pool=lambda _: SimpleNamespace(bridge=bridge), gateway=SimpleNamespace(unbind=lambda _: None)),
-            _expected_model=lambda _: MODEL, _note=lambda _: None, _assurance_reviews=None,
-            _owner='runner-fixture', _poll=0.001, _critic_wait=10,
-            _config=SimpleNamespace(lease_seconds=60, turn_deadline_seconds=10, critic_reserve_tokens=100),
-            _assurance_root_gate=commit._assurance_root_gate, _assurance_management_only=False,
-            _route_service=lambda *a: SimpleNamespace(profile_id='fixture-review'),
-            _service_config=lambda d: {'runtime_profile_id': d.profile_id, 'model': MODEL},
-            _reservation=lambda *a: Reservation(tokens=100, cost_micros=0),
-            _assembly_missing=lambda *a, **k: False, _pool_missing=lambda _: False,
-            _context_profile_for=lambda _: None, _fault=lambda *a: None,
-            _hold_lease=lambda _: None, _service_blocked_since={},
-            _validate_mission_judge_intent=lambda _: None)
-        for name in ('_run_critic', '_dispatch', '_dispatch_until_submitted', '_await_service_turn',
-                     '_critic_subject_stopped', '_bind_critic', '_require_assurance_execution_root',
-                     '_settle_intent', '_import_usage', '_service_agent_ids', '_settle_service_if_known', 'profile_of'):
-            setattr(orch, name, MethodType(getattr(Orchestrator, name), orch))
-
-        async def normal_wait(intent, liveness):
-            assert not Orchestrator._provider_blocked(liveness), 'fixture unexpectedly blocked'
-            return None
-        orch._resolve_provider_blocked_service = normal_wait
-        consumer = AssuranceReviewConsumer(commit, tenant_id=world.mission.tenant_id, principal_id='fixture-current-consumer',
-                                           authority=authority, cas=cas, check_adapter=None)
-        runner = AssuranceReviewRuntime(orch, consumer)
-        runner.install()
-        validity = AssuranceValidity(commit, tenant_id=world.mission.tenant_id, principal_id='fixture-current-consumer',
-                                     cas=cas, check_adapter=None, authority=authority)
-        orch._assurance_tick = ReviewPump(store, world.mission.id, consumer)
-        verdict = await orch._run_critic(world.mission, task, view_id=stored.envelope.attempt_id,
-            subject_prefix=stored.envelope.attempt_id + ':critic', account_id='budget:' + task.id,
-            artifacts=(artifact,), test_output=None, attempt_id=stored.envelope.attempt_id)
-        with store.read_view():
-            record = runner.task_record(world.mission.id, stored.envelope.attempt_id)
-        assert record is not None and provider.calls == 1
-        return world, task, stored, artifact, validity, verdict, record
+    """Original Critic entry on the shared fixture; the AgentRuntime closes here, as
+    the rest of this seam only exercises store-side validity and acceptance."""
+    async with AssuredRuntime(root, [response], authority_state) as rt:
+        verdict, record = await rt.run_critic()
+        assert rt.provider.calls == 1
+    return rt.world, rt.task, rt.stored, rt.artifact, rt.validity, verdict, record
 
 
 def accept_now(world, task, stored, artifact):
@@ -213,10 +55,6 @@ def replay_accept(world, task, stored, artifact):
             producer_agent_ids=(attempt.agent_id,), reviewer_agent_id=f'critic:{attempt.id}',
             now_ms=int(store.now * 1000), input_manifest_hash=frozen.frozen.manifest_hash,
             port_claims=frozen.port_claims)
-
-
-def count(store, sql, *params):
-    return store.connection.execute(sql, params).fetchone()[0]
 
 
 async def main():
@@ -384,7 +222,7 @@ async def main():
                'orchestrator/leaf_acceptance.py', 'orchestrator/assurance_review_runtime.py', 'verification/scoped_acceptance.py',
                'verification/acceptance_rules.py', 'assurance/grounding.py', 'assurance/certificates.py',
                'orchestrator/assurance_check_use.py', 'storage/assurance_reads.py', 'storage/assurance_store.py']
-    report['source_sha256'] = {name: hashlib.sha256((SDK / 'src/agent_orchestrator' / name).read_bytes()).hexdigest() for name in sources}
+    report['source_sha256'] = source_sha256(sources)
     out = EVIDENCE / ('validity-accept-seam-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f') + '.json')
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({'status': 'PASS', 'evidence': str(out), 'certificate': report['certificate']['decision'],

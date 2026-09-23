@@ -78,6 +78,22 @@ def prepare_review(orchestrator: Any, sources: Any, payloads: Any, package_id: s
     coordinator = coordinator_for(orchestrator, sources)
     draft = coordinator.prepare_review(sources, payloads, package_id=package_id)
     coordinator.persist_package(draft)
+    from ..storage.assurance_store import AssuranceStore
+
+    if AssuranceStore(orchestrator.store).lane(sources.command.mission_id) == "ASSURANCE_1_1":
+        # BW03: the same frozen draft, reviewed on the Assurance round transport
+        # inside T0's own UoW; the legacy operation reviewer intent is not created.
+        from ..assurance.codec import AssuranceError
+        from .assurance_purpose_reviews import assurance_review_runtime
+
+        mission = orchestrator.store.get_mission(sources.command.mission_id)
+        try:
+            assurance_review_runtime(orchestrator.commit).ensure_action_proposal(
+                mission, draft=draft, sources=sources, payloads=payloads
+            )
+        except AssuranceError as error:
+            raise OperationCompletionError("OP_REVIEW_UNAVAILABLE", str(error)) from error
+        return draft
     decision = orchestrator._route_service("critic", sources.command.mission_id)
     config = AgentConfig(
         name="operation-reviewer-" + package_id[-8:],
@@ -259,8 +275,8 @@ async def dispatch_materialized_operations(orchestrator: Any, mission_id: str) -
     idempotency check. This bridge supplies no new authority and never re-sends
     HANDED_OFF, UNKNOWN or SUCCEEDED actions.
     """
-    from .action_commits import HANDOFF_READY_STATES
     from ..contracts.state_machines import MissionStopReason
+    from .action_commits import HANDOFF_READY_STATES
 
     for row in OperationIntentStore(orchestrator.store).for_mission(mission_id):
         receipt = orchestrator.store.get_receipt("materialize:" + row["intent_id"])
@@ -365,9 +381,27 @@ def advance_operation_outcomes(orchestrator: Any, mission_id: str) -> bool:
             )
             message = user_message_json(json.dumps(prepared.request_content, ensure_ascii=False))
             subject = "operation-outcome-review:" + prepared.binding_id
+            from ..storage.assurance_store import AssuranceStore
+
+            assured = AssuranceStore(store).lane(mission_id) == "ASSURANCE_1_1"
             with store.transaction():
                 persist_operation_outcome_review(orchestrator.commit, prepared, runtime=runtime)
                 mission = store.get_mission(mission_id)
+                if assured:
+                    # BW03: the persisted outcome preparation is reviewed on the
+                    # Assurance round transport in this same UoW.
+                    from ..assurance.codec import AssuranceError
+                    from .assurance_purpose_reviews import assurance_review_runtime
+
+                    try:
+                        assurance_review_runtime(orchestrator.commit).ensure_operation_outcome(
+                            mission, prepared=prepared
+                        )
+                    except AssuranceError as error:
+                        raise OperationCompletionError(
+                            "OP_OUTCOME_REVIEW_UNAVAILABLE", str(error)
+                        ) from error
+                    return True
                 orchestrator.commit.create_service_intent(
                     kind="plan",
                     subject_id=subject,

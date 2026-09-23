@@ -7846,6 +7846,26 @@ class Orchestrator:
                         prepared_method = prepare_method(new_mode, mission.id, decision.payload, checked.subject)
                         service_detail = persist_method(new_mode, *prepared_method)
                         event_type = "PlanningMethodProposed"
+                        from ..storage.assurance_store import AssuranceStore
+                        if AssuranceStore(self.store).lane(mission.id) == "ASSURANCE_1_1":
+                            # BW03: the admitted draft gets its independent METHOD_PLAN
+                            # review on the round transport, authored by this intent.
+                            from ..assurance.codec import AssuranceError
+                            from ..assurance.refs import Pin as AssurancePin
+                            if self._assurance_reviews is None:
+                                raise ContractError("Assurance review builder is not installed for METHOD_PLAN")
+                            method_reference = prepared_method[1].method_ref()
+                            try:
+                                review = self._assurance_reviews.ensure_method_plan(
+                                    mission, task_id=str(checked.subject["task_id"]),
+                                    method_ref=AssurancePin(method_reference.method_id,
+                                                            int(method_reference.version),
+                                                            method_reference.content_hash),
+                                    producer_agent_ids=(str(intent.agent_id or ""),))
+                            except AssuranceError as error:
+                                raise ContractError(f"Assurance METHOD_PLAN review unavailable: {error}") from error
+                            service_detail = {**service_detail,
+                                              "assurance_review_key": review.to_json()["review_key"]}
                     record_decision(request_id=request_id, attempt_ordinal=attempt_ordinal,
                         raw_output_hash=raw_hash, raw_artifact_ref=raw_artifact_ref,
                         decision_id=decision_id, status=PlanningDecisionStatus.NO_STATE_CHANGE,
@@ -12562,6 +12582,21 @@ class Orchestrator:
         subject = f"{mission.id}:root-review:{package.package_id}:{ordinal}"
         if self.store.get_intent_for_subject(subject) is not None:
             return False
+        from ..storage.assurance_store import AssuranceStore
+        if AssuranceStore(self.store).lane(mission.id) == "ASSURANCE_1_1":
+            # BW03: the cut package is reviewed on the Assurance round transport;
+            # the legacy root reviewer intent and its raw-verdict collector are
+            # not used for an assured Mission.
+            from ..assurance.codec import AssuranceError
+            if self._assurance_reviews is None:
+                raise ContractError("Assurance review builder is not installed for MISSION_FINAL")
+            try:
+                self._assurance_reviews.ensure_mission_final(
+                    mission, package=package, dispatch=coordinator.dispatch)
+            except AssuranceError as error:
+                self._note(f"mission {mission.id}: Assurance MISSION_FINAL review unavailable ({error})")
+                return False
+            return True
         request = coordinator.request(
             mission.id,
             package,

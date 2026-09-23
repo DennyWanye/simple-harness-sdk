@@ -28,6 +28,7 @@ from ..assurance.codec import (
 )
 from ..assurance.disclosure import DisclosureBatch
 from ..assurance.policy import AssurancePolicy
+from ..assurance.policy_domain import policy_domain_hash
 from ..assurance.refs import AssuranceRef, Pin
 from .assurance_reads import MISSION_EPOCH_SCOPE
 from .assurance_work import WorkTarget, atomic
@@ -323,8 +324,21 @@ class AssuranceStore:
                 "WHERE commit_id=?",
                 (approval_receipt.pin.id,),
             ).fetchone()
-            scope = AssuranceRef.from_json(
-                approval.get("completion_scope"), kinds={"completion_scope"}
+            scope = approval.get("completion_scope")
+            subject = approval.get("planning_subject")
+            if (scope is None) == (subject is None):
+                raise AssuranceError("CHECK_POLICY_APPROVAL_RECEIPT_MISMATCH")
+            scope_ref = (
+                None if scope is None else AssuranceRef.from_json(scope, kinds={"completion_scope"})
+            )
+            subject_ref = (
+                None if subject is None else AssuranceRef.from_json(subject, kinds={"task"})
+            )
+            purpose = str(approval.get("purpose", "CONTENT"))
+            expected_domain = policy_domain_hash(
+                "TASK_CONTENT" if purpose == "CONTENT" else purpose,
+                scope_hash=None if scope_ref is None else scope_ref.pin.content_hash,
+                task_hash=None if subject_ref is None else subject_ref.pin.content_hash,
             )
             if (
                 original["kind"] != "AssuranceCheckPolicyApproved"
@@ -335,7 +349,7 @@ class AssuranceStore:
                 or approval.get("policy_id") != policy_id
                 or approval.get("requirements_ref")
                 != AssuranceRef("requirements", requirements).to_json()
-                or scope.pin.content_hash != scope_hash
+                or expected_domain != scope_hash
                 or approval.get("criteria") != document["criteria"]
                 or approval.get("adapter_version") != adapter_version
             ):

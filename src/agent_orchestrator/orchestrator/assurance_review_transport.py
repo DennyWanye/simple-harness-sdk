@@ -85,16 +85,31 @@ def _validate_package(reader: AssuranceReader, package: ReviewPackage, body: dic
             AssuranceRef.from_json(body["criterion_policy_ref"], kinds={"check_policy"})
         ).body_json
     )
+    from .assurance_purpose_reviews import policy_domain_hash
+
+    scope_pin = subject["completion_scope_ref"]
+    domain = policy_domain_hash(
+        subject["purpose"],
+        scope_hash=None if scope_pin is None else scope_pin["content_hash"],
+        task_hash=subject["owner_task_ref"]["content_hash"],
+    )
     if (
         policy["requirements_ref"] != body["requirements_ref"]
         or policy["criteria"] != body["check_requirements"]
-        or subject["completion_scope_ref"] is None
-        or policy["scope_hash"] != subject["completion_scope_ref"]["content_hash"]
+        or policy["scope_hash"] != domain
     ):
         raise AssuranceError("CHECK_POLICY_SCOPE_MISMATCH")
+    if subject["method_instance_ref"] is not None:
+        reader.read_exact_metadata(
+            AssuranceRef("method_instance", Pin.from_json(subject["method_instance_ref"]))
+        )
+    if scope_pin is None:
+        # Only METHOD_PLAN may be bound before a Scope exists (subject shape rule);
+        # its approved domain is the exact planning subject read above.
+        return
     scope_body = decode(
         reader.read_exact_metadata(
-            AssuranceRef("completion_scope", Pin.from_json(subject["completion_scope_ref"]))
+            AssuranceRef("completion_scope", Pin.from_json(scope_pin))
         ).body_json
     )
     from ..contracts.operation_completion import OccurrenceCompletionScopeV1

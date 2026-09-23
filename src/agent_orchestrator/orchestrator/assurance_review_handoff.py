@@ -15,11 +15,12 @@ from ..assurance.codec import AssuranceError, canonical, fingerprint
 from ..assurance.refs import AssuranceRef, Pin
 from ..assurance.review_input import REVIEW_INSTRUCTIONS, read_initial_materials
 from ..assurance.reviews import REVIEW_CODEC_VERSION
-from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK
+from ..contracts import TERMINAL_ATTEMPT
 from ..storage.assurance_pins import require_live_pin_locked
 from ..storage.assurance_reads import AssuranceReader, read_epochs_locked, require_epochs_locked
 from ..storage.htn_store import HtnStore
 from .assurance_check_use import _permission
+from .assurance_review_import import review_subject_stopped
 from .assurance_review_transport import _validate_package
 
 
@@ -41,10 +42,8 @@ class AssuranceReviewHandoff:
             mission is None
             or mission.tenant_id != self.consumer.tenant_id
             or mission.id != intent.mission_id
-            or mission.status in TERMINAL_MISSION
             or task is None
-            or task.mission_id != mission.id
-            or task.status in TERMINAL_TASK
+            or review_subject_stopped(store, binding)
         ):
             raise AssuranceError("REVIEW_SUBJECT_STOPPED")
         scope = body["subject"]["completion_scope_ref"]
