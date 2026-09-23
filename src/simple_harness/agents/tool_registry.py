@@ -45,6 +45,11 @@ class BaseAgentToolRegistry(ToolRegistry):
     def exposed_tools(self, run_id: str) -> frozenset[str] | None:
         if self._exposure_reader is None:
             return None
+        if getattr(self._exposure_reader, "dynamic", False):
+            # The native plane re-checks the catalogue at every call: a tool suspended
+            # after the request's snapshot is refused here, not only at the next prepare.
+            names = self._exposure_reader(run_id)
+            return None if names is None else frozenset(str(name) for name in names)
         cached = self._exposure_cache.get(run_id)
         if cached is None:
             names = self._exposure_reader(run_id)

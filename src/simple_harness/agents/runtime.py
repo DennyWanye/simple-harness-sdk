@@ -118,6 +118,7 @@ class AssembledRuntime:
     retriever: object = None
     indexer: object = None
     provider_admission: ProviderAdmissionPort | None = None
+    registry: object = None
 
 
 def assemble_runtime(
@@ -128,6 +129,7 @@ def assemble_runtime(
     delegation_reconciliation=None,  # type: ignore[no-untyped-def]
     context_factory=None,  # type: ignore[no-untyped-def]
     wire_factory=None,  # type: ignore[no-untyped-def]
+    exposure_reader=None,  # type: ignore[no-untyped-def]
 ) -> AssembledRuntime:
     """Compose the kernel for BaseAgents; root and child profiles both drive ``base_agent``."""
 
@@ -156,7 +158,7 @@ def assemble_runtime(
 
     registry = BaseAgentToolRegistry(
         (*tools, *cast(tuple[Tool, ...], extra_tools)),
-        exposure_reader=_exposure,
+        exposure_reader=_exposure if exposure_reader is None else exposure_reader(_exposure),
         max_concurrent=ports.max_concurrent_tool_calls,
     )
     # An SDK-native authorization port (prepare/bind_decision, able to require a
@@ -304,6 +306,7 @@ def assemble_runtime(
         retriever,
         indexer,
         provider_admission=admission,
+        registry=registry,
     )
 
 
@@ -854,6 +857,7 @@ def build_agent_runtime(
     context_factory=None,  # type: ignore[no-untyped-def]
     wire_factory=None,  # type: ignore[no-untyped-def]
     session_tools_factory=None,  # type: ignore[no-untyped-def]
+    exposure_reader=None,  # type: ignore[no-untyped-def]
 ) -> AgentRuntime:
     """Assemble a BaseAgent runtime with no user Memory; use ``async with``.
 
@@ -873,6 +877,7 @@ def build_agent_runtime(
         delegation_reconciliation=AgentDelegationReconciliation,
         context_factory=context_factory,
         wire_factory=wire_factory,
+        exposure_reader=exposure_reader,
     )
     runtime = AgentRuntime(assembled, ports, owner_scope=owner_scope)
     delegate.bind(runtime)

@@ -38,6 +38,7 @@ from ...context.tokenizer import count_message, count_tools
 from ...wire import AgentProviderWire, _ledger_groups, restore_tool_calls, run_id_from_request
 from .. import store
 from ..codec import check
+from ..catalogue import ToolExposureService, read_tool_snapshot
 from ..errors import ArpError
 from ..pins import Pin
 from ..rules import Budget, Group, Recall, Selection, Turn, allocate
@@ -84,6 +85,8 @@ class PreparedContext:
     budget: Budget
     fixed: int
     messages: tuple[Message, ...]
+    tool_snapshot: Mapping[str, Any] | None = None
+    tool_witnesses: tuple[Pin, ...] = ()
 
 
 class ArpContextPort(JournalContextPort):
@@ -177,6 +180,7 @@ class ArpContextPort(JournalContextPort):
         highwater = self._uow.agent_journal_highwater(run_id)
         if frozen is not None:
             return self._replay(frozen, session, request)
+        request, tool_snapshot, tool_witnesses = self._expose(session, request)
         snapshot = self._capture(session, highwater)
         turn_id = snapshot.current_turn_id
         turn = self._uow.read_agent_turn(turn_id)
@@ -273,7 +277,7 @@ class ArpContextPort(JournalContextPort):
                 candidates.append(Recall(item["chunk_id"], frozenset(item["source_group_ids"]), charge))
         candidates = candidates[: int(policy["max_recall_items"])]
         selection = allocate(budget, fixed, rule_groups, candidates, turns=rule_turns, current_turn_id=turn_id, enumeration_complete=bool(snapshot.body["enumeration_complete"]))
-        prepared = PreparedContext(highwater, turn_id, snapshot, session, selection, result, texts, budget, fixed, ())
+        prepared = PreparedContext(highwater, turn_id, snapshot, session, selection, result, texts, budget, fixed, (), tool_snapshot, tool_witnesses)
         wire, measurement = self._render_and_measure(prepared, request, instructions)
         self._write_manifest(prepared, wire, measurement, request_key, ordinal, adoption.adoption_revision, tool_tokens, instructions)
         self.prepared.append(request_key)
@@ -382,7 +386,10 @@ class ArpContextPort(JournalContextPort):
             "recent_complete_turn_count": selection.recent_complete_turns,
             "recalled_chunk_ids": [r.id for r in selection.recalled],
             "retrieval_receipt_ref": Pin("retrieval", result["recall_key"], 0, digest(result)).to_json(),
-            "tool_snapshot_ref": Pin("tool_snapshot", f"{session.agent_id}:tools", 0, tool_snapshot_hash).to_json(),
+            "tool_snapshot_ref": (
+                Pin("tool_snapshot", f"{session.agent_id}:tools", 0, tool_snapshot_hash) if prepared.tool_snapshot is None
+                else ToolExposureService.snapshot_pin(prepared.tool_snapshot)
+            ).to_json(),
             "skill_refs": [],
             "planned_request_hash": measurement.request_hash,
             "input_token_charge": measurement.wire_tokens,
@@ -391,7 +398,7 @@ class ArpContextPort(JournalContextPort):
             "safety_reserve_tokens": int(policy["safety_reserve_tokens"]),
             "tool_headroom_tokens": int(policy["tool_headroom_tokens"]),
             "counter_mode": arp.meter.binding.count_mode,
-            "registry_epoch": 0,
+            "registry_epoch": 0 if prepared.tool_snapshot is None else int(prepared.tool_snapshot["registry_epoch"]),
             "authority_refs": [arp.policy.approval_ref.to_json()],
             "source_read_set_ref": Pin("artifact", f"readset:{context_id}", 0, digest(read_set)).to_json(),
             "creation_root_id": session.creation_root_id,
@@ -403,12 +410,12 @@ class ArpContextPort(JournalContextPort):
             "N_count_complete": bool(snapshot.body["enumeration_complete"]) and selection.count_complete,
             "selected_turn_ids": list(selection.complete_turn_ids),
             "group_snapshot_ref": snapshot.pin.to_json(),
-            "catalogue_witness_refs": [],
+            "catalogue_witness_refs": [w.to_json() for w in prepared.tool_witnesses],
         }
         value = check("ContextManifest", manifest)
         proof = Pin.from_json(measurement.receipt["proof_ref"])
         with self._uow.database.transaction() as txn:
-            row = store.put_context_locked(txn, manifest=value, original_request_key=request_key, catalog_epoch=0, source_read_set=read_set, now_ms=arp.ports.clock_ms())
+            row = store.put_context_locked(txn, manifest=value, original_request_key=request_key, catalog_epoch=int(manifest["registry_epoch"]), source_read_set=read_set, now_ms=arp.ports.clock_ms())
             store.append_runtime_event_locked(
                 txn,
                 run_id=session.agent_id,
@@ -429,6 +436,10 @@ class ArpContextPort(JournalContextPort):
 
         arp = self.arp
         manifest = frozen.manifest
+        frozen_tools = read_tool_snapshot(self._connection(), str(manifest["tool_snapshot_ref"]["id"]))
+        if frozen_tools is not None:
+            allowed = {str(t["model_name"]) for t in frozen_tools["tools"]}
+            request = replace(request, tools=tuple(t for t in request.tools if t.name in allowed))
         snapshot = self._capture(session, int(manifest["journal_highwater"]))
         instructions = [r for r in snapshot.instructions if r.visibility == "context"]
         messages: list[Message] = [_message_of(r) for r in instructions]
@@ -447,6 +458,22 @@ class ArpContextPort(JournalContextPort):
         if provider_request_fingerprint(wire) != frozen.planned_request_hash:
             raise ArpError("REQUEST_HASH_MISMATCH", "frozen manifest does not reproduce the wire request")
         return wire
+
+    # ---- tool exposure (§8) ----------------------------------------------------------------------
+
+    def _expose(self, session: store.SessionRow, request: ProviderRequest) -> tuple[ProviderRequest, Mapping[str, Any] | None, tuple[Pin, ...]]:
+        """Freeze which of the request's tools the model may see: only catalogue-admitted,
+        currently usable tools survive; the rest are dropped from this request (their
+        reasons stay on the snapshot service), never silently exposed."""
+
+        arp = self.arp
+        exposure = getattr(arp, "exposure", None)
+        if exposure is None or not request.tools:
+            return request, None, ()
+        snapshot, exposed, _refused = exposure.prepare(session, [t.name for t in request.tools], authority_refs=[arp.policy.approval_ref])
+        allowed = {str(t["model_name"]) for t in snapshot["tools"]}
+        filtered = replace(request, tools=tuple(t for t in request.tools if t.name in allowed))
+        return filtered, snapshot, tuple(e.activation.witness for e in exposed)
 
     # ---- query parts / clock receipt ------------------------------------------------------------
 

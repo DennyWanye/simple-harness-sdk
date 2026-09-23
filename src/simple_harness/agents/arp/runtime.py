@@ -22,6 +22,8 @@ from simple_harness.execution.sqlite.database import Database
 
 from . import PROTOCOL, store
 from .authorization import is_allow_all
+from .bootstrap import BootstrapReport, bootstrap_builtin_tools, refresh_builtin_health, runtime_caller
+from .catalogue import CapabilityResolver, CatalogueScope, CatalogueService, ToolExposureService
 from .context.composer import ArpContextPort, ArpProviderWire
 from .context.recall import ContextRecallCoordinator
 from .creation import NativeCreationService
@@ -51,6 +53,11 @@ class ArpRuntime:
     recall: ContextRecallCoordinator
     context: ArpContextPort
     retriever: SessionRetriever | None = None
+    catalogue: CatalogueService | None = None
+    exposure: ToolExposureService | None = None
+    resolver: CapabilityResolver | None = None
+    bootstrap: BootstrapReport | None = None
+    catalogue_caller: Any | None = None
     _services: dict[str, SessionSearchService] = field(default_factory=dict)
 
     @property
@@ -76,6 +83,9 @@ class ArpRuntime:
         """One fair coordination pass: due INDEX jobs, then non-terminal recalls."""
 
         jobs = self.index.process_due()
+        probed = False
+        if self.catalogue is not None and self.bootstrap is not None and self.catalogue_caller is not None:
+            probed = refresh_builtin_health(self.catalogue, self.bootstrap.deployment_ref, caller=self.catalogue_caller)
         resumed = blocked = deferred = 0
         connection = self.index.uow.database.connection
         for row in store.list_pending_recalls(connection):
@@ -94,7 +104,7 @@ class ArpRuntime:
                     raise  # anything else is a coordinator defect, not a recorded outcome
                 blocked += 1  # the row itself carries the named BLOCKED/STALE code
             resumed += 1
-        return {"jobs": len(jobs), "recalls": resumed, "blocked": blocked, "deferred": deferred}
+        return {"jobs": len(jobs), "recalls": resumed, "blocked": blocked, "deferred": deferred, "health_probed": int(probed)}
 
     def close(self) -> None:
         self.index.close()
@@ -156,8 +166,12 @@ def build_arp_runtime(
         holder["tools"] = ArpSessionHistoryTools()
         return holder["tools"]
 
+    def exposure_reader(base):  # type: ignore[no-untyped-def]
+        return _DynamicExposure(base, holder)
+
     runtime = build_agent_runtime(
-        ports, owner_scope=owner_scope, context_factory=context_factory, wire_factory=wire_factory, session_tools_factory=session_tools_factory
+        ports, owner_scope=owner_scope, context_factory=context_factory, wire_factory=wire_factory, session_tools_factory=session_tools_factory,
+        exposure_reader=exposure_reader,
     )
     try:
         profile, policy = _freeze_profile(runtime.uow.database, arp)
@@ -196,6 +210,22 @@ def build_arp_runtime(
         context.bind(state)
         state.retriever = SessionRetriever(state, capture=lambda session, highwater: holder["context"]._capture(session, highwater))
         holder["tools"].attach(state.retriever)
+        # Unified catalogue for this namespace: mount, builtin bootstrap, exposure/resolver.
+        scope = CatalogueScope(realm_id=root.root_id, owner_id=owner_scope, project_id=None, catalogue_owner_root_id=root.root_id)
+        state.catalogue = CatalogueService(runtime.uow, scope, arp.clock_ms, ports.clock)
+        owner_contract = Pin("policy", f"{profile.profile_id}:owner-mode:{arp.profile.owner_mode}", profile.revision, profile.body_hash)
+        caller = runtime_caller(arp.profile.refs.activation_receipt_ref, owner_contract)
+        state.catalogue.mount(mount_receipt_ref=caller.command_receipt_ref)
+        from simple_harness import __version__ as sdk_version
+
+        state.bootstrap = bootstrap_builtin_tools(
+            state.catalogue, specs=tuple(runtime._assembled.registry.specs), caller=caller, approval_ref=policy.approval_ref,
+            effect_classes=arp.extra.get("tool_effect_classes"), sdk_version=str(sdk_version),
+        )
+        state.catalogue_caller = caller
+        state.exposure = ToolExposureService(state.catalogue)
+        state.resolver = CapabilityResolver(state.catalogue)
+        holder["exposure"] = state.exposure
     except BaseException:
         runtime.uow.database.close()
         raise
@@ -210,6 +240,24 @@ def build_arp_runtime(
 
     runtime.shutdown = shutdown  # type: ignore[method-assign]
     return runtime
+
+
+class _DynamicExposure:
+    """Per-call exposure: the Run's configured tools ∩ the catalogue's currently usable tools."""
+
+    dynamic = True
+
+    def __init__(self, base: Any, holder: dict[str, Any]) -> None:
+        self._base = base
+        self._holder = holder
+
+    def __call__(self, run_id: str) -> tuple[str, ...] | None:
+        names = self._base(run_id)
+        exposure = self._holder.get("exposure")
+        if names is None or exposure is None:
+            return names
+        exposed, _ = exposure.exposed(tuple(names), now_ms=exposure.catalogue.clock_ms())
+        return tuple(e.model_name for e in exposed)
 
 
 def arp_of(runtime: Any) -> ArpRuntime | None:
