@@ -26,12 +26,13 @@ if TYPE_CHECKING:
 
 
 def default_assurance_profile_for_new_mission() -> AssurancePolicy | None:
-    """Single default selection point; body/acceptance gates are still open.
+    """Single default selection point: the registered policy, i.e. default ON.
 
-    The final verified delivery changes this to the registered policy. Until
-    then only an explicitly assembled isolated candidate may select it.
+    Flipped in the verified 2026-09-23 delivery (Assurance 1.1 item 10). A
+    deployment that wants the original lane passes its own ``select_profile``
+    returning ``None``; this function is consulted only when it passes none.
     """
-    return None
+    return AssurancePolicy()
 
 
 class AssuranceMissionFactory:

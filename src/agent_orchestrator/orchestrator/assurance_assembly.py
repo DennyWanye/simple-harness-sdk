@@ -11,7 +11,8 @@ the root gate exists and before recovery resumes any runtime.
 
 Nothing here approves a policy, selects a Mission profile on its own or runs a
 model. The default profile selector is still
-``default_assurance_profile_for_new_mission`` (None until the final delivery).
+``default_assurance_profile_for_new_mission`` (the registered policy: default ON
+since the verified 2026-09-23 delivery).
 """
 
 from __future__ import annotations

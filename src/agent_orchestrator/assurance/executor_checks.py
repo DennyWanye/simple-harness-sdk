@@ -68,6 +68,7 @@ def executor_run_facts(
             "timed_out": bool(run.get("timed_out")),
             "command": list(run.get("command") or []),
             "error": run.get("error"),
+            "no_tests_collected": run.get("no_tests_collected") is True,
             "nodeids": nodes,
             "stdout_tail": str(run.get("stdout") or "")[-8000:],
             "receipt": None,
@@ -118,8 +119,22 @@ def executor_run_facts(
     scope = detail.get("observation_scope")
     grade = Grade.UNKNOWN
     reason = "executor facts incomplete"
+    # The verifier's courtesy whole-tree run (no ``pytest:`` target named) on a
+    # workspace pytest collected nothing from: exit 5, no node ids.  It attests
+    # nothing, so it is graded PASS only as "nothing to attest" and only when bound
+    # to the unchanged snapshot; a named target that collected nothing stays FAIL.
+    vacuous = bool(runs) and all(
+        row["target"] is None and row["no_tests_collected"] and run.get("returncode") == 5
+        for run, row in zip(runs, documented, strict=True)
+    )
     if state == "SUCCEEDED":
-        if any(int(run.get("returncode")) != 0 or not run.get("passed") for run in runs):
+        if vacuous:
+            if not isinstance(scope, Mapping):
+                reason = "run not bound to this Result's unchanged workspace snapshot"
+            else:
+                grade = Grade.PASS
+                reason = "no pytest target named; the executor collected no tests (exit 5), nothing to attest"
+        elif any(int(run.get("returncode")) != 0 or not run.get("passed") for run in runs):
             grade, reason = Grade.FAIL, "a pytest target exited non-zero"
         elif not isinstance(scope, Mapping):
             reason = "run not bound to this Result's unchanged workspace snapshot"

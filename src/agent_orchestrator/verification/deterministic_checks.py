@@ -242,10 +242,28 @@ async def code_test(
             executor=executor,
             report_all=True,
         )
-        runs.append({"target": target, **run.to_json(), "passed": run.passed})
-        failed = failed or not run.passed
+        # Assurance 1.1 default-ON (2026-09-23): the courtesy whole-tree run that no
+        # ``pytest:`` criterion asked for, on a workspace pytest collects nothing from
+        # (exit 5), attests nothing and fails nothing.  A *named* target that collects
+        # nothing is still a criterion nobody checks, and stays FAIL.
+        no_tests_collected = (
+            target is None
+            and run.returncode == 5
+            and not run.timed_out
+            and (run.receipt is None or run.receipt.status == "ok")
+        )
+        row: dict[str, Any] = {"target": target, **run.to_json(), "passed": run.passed or no_tests_collected}
+        if no_tests_collected:
+            row["no_tests_collected"] = True
+        runs.append(row)
+        failed = failed or not row["passed"]
     summary = (
-        "all pytest targets passed"
+        (
+            "no pytest: criterion names a target and pytest collected no tests (exit 5); "
+            "nothing to attest"
+            if any(r.get("no_tests_collected") for r in runs)
+            else "all pytest targets passed"
+        )
         if not failed
         else "pytest failed: "
         + "; ".join(
