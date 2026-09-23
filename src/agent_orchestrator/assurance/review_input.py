@@ -7,7 +7,7 @@ import hashlib
 from collections.abc import Mapping
 
 from .codec import AssuranceError, array, canonical, decode, fields, fingerprint
-from .evidence import CatalogueEntry
+from .evidence import CatalogueEntry, evidence_label
 from .refs import AssuranceRef
 from .reviews import AssuranceReviewBinding
 
@@ -18,7 +18,13 @@ assessments 精确覆盖全部 criterion_ids，每项包含 criterion_id、verdi
 evidence_ids（标签数组）、reason、limitations（字符串数组）；findings 每项包含 criterion_id、
 severity（BLOCKER/WARNING/INFO）、reason。无法证明时返回 UNKNOWN/INCONCLUSIVE。
 检查器的 PASS 仅证明其声明的断言，不能代替语义判断，也不能凭空签发权限或效果证明。
+可用只读工具 assurance_find_evidence / assurance_read_evidence 追加取证：只有 complete=true 的
+整段读取结果进入你的后续输入后，其 ev- 标签才可引用；列表与分页片段不构成证据。
 """
+
+EVIDENCE_FIND_SCHEMA = "assurance-evidence-find-v1"
+EVIDENCE_READ_SCHEMA = "assurance-evidence-read-v1"
+READ_EVIDENCE_TOOL = "assurance_read_evidence"
 
 
 def render_review_input(
@@ -110,3 +116,45 @@ def read_initial_materials(
     if [item.to_json() for item in entries] != bound["evidence_catalogue"]:
         raise AssuranceError("REVIEW_MATERIALS_INCOMPLETE")
     return tuple(entries)
+
+
+def read_tool_disclosures(message: dict, review_key: str) -> tuple[CatalogueEntry, ...]:
+    """Complete evidence reads carried by one tool-result message of ``review_key``.
+
+    Only call on a message proven to be in the exact final Provider request. A
+    listing, a partial page, a non-UTF-8 refusal or a rejected call discloses
+    nothing. The label must be the deterministic label of the exact ref and the
+    content bytes must hash to the ref's pinned content hash.
+    """
+    if (
+        message.get("role") != "tool"
+        or message.get("name") != READ_EVIDENCE_TOOL
+        or not isinstance(message.get("content"), str)
+    ):
+        return ()
+    try:
+        payload = fields(
+            decode(message["content"]), {"outcome", "value", "error_code", "public_message"}
+        )
+    except AssuranceError:
+        return ()
+    if payload["outcome"] != "succeeded" or not isinstance(payload["value"], dict):
+        return ()
+    document = payload["value"]
+    if document.get("schema") != EVIDENCE_READ_SCHEMA or document.get("review_key") != review_key:
+        return ()
+    if (
+        document.get("complete") is not True
+        or document.get("encoding") != "utf8"
+        or not isinstance(document.get("content"), str)
+        or document.get("offset") != 0
+    ):
+        return ()
+    ref = AssuranceRef.from_json(document.get("ref"))
+    label = document.get("label")
+    if (
+        label != evidence_label(review_key, ref)
+        or hashlib.sha256(document["content"].encode()).hexdigest() != ref.pin.content_hash
+    ):
+        raise AssuranceError("REVIEW_MATERIAL_HASH_MISMATCH")
+    return (CatalogueEntry(label, ref),)

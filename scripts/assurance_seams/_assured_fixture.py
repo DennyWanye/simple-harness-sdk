@@ -6,7 +6,7 @@ evaluator and the original acceptance writer. Routing, ACL, lease and the
 single-consumer pump are explicit fixtures; no real model, four-consumer
 deployment, executor checks, Host or UI. Each seam says what it exercises.
 """
-from seam_paths import SDK, EVIDENCE  # noqa: F401  (side effect: sys.path, evidence dir)
+from seam_paths import SDK, EVIDENCE, seam_tool_ports  # noqa: F401  (side effect: sys.path, evidence dir)
 import dataclasses
 import hashlib
 import sys
@@ -191,7 +191,11 @@ class AssuredRuntime:
     one-element list the seam may flip to simulate a current-authority change.
     """
 
-    def __init__(self, root, responses, authority_state=None, *, content_only=False):
+    provider_class = KnownUsageProvider
+
+    def __init__(self, root, responses, authority_state=None, *, content_only=False, provider_class=None):
+        if provider_class is not None:
+            self.provider_class = provider_class
         self.root = Path(root)
         self.content_only = content_only
         self.responses = list(responses)
@@ -211,14 +215,18 @@ class AssuredRuntime:
         store, commit = self.store, self.commit
         self.cas = ArtifactStore(self.root / 'scoped-cas')
         self.deadline_ms = int(store.now * 1000) + 60000
-        self.provider = KnownUsageProvider([canonical(r) for r in self.responses])
+        self.provider = self.provider_class([canonical(r) for r in self.responses])
+        # The assured review template lists the two read-only evidence tools, so the
+        # runtime carries the original ToolGateway (no Attempt workspace exists here).
+        self.gateway, tool_ports = seam_tool_ports(self.root, self.cas)
         self._runtime_cm = build_agent_runtime(AgentRuntimePorts(provider=self.provider, authorization=AllowAllAuthorization(),
-                                                                  database_path=str(self.root / 'runtime.db'), model=MODEL, owner_id='runner-seam'))
+                                                                  database_path=str(self.root / 'runtime.db'), model=MODEL, owner_id='runner-seam',
+                                                                  **tool_ports))
         runtime = await self._runtime_cm.__aenter__()
         bridge = AgentBridge(runtime, unpriced=True)
         self.bridge = bridge
         orch = SimpleNamespace(store=store, commit=commit, bridge_for=lambda _: bridge,
-            assembled=SimpleNamespace(workspaces=SimpleNamespace(artifact_store=self.cas), pool=lambda _: SimpleNamespace(bridge=bridge), gateway=SimpleNamespace(unbind=lambda _: None)),
+            assembled=SimpleNamespace(workspaces=SimpleNamespace(artifact_store=self.cas), pool=lambda _: SimpleNamespace(bridge=bridge), gateway=self.gateway),
             _expected_model=lambda _: MODEL, _note=self.notes.append, _assurance_reviews=None,
             _owner='runner-fixture', _poll=0.001, _critic_wait=10,
             _config=SimpleNamespace(lease_seconds=60, turn_deadline_seconds=10, critic_reserve_tokens=100,
@@ -236,6 +244,7 @@ class AssuredRuntime:
                      '_settle_intent', '_import_usage', '_service_agent_ids', '_settle_service_if_known', 'profile_of',
                      '_ask_root_reviewer', '_root_review'):
             setattr(orch, name, MethodType(getattr(Orchestrator, name), orch))
+        orch._assured_review_intent = Orchestrator._assured_review_intent
 
         async def normal_wait(intent, liveness):
             assert not Orchestrator._provider_blocked(liveness), 'fixture unexpectedly blocked'

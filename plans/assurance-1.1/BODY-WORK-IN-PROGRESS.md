@@ -764,3 +764,87 @@ ProcessOnlyExecutor）；executor 类 CheckBinding 被 validity/official review 
 checker；其余同前三段。
 
 下一段：handoff §4 第 5 项（只读证据工具 / 完整曝光）起。
+
+### 2026-09-23 第五段·handoff §4 第 5 项：只读证据工具 / 完整曝光（基线 7304993d）
+
+**做了什么（代码存在，并按下述范围验证；BW06）**
+
+- `runtime/tool_gateway.py`：新增两个 SDK 工具 `assurance_find_evidence`（列表分页，明确"列表不是曝光"）与
+  `assurance_read_evidence`（按 ev- 标签读 UTF-8 原文，`offset/max_chars` 分页；`complete=true` 才可引用，分页片段标
+  `PARTIAL_NOT_CITABLE`）；`WorkspaceBinding.review_key`（assured 审阅绑定，不占 Attempt 工作区，不伪造 Attempt：
+  网关对这两个工具跳过 `_workspace`，拒绝/预算/审计/`before_execute` 管线原样走）；`EvidenceToolRefusal` 带 code 的拒绝；
+  网关钩子 `assurance_evidence_reader` / `assurance_review_refusal`（每次物理读前重读 live invocation + 主体是否已停）。
+- 新 `verification/reviewer_evidence_tools.py`（integration-map S11 目标）：`ReviewerEvidenceTools.bind`（只允许这两个工具名，
+  否则 ContractError；旧 verify 工作区权限不继承）、`refusal`、`invoke`（find：冻结目录 ∪ 本 Mission 有效 sources ∪ artifacts，
+  按当前权威过滤，分页；read：标签→精确 ref，当前权威 `_permission` → 需要时 `ensure_review_blob_pins`（review_key pin）→
+  `read_pinned_blob` 字节精确读（非 blob 类走 `read_exact_metadata`）→ sha256 复核 → 非 UTF-8 明确拒绝
+  `REVIEW_MATERIAL_CODEC_UNSUPPORTED`（带大小/哈希，不吐字节）→ 256KiB 读上限 → 分页协议）；
+  `record_disclosure_batch`（初始与追加共用的 append-only 批写口，同 turn/同消息集合同体重放不新增、异体
+  `DISCLOSURE_INPUT_BINDING`）；`import_reviewer_disclosure`（只从最终真实 Provider request 的 manifest 里 `tool_result`
+  消息取 `complete=true` 的读取结果，标签必须等于该 ref 的确定标签、内容 sha256 必须等于 pin 哈希；工具返回过但没进模型输入的不算）。
+- `assurance/review_input.py`：`read_tool_disclosures` 纯 codec；REVIEW_INSTRUCTIONS 加一句工具说明（`reviewer_policy_ref`
+  随之变化，所有 fixture 同源，无硬编码哈希）。
+- `orchestrator/assurance_review_collect.py`：`_import_initial_exposure` 改用共用批写口；其后调用 `import_reviewer_disclosure`；
+  追加导入失败同样记为 exposure_error（保守）。
+- `orchestrator/assurance_review_runtime.py`：`evidence_tools` 实例，`install()` 把钩子装到原网关；两处审阅模板显式
+  `tool_names=ASSURANCE_EVIDENCE_TOOLS`，`max_model_calls_per_turn=6`、`max_tool_calls_per_turn=8`（网关绑定另有 16 次上限）；
+  旧 root reviewer 模板保持 `tool_names=()`。
+- `orchestrator/assurance_review_handoff.py`：deployment identity 检查允许且只允许这两个工具名。
+- `orchestrator/event_handler.py`：`_bind_critic` assured 分支改为交给 `evidence_tools.bind`（无工具名仍不绑定）；
+  新 `_assured_review_intent`；派发两处、`_bind_startup_tools`、`recover()` 对 assured intent（含 kind=plan 的根/方法/提案审阅）
+  一律绑定；收集后（两处）`gateway.unbind`。**接缝里发现：根审阅 intent 是 kind=plan，原来永远不绑工具（tool_not_bound）。**
+- `runtime/assurance_turn_sources.py`：`_selection_binds_request`——工具轮次下 runtime 持久化的是组装请求，而 ContextSelection
+  绑定的是 wire 副本（`restore_tool_calls` 给 assistant 消息补 tool_calls 元数据），两哈希必然不同；现在用同一条原 wire 规则 +
+  持久 effect ledger 从持久请求重放 wire 副本再比对（不造新字节，不改旧 input bytes）；manifest 新增 `wire_input_hash`。
+  **接缝里发现：没有它，任何用了工具的审阅都 `REVIEW_PROVIDER_INPUT_MISMATCH`（此前从未有审阅用过工具）。**
+- 接缝夹具：`seam_paths.seam_tool_ports`（真实 `WorkspaceToolGateway` + 空 WorkspaceManager）；`_assured_fixture` 的运行时
+  带真实网关与工具表，`provider_class` 可换；旧四条接缝（critic-runner/format-repair/content-review/review-import）改带
+  真实网关/工具表（否则新模板的 tool_names 在 AgentRuntime 创建时会报缺工具）。
+
+**单点接缝证据（本机 ignored 目录）**
+
+`evidence-tools-seam.json`（`671e328b6b56f5a903efe86c83d381fab3b8ad0ed69e3ff76cada1e4aee2c36c`）三段：
+1. TASK_CONTENT 完整读：find(query=source) → 读二进制源被拒 `REVIEW_MATERIAL_CODEC_UNSUPPORTED` → 读未知标签被拒
+   `EVIDENCE_LABEL_UNKNOWN` → 完整读 `notes/extra.md`（不在冻结目录里的新登记 source）→ 结论引用其标签；5 次模型调用、
+   4 次网关调用全部 view=verify、attempt_id=真实 Attempt（仅审计归属）、`seam-workspaces` 下无任何目录；披露链
+   batch 0（7 条初始材料）+ batch 1（仅该标签，1 条可见消息，同 provider_input_hash）；review_key pin 存在；
+   `read_imported_review_locked` 的 exposed 含该标签、catalogue 含该条、本 turn 选中 batch [0,1]；official ACCEPT；
+   再跑一次 collector 不新增 batch。
+2. TASK_CONTENT 分页引用：`max_chars=4` 的片段 `complete=false/PARTIAL_NOT_CITABLE`，结论引用其标签 → 只有 batch 0 →
+   REVIEW consumer `AssuranceReviewImportRejected: UNEXPOSED_EVIDENCE`，runner 报停，无 task_record。
+3. MISSION_FINAL 无 Attempt：叶子接受 → 根 cut → MISSION_FINAL 策略 → `_ask_root_reviewer` → 根审阅者 find/read（两次网关
+   调用 attempt_id=""，无工作区目录）→ batch [0,1] → official MISSION_FINAL ACCEPT → READY；intent 的 agent_config.tool_names
+   正是这两个工具。
+
+金丝雀重跑 PASS：`purpose-builders-seam-20260923T100830539447.json`（`5acd6410…`）、`validity-accept-seam-20260923T100517305063.json`
+（`9f879468…`）、`executor-check-seam-20260923T100519836581.json`（`db11e00b…`）、`check-binding-seam-20260923T100520563560.json`
+（`d1f62827…`）、`check-use-seam-20260923T100521275229.json`（`90376aa3…`）、`critic-format-repair-seam-20260923T100523055412.json`
+（`68a63c79…`）、review-runtime-seam PASS。旧 critic-runner / content-review / review-import 三条接缝失败
+（`ASSURANCE_VALIDITY_UNBOUND` / reservation 断言 / `SUBJECT_BINDING_INVALID`），在基线 7304993d 的临时 worktree 上同样失败，
+**先于本段**，未改。定向既有测试（step02 gateway、p33 critic dispatch recovery / large read / paging、step06、step04、
+read-only leaf guard、p32 code execution modes、p34、host_support s1、root review coordinator/user goal）：193 passed，
+4 failed 全部是本机没装可选依赖 `tiktoken`（`TiktokenTokenizer` 构造即失败），与改动无关。ruff：本段新增/改动行无告警；
+event_handler/tool_gateway/turn_sources 的 I001/E501 为基线既有（用 `git show 7304993d:… | ruff --stdin-filename` 核对）。
+
+**明确没有证明 / 边界**：真实模型未跑（scripted provider 出工具调用）；四 consumer 生产装配未做（单 REVIEW pump）；
+`assurance_find_evidence` 的候选集只含冻结目录 + sources + artifacts（事件/合同类 ref 只能通过冻结目录标签读）；大材料超
+256KiB 只拒不分块传输；工具轮次的 context 压缩（大 tool_result 只留预览）会让该读取自然不被曝光，接缝未构造该情形；
+`_bind_startup_tools`/`recover()` 对 assured intent 的重绑只有代码，未在接缝里重启验证（第 8 项）；旧 critic 视图工具
+（workspace_read_file 等）在 assured 审阅中被明确禁止。
+
+**改动文件 sha256**
+```
+febc77f8b18e74883fa1610643c69b1a42152dbbc7525500b2dcf623eff25f13  runtime/tool_gateway.py
+5a094f5a8e89a1e0d54560ca31fa7ea5835267be5f37d1faa559314998da75ab  runtime/assurance_turn_sources.py
+43e38dbb7ed81a450e89b2f668d18315431533891547ef728180f4d4bdb11ce0  assurance/review_input.py
+f5170c1526c35dccc6f2d82e5f0c6f69647ef99a78a5e5942969a8d9e0131a56  verification/reviewer_evidence_tools.py
+8e587a812aa32c03e7557bdfac3ad2b4fd1f71532adcd5afec1337e65a6732fa  orchestrator/assurance_review_collect.py
+664542ef5c27158baa39ac4fbf2f9bb50109e11920e16d3a91a1f2ea3be3c818  orchestrator/assurance_review_runtime.py
+e384880c0aa2bfade083bb9aeeff826179c7c2549c9af891a1c9b375ed2dd8b9  orchestrator/assurance_review_handoff.py
+21dd07461996bd1b608dbfdff3932d54cbe9ed6bcbedf0a52642ff8b7f21c829  orchestrator/event_handler.py
+aec10770da3e94203f61c1d6ac17f983ccd38b10fc2a0392a7dcc5c120a349f8  scripts/assurance_seams/evidence-tools-seam.py
+a833dd74af9d78f89e28e163b171be40978f1977fb251b860f5175d1c151733c  scripts/assurance_seams/_assured_fixture.py
+a2492d9ce829e11d9134bd5ad3fc2f2938c513633cc1e5a08af8e32de05e194e  scripts/assurance_seams/seam_paths.py
+```
+
+下一段：handoff §4 第 6 项（四 consumer 生产装配；pre-Scope METHOD_PLAN 的派发/official 消费归此）起。

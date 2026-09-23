@@ -3,22 +3,24 @@
 
 from __future__ import annotations
 
-from typing import Any
 import json
+from typing import Any
 
 from simple_harness.agents import AgentTurnResult
 from simple_harness.contracts import canonical_json
 
 from ..assurance.checks import ReviewReply
 from ..assurance.codec import AssuranceError, decode, fingerprint
-from ..assurance.disclosure import DisclosureBatch
 from ..assurance.refs import AssuranceRef, Pin
 from ..assurance.review_input import read_initial_materials
 from ..runtime.assurance_turn_sources import read_actual_review_turn
 from ..storage.assurance_reads import AssuranceReader
-from ..storage.assurance_store import AssuranceStore
 from ..storage.assurance_work import atomic
 from ..storage.htn_store import HtnStore
+from ..verification.reviewer_evidence_tools import (
+    import_reviewer_disclosure,
+    record_disclosure_batch,
+)
 from .assurance_review_transport import read_review_invocation_locked
 
 
@@ -135,6 +137,9 @@ async def collect_assurance_review(orchestrator: Any, intent: Any) -> None:
     if manifest is not None:
         try:
             _import_initial_exposure(commit, reader, binding, turn_ref, result.agent_id, manifest)
+            # §4 appended evidence: only complete tool reads that this exact final
+            # request contained. A tool value that never reached the model is absent.
+            import_reviewer_disclosure(commit, reader, binding, turn_ref, result.agent_id, manifest)
         except AssuranceError as error:
             exposure_error = error.code
     classification = "READY_FOR_CURRENT_REVIEW"
@@ -229,48 +234,13 @@ def _import_initial_exposure(
         # Empty catalogues need no fabricated disclosure batch. The actual
         # request manifest remains the proof of an empty initial exposure set.
         return
-    with atomic(commit.store):
-        side = AssuranceStore(commit.store)
-        chain = side.disclosure_chain(reader.mission_id, bound["review_key"])
-        same = [b for b in chain if b.turn_receipt_ref == turn_ref]
-        if same:
-            if (
-                len(same) != 1
-                or same[0].entries != entries
-                or same[0].provider_input_hash != manifest["provider_input_hash"]
-            ):
-                raise AssuranceError("DISCLOSURE_INPUT_BINDING")
-            return
-        no = len(chain)
-        previous = None if not chain else chain[-1].content_hash
-        payload = {
-            "review_key": bound["review_key"],
-            "batch_no": no,
-            "previous_batch_hash": previous,
-            "delta_hash": fingerprint([entry.to_json() for entry in entries]),
-            "reviewer_agent_id": agent_id,
-            "turn_receipt_ref": turn_ref.to_json(),
-            "provider_input_hash": manifest["provider_input_hash"],
-            "visible_message_ids": [message_id],
-        }
-        event = commit._emit(
-            "AssuranceEvidenceDisclosed",
-            reader.mission_id,
-            key=bound["review_key"] + ":" + str(no),
-            payload=payload,
-        )
-        ref = AssuranceRef("disclosure_receipt", Pin(event.id, 0, fingerprint(event.to_json())))
-        side.record_disclosure(
-            DisclosureBatch(
-                reader.mission_id,
-                bound["review_key"],
-                no,
-                previous,
-                entries,
-                agent_id,
-                turn_ref,
-                manifest["provider_input_hash"],
-                (message_id,),
-                ref,
-            )
-        )
+    record_disclosure_batch(
+        commit,
+        reader,
+        review_key=bound["review_key"],
+        turn_ref=turn_ref,
+        agent_id=agent_id,
+        manifest=manifest,
+        entries=entries,
+        message_ids=(message_id,),
+    )

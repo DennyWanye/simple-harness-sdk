@@ -1,5 +1,5 @@
 """One admitted scope + actual format algorithm -> immutable CheckBinding; fixture Mission."""
-from seam_paths import SDK, EVIDENCE
+from seam_paths import SDK, EVIDENCE, seam_tool_ports
 import dataclasses
 import hashlib
 import json
@@ -155,7 +155,7 @@ with TemporaryDirectory(prefix='assurance-check-binding-') as temp:
         response={'schema_version':2,'verdict':'ACCEPT','assessments':[{'criterion_id':str(c.criterion_id),'verdict':'PASS',
             'evidence_ids':[catalogue[0].label],'reason':'fixture response','limitations':[]} for c in package.criteria],'findings':[]}
         provider=ScriptedProvider([canonical(response)])
-        async with build_agent_runtime(AgentRuntimePorts(provider=provider,authorization=AllowAllAuthorization(),database_path=str(root/'runtime.db'),model=MODEL,owner_id='review-seam')) as runtime:
+        async with build_agent_runtime(AgentRuntimePorts(provider=provider,authorization=AllowAllAuthorization(),database_path=str(root/'runtime.db'),model=MODEL,owner_id='review-seam',**seam_tool_ports(root,cas)[1])) as runtime:
             bridge=AgentBridge(runtime,unpriced=True)
             intent=store.get_intent(invocation.to_json()['dispatch_intent_id'])
             commit.claim_intent(intent.intent_id,owner='fixture-orchestrator',lease_seconds=60)

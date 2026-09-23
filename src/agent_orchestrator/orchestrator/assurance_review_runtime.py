@@ -21,6 +21,7 @@ from ..assurance.refs import AssuranceRef, Pin
 from ..assurance.review_input import REVIEW_INSTRUCTIONS
 from ..assurance.reviews import REVIEW_CODEC_VERSION
 from ..contracts import TERMINAL_ATTEMPT, TERMINAL_MISSION, TERMINAL_TASK, ContractError
+from ..runtime.tool_gateway import ASSURANCE_EVIDENCE_TOOLS
 from ..storage.assurance_reads import AssuranceReader
 from ..storage.htn_store import HtnStore
 from ..verification.critics import CriticVerdict
@@ -28,6 +29,11 @@ from .assurance_content_review import ensure_task_content_review
 from .assurance_review_collect import collect_assurance_review
 from .assurance_review_consumer import AssuranceReviewConsumer
 from .assurance_review_import import read_official_review_binding_locked
+
+# One review turn: the initial request plus a bounded number of tool rounds.
+# The per-call cap on the gateway binding is MAX_EVIDENCE_TOOL_CALLS.
+REVIEW_MODEL_CALLS = 6
+REVIEW_TOOL_CALLS = 8
 
 
 class AssuranceReviewRuntime:
@@ -37,6 +43,9 @@ class AssuranceReviewRuntime:
         self.orchestrator = orchestrator
         self.consumer = consumer
         self.store = consumer.store
+        from ..verification.reviewer_evidence_tools import ReviewerEvidenceTools
+
+        self.evidence_tools = ReviewerEvidenceTools(self)
 
     def context_pin(self, profile_id: str) -> Pin:
         ports = self.orchestrator.assembled.pool(profile_id).bridge.runtime.ports
@@ -71,6 +80,9 @@ class AssuranceReviewRuntime:
             orch.commit._assurance_review_handoff = AssuranceReviewHandoff(self)
         if orch.commit._assurance_settlement is None:
             orch.commit._assurance_settlement = AssuranceSettlement(orch)
+        gateway = getattr(getattr(orch, "assembled", None), "gateway", None)
+        if gateway is not None and hasattr(gateway, "assurance_evidence_reader"):
+            self.evidence_tools.install(gateway)
         return self.consumer
 
     def task_record(self, mission_id: str, attempt_id: str):
@@ -193,10 +205,12 @@ class AssuranceReviewRuntime:
                 name=name,
                 instructions=REVIEW_INSTRUCTIONS,
                 model_profile_ref=decision.profile_id,
-                tool_names=(),
+                # §4: this profile's template explicitly carries the two read-only
+                # evidence tools; the legacy root reviewer keeps tool_names=().
+                tool_names=ASSURANCE_EVIDENCE_TOOLS,
                 limits=AgentLimits(
-                    max_model_calls_per_turn=1,
-                    max_tool_calls_per_turn=1,
+                    max_model_calls_per_turn=REVIEW_MODEL_CALLS,
+                    max_tool_calls_per_turn=REVIEW_TOOL_CALLS,
                     turn_deadline_seconds=orch._config.turn_deadline_seconds,
                 ),
             ).to_json(),
@@ -380,10 +394,10 @@ class AssuranceReviewRuntime:
                     name="assurance-content-review",
                     instructions=REVIEW_INSTRUCTIONS,
                     model_profile_ref=decision.profile_id,
-                    tool_names=(),
+                    tool_names=ASSURANCE_EVIDENCE_TOOLS,
                     limits=AgentLimits(
-                        max_model_calls_per_turn=1,
-                        max_tool_calls_per_turn=1,
+                        max_model_calls_per_turn=REVIEW_MODEL_CALLS,
+                        max_tool_calls_per_turn=REVIEW_TOOL_CALLS,
                         turn_deadline_seconds=min(
                             orch._config.turn_deadline_seconds, deadline - self.store.now
                         ),

@@ -1799,6 +1799,12 @@ class Orchestrator:
         return self._after_handoff_zero_streak.get(mission_id, 0)
 
     @staticmethod
+    def _assured_review_intent(intent: DispatchIntent) -> bool:
+        """Assured reviews of every purpose (kind ``critic`` or ``plan``) bind the
+        read-only evidence tools through ``_bind_critic``; nothing else does."""
+        return intent.config.get("assurance_protocol") == "assurance-exec-v1.1"
+
+    @staticmethod
     def _is_planner_service(intent: DispatchIntent) -> bool:
         if intent.config.get("assurance_protocol") == "assurance-exec-v1.1":
             return False
@@ -2173,7 +2179,9 @@ class Orchestrator:
                 if attempt is not None and attempt.status not in TERMINAL_ATTEMPT:
                     self._bind_workspace(attempt)
                     self._bind_agent(intent.agent_id, intent.config)
-            elif intent.kind == "critic" and not self._critic_subject_stopped(intent):
+            elif (
+                intent.kind == "critic" or self._assured_review_intent(intent)
+            ) and not self._critic_subject_stopped(intent):
                 if intent.state == "AGENT_CREATED":
                     # A created Agent is not necessarily a submitted SDK turn.
                     # With no durable turn there is nothing startup can resume;
@@ -2223,7 +2231,7 @@ class Orchestrator:
                 if attempt is not None:
                     self._bind_workspace(attempt)
                     self._bind_agent(intent.agent_id, intent.config)
-            elif intent.kind == "critic":
+            elif intent.kind == "critic" or self._assured_review_intent(intent):
                 if self._critic_subject_stopped(intent):
                     self.assembled.gateway.unbind(intent.agent_id)
                     await self._cancel_turn(intent)
@@ -5461,7 +5469,7 @@ class Orchestrator:
             claimed = self.commit.record_agent_created(
                 claimed.intent_id, agent_id=agent_id, expected_turn_id=expected
             )
-            if claimed.kind == "critic":
+            if claimed.kind == "critic" or self._assured_review_intent(claimed):
                 self._bind_critic(agent_id, config)
             elif claimed.kind == "attempt":
                 self._bind_agent(agent_id, config)
@@ -5472,7 +5480,7 @@ class Orchestrator:
             except AssuranceError as error:
                 self._note(f"intent {claimed.intent_id}: Assurance submit waits ({error.code})")
                 return False
-            if claimed.kind == "critic":
+            if claimed.kind == "critic" or self._assured_review_intent(claimed):
                 if self._critic_subject_stopped(claimed):
                     return await self._collect_stopped_critic(claimed)
                 self._bind_critic(claimed.agent_id, config)
@@ -6005,9 +6013,13 @@ class Orchestrator:
     def _bind_critic(self, agent_id: str, config: Mapping[str, Any]) -> None:
         if config.get("assurance_protocol") == "assurance-exec-v1.1":
             # Frozen initial materials use the Assurance disclosure gate. Never
-            # inherit the legacy verify-workspace tool authority implicitly.
-            if config.get("agent_config", {}).get("tool_names"):
+            # inherit the legacy verify-workspace tool authority implicitly; the
+            # assured runtime binds exactly its read-only evidence tools (§4).
+            if not config.get("agent_config", {}).get("tool_names"):
+                return
+            if self._assurance_reviews is None:
                 raise ContractError("Assurance evidence tool binding is not installed")
+            self._assurance_reviews.evidence_tools.bind(agent_id, config)
             return
         context_profile = self._context_profile_for(config)
         self.assembled.gateway.bind(
@@ -6159,6 +6171,7 @@ class Orchestrator:
         if intent.config.get("assurance_protocol") == "assurance-exec-v1.1":
             from .assurance_review_collect import collect_assurance_review
             await collect_assurance_review(self, intent)
+            self.assembled.gateway.unbind(intent.agent_id)
         elif intent.kind == "plan":
             await self._collect_plan(intent, result)
         elif intent.kind == "attempt":
@@ -6682,6 +6695,7 @@ class Orchestrator:
             from .assurance_review_collect import collect_assurance_review
 
             await collect_assurance_review(self, intent)
+            self.assembled.gateway.unbind(intent.agent_id)
             return
         if result.state is AgentTurnState.COMMITTED:
             self._reset_after_handoff_unknown_streak(mission.id)

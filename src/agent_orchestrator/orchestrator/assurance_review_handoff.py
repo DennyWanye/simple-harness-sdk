@@ -16,6 +16,7 @@ from ..assurance.refs import AssuranceRef, Pin
 from ..assurance.review_input import REVIEW_INSTRUCTIONS, read_initial_materials
 from ..assurance.reviews import REVIEW_CODEC_VERSION
 from ..contracts import TERMINAL_ATTEMPT
+from ..runtime.tool_gateway import ASSURANCE_EVIDENCE_TOOLS
 from ..storage.assurance_pins import require_live_pin_locked
 from ..storage.assurance_reads import AssuranceReader, read_epochs_locked, require_epochs_locked
 from ..storage.htn_store import HtnStore
@@ -71,7 +72,8 @@ class AssuranceReviewHandoff:
             or body["context_policy_ref"]
             != self.runtime.context_pin(orch.profile_of(intent)).to_json()
             or intent.config["agent_config"].get("instructions") != REVIEW_INSTRUCTIONS
-            or intent.config["agent_config"].get("tool_names")
+            or set(intent.config["agent_config"].get("tool_names", ()))
+            - set(ASSURANCE_EVIDENCE_TOOLS)
         ):
             raise AssuranceError("REVIEW_DEPLOYMENT_IDENTITY_MISMATCH")
         if body["subject"]["purpose"] == "TASK_CONTENT":

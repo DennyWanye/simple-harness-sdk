@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +11,7 @@ from simple_harness.agents import AgentTurnResult, AgentTurnState
 from simple_harness.contracts import RunId, canonical_json, thaw_json
 from simple_harness.execution.provider_invocations import (
     provider_invocation_id,
+    provider_request_fingerprint,
     provider_request_from_json,
     provider_request_json,
     provider_response_from_json,
@@ -124,7 +125,7 @@ def _exposure(uow: Any, run_id: str, turn: Any, result: AgentTurnResult) -> dict
         or fingerprint(request) != provider.request_fingerprint
         or selection.agent_id != result.agent_id
         or selection.turn_id != result.turn_id
-        or selection.request_hash != provider.request_fingerprint
+        or not _selection_binds_request(uow, run_id, selection, provider, decoded_request)
         or response is None
         or response.get("request_id") != request_id
         or result.public_output is None
@@ -167,6 +168,9 @@ def _exposure(uow: Any, run_id: str, turn: Any, result: AgentTurnResult) -> dict
         "provider_invocation_id": provider.invocation_id,
         "provider_request_id": request_id,
         "provider_input_hash": provider.request_fingerprint,
+        # Fingerprint of the wire copy the Provider physically received (§4); it
+        # differs from the persisted composed request only on tool turns.
+        "wire_input_hash": selection.request_hash,
         "provider_request": request,
         "provider_response_hash": fingerprint(response),
         "response_model": decoded_response.model,
@@ -175,3 +179,29 @@ def _exposure(uow: Any, run_id: str, turn: Any, result: AgentTurnResult) -> dict
         "selected_message_ids": [item["message_id"] for item in selected],
         "messages": selected,
     }
+
+
+def _selection_binds_request(
+    uow: Any, run_id: str, selection: Any, provider: Any, request: Any
+) -> bool:
+    """The frozen selection must name this exact persisted request.
+
+    The runtime persists the composed request and binds the selection to the wire
+    copy it actually sent. On a tool turn the wire copy rewrites assistant
+    messages with their ledger tool calls (tool/user message bytes are unchanged),
+    so the persisted composed bytes are re-rendered through the same original
+    wire rule and the durable effect ledger before comparing. No new bytes are
+    invented; a selection that matches neither is not this request's manifest.
+    """
+    if selection.request_hash == provider.request_fingerprint:
+        return True
+    from simple_harness.agents.wire import _ledger_groups, restore_tool_calls
+
+    if not any(message.role.value == "tool" for message in request.messages):
+        return False
+    wire_messages, _ = restore_tool_calls(
+        request.messages, _ledger_groups(uow.database.connection, run_id)
+    )
+    return selection.request_hash == provider_request_fingerprint(
+        replace(request, messages=wire_messages)
+    )

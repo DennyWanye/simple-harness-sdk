@@ -116,8 +116,42 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                        "expected_sha256": {"type": "string"}},
         "required": ["id"], "additionalProperties": False,
     },
+    # ASSURANCE-EXEC-1.1 §4: read-only reviewer evidence tools. Listing is not
+    # exposure; only a complete read that enters the model's actual input counts.
+    "assurance_find_evidence": {
+        "type": "object",
+        "description": (
+            "列出当前审查可读取的证据（标签/引用/种类），分页；列表不是曝光，"
+            "引用前必须用 assurance_read_evidence 完整读取。"
+        ),
+        "properties": {
+            "query": {"type": "string", "description": "按引用种类/ID/路径子串过滤，可省略"},
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
+        "additionalProperties": False,
+    },
+    "assurance_read_evidence": {
+        "type": "object",
+        "description": (
+            "按 ev- 标签读取证据原文（UTF-8）。complete=true 的整段读取进入你的下一次"
+            "模型输入后才可引用该标签；分页片段（complete=false）不可作为引用依据。"
+        ),
+        "properties": {
+            "label": {"type": "string", "description": "目录或 find 结果中的 ev- 标签"},
+            "offset": {
+                "type": "integer", "minimum": 0, "description": "Unicode 代码点偏移，默认 0",
+            },
+            "max_chars": {
+                "type": "integer", "minimum": 1, "maximum": 8192, "description": "默认 4096",
+            },
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
 }
 TOOL_NAMES = tuple(TOOL_SCHEMAS)
+ASSURANCE_EVIDENCE_TOOLS = ("assurance_find_evidence", "assurance_read_evidence")
 WORKER_TOOLS = ("workspace_read_file", "workspace_write_file", "workspace_list", "run_tests")
 CRITIC_TOOLS = ("workspace_read_file", "workspace_list")
 #: P2.3u P2-2: consecutive ``read_only_existing_file`` refusals on one Attempt
@@ -261,6 +295,17 @@ class WorkspaceBinding:
     read_only_existing: tuple[str, ...] = ()
     # P2.3u P2-3: snapshot of those files failed; every write is refused.
     read_only_writes_blocked: bool = False
+    # ASSURANCE-EXEC-1.1 §4: an assured reviewer binding. It owns no Attempt
+    # workspace; only the read-only evidence tools may be listed in allowed_tools.
+    review_key: str | None = None
+
+
+class EvidenceToolRefusal(WorkspaceError):
+    """A read-only Assurance evidence tool refused under current permission/protocol."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def is_untrusted(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -441,6 +486,13 @@ class WorkspaceToolGateway:
         self.execution_refusal: Callable[[str], str | None] | None = None
         self.executed_lookup: Callable[[str], Mapping[str, Any] | None] | None = None
         self.before_execute: Callable[[WorkspaceBinding], None] | None = None
+        # ASSURANCE-EXEC-1.1 §4: installed by the assured review runtime. The
+        # reader performs the current permission/pin/exact-bytes read itself;
+        # the refusal hook re-reads the live review invocation before each call.
+        self.assurance_evidence_reader: (
+            Callable[[str, str, str, Mapping[str, Any]], Mapping[str, Any]] | None
+        ) = None
+        self.assurance_review_refusal: Callable[[str, WorkspaceBinding], str | None] | None = None
 
     def bind(self, run_id: str, binding: WorkspaceBinding) -> None:
         self._bindings[run_id] = binding
@@ -629,7 +681,11 @@ class WorkspaceToolGateway:
             )
         # 3. risk and policy: containment, denied prefixes, read-only upstream inputs
         try:
-            workspace = self._workspace(binding)
+            # An assured reviewer binding has no Attempt workspace and must not
+            # fabricate one; its tools read pinned Store/CAS evidence only.
+            workspace = (
+                None if call.name in ASSURANCE_EVIDENCE_TOOLS else self._workspace(binding)
+            )
             # External tool parameters called path refer to the original environment,
             # never the SDK report workspace.
             path = (
@@ -749,7 +805,14 @@ class WorkspaceToolGateway:
                     outcome="taskgraph_handoff_blocked", stage="permission",
                     message="current TaskGraph execution control refuses this handoff")
         # 5. execute
-        refusal = None if self.execution_refusal is None else self.execution_refusal(binding.attempt_id)
+        if binding.review_key is not None:
+            refusal = (
+                "assurance_review_unbound"
+                if self.assurance_review_refusal is None
+                else self.assurance_review_refusal(run_id, binding)
+            )
+        else:
+            refusal = None if self.execution_refusal is None else self.execution_refusal(binding.attempt_id)
         if refusal is not None:
             return self._reject(call, record, code=refusal, outcome="execution_stopped",
                 stage="authority", message="This Attempt no longer has authority to start a tool call.")
@@ -790,6 +853,17 @@ class WorkspaceToolGateway:
                     value = self.knowledge_reader(binding.mission_id, call.name, arguments)
                 except ValueError as error:
                     raise WorkspaceError(str(error)) from error
+            elif call.name in ASSURANCE_EVIDENCE_TOOLS:
+                if (
+                    binding.review_key is None
+                    or binding.mission_id is None
+                    or self.assurance_evidence_reader is None
+                ):
+                    raise WorkspaceError("assurance evidence tools are unavailable for this binding")
+                record["review_key"] = binding.review_key
+                value = dict(
+                    self.assurance_evidence_reader(run_id, binding.mission_id, call.name, arguments)
+                )
             elif call.name in self._domain_tools:
                 if binding.mission_id is None:
                     raise WorkspaceError("domain tool requires a Mission binding")
@@ -955,6 +1029,15 @@ class WorkspaceToolGateway:
             record["outcome"] = "unknown"
             record["stage"] = "execute"
             raise
+        except EvidenceToolRefusal as error:
+            return self._reject(
+                call,
+                record,
+                code=error.code,
+                outcome="evidence_refused",
+                stage="execute",
+                message=str(error),
+            )
         except (WorkspaceError, KeyError, TypeError) as error:
             if agentdojo_started:
                 self._agentdojo_stopped = True
@@ -1056,7 +1139,9 @@ def _schema_problem(name: str, arguments: Mapping[str, Any], *, large: bool = Fa
 
 
 __all__ = (
+    "ASSURANCE_EVIDENCE_TOOLS",
     "CRITIC_TOOLS",
+    "EvidenceToolRefusal",
     "MAX_READ_ONLY_EXISTING_REJECTIONS",
     "UNTRUSTED_NOTICE",
     "TOOL_NAMES",
