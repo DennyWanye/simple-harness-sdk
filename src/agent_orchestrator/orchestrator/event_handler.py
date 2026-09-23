@@ -5483,7 +5483,7 @@ class Orchestrator:
                 self._note(f"intent {claimed.intent_id}: Assurance create waits ({error.code})")
                 return False
             agent_id, _run_id, _ = await self.bridge_for(claimed).create(
-                creation_key=claimed.creation_key, config_json=config["agent_config"]
+                creation_key=claimed.creation_key, config_json=config["agent_config"], intent=claimed
             )
             expected = await self.bridge_for(claimed).expected_turn_id(
                 agent_id=agent_id, input_id=claimed.input_id

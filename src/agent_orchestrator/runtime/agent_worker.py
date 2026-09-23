@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Callable, Any
 
 from simple_harness import Message, MessageRole, RunId
 from simple_harness.agents import AgentConfig, AgentTurnResult, AgentTurnState
@@ -52,9 +52,16 @@ class Liveness:
 
 
 class AgentBridge:
-    def __init__(self, runtime: AgentRuntime, *, unpriced: bool) -> None:
+    def __init__(self, runtime: AgentRuntime, *, unpriced: bool, caller_for: Callable[[Any], Any] | None = None) -> None:
         self._runtime = runtime
         self._unpriced = unpriced
+        # ARP-EXEC-1.1.1: a native-plane pool derives the authenticated creation caller
+        # from the claimed dispatch intent; the legacy pool passes no caller.
+        self._caller_for = caller_for
+
+    @property
+    def native_plane(self) -> bool:
+        return self._caller_for is not None
 
     @property
     def runtime(self) -> AgentRuntime:
@@ -70,13 +77,21 @@ class AgentBridge:
             raise ValueError(f"tools not registered in the runtime: {sorted(missing)}")
 
     async def create(
-        self, *, creation_key: str, config_json: Mapping[str, Any]
+        self, *, creation_key: str, config_json: Mapping[str, Any], intent: Any | None = None
     ) -> tuple[str, str, str]:
-        """Idempotent create from frozen config bytes → (agent_id, run_id, "")."""
+        """Idempotent create from frozen config bytes → (agent_id, run_id, "").
+
+        On a native-plane pool the claimed ``intent`` is mandatory: the creation caller
+        is derived from it, and the ARP factory refuses a creation without one."""
 
         config = AgentConfig.from_json(dict(config_json))
         self.check_tools(config)
-        agent = await self._runtime.create(config, creation_key=creation_key)
+        caller = None
+        if self._caller_for is not None:
+            if intent is None:
+                raise ValueError("a native-plane pool creates Agents only from a claimed dispatch intent")
+            caller = self._caller_for(intent)
+        agent = await self._runtime.create(config, creation_key=creation_key, caller=caller)
         return agent.agent_id, agent.run_id, ""
 
     async def submit(

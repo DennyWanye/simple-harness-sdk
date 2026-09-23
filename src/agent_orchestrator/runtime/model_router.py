@@ -66,6 +66,9 @@ class RuntimeProfile:
     context_policy: ContextPolicy | None = None  # None preserves the legacy pool verbatim.
     tokenizer: TokenizerPort | None = field(default=None, repr=False, compare=False)
     max_concurrent_model_calls: int | None = None
+    # ARP-EXEC-1.1.1: a ``runtime.native_plane.NativePlaneAssembly`` makes this pool run on
+    # the native runtime plane (``build_arp_runtime``); None keeps the legacy pool.
+    native_plane: Any | None = field(default=None, repr=False, compare=False)
     _context_json: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:

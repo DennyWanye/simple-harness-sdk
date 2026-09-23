@@ -588,9 +588,12 @@ def assemble_orchestrator_runtime(
         _bind_context_identity(database, profile)
         default_out = profile.default_max_output_tokens or config.default_max_output_tokens
         ceiling = profile.max_output_tokens_ceiling or config.max_output_tokens_ceiling
+        native = profile.native_plane
         ports = AgentRuntimePorts(
             provider=profile.provider,
-            authorization=AllowAllAuthorization(),
+            # ARP-EXEC-1.1.1: a native-plane pool runs under the deployment's real
+            # authorization port; the ARP factory refuses AllowAll by name.
+            authorization=AllowAllAuthorization() if native is None else native.authorization,
             database_path=str(database),
             tool_executor=gateway,
             tool_names=(*TOOL_NAMES, *config.agentdojo_tool_schemas, *config.are_tool_schemas, *config.domain_tools),
@@ -615,11 +618,18 @@ def assemble_orchestrator_runtime(
             provider_handoff_fence=provider_handoff_fence,
             local_provider_admission=(local_provider_admissions or {}).get(profile_id),
         )
-        runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
+        if native is None:
+            runtime = build_agent_runtime(ports, owner_scope=OWNER_SCOPE)
+            bridge = AgentBridge(runtime, unpriced=profile.unpriced)
+        else:
+            from simple_harness.agents.arp.runtime import build_arp_runtime
+
+            runtime = build_arp_runtime(ports, native.arp_ports(database), owner_scope=OWNER_SCOPE)
+            bridge = AgentBridge(runtime, unpriced=profile.unpriced, caller_for=native.caller_for)
         pools[profile_id] = RuntimePool(
             profile=profile,
             runtime=runtime,
-            bridge=AgentBridge(runtime, unpriced=profile.unpriced),
+            bridge=bridge,
             execution_db=database,
         )
     return AssembledOrchestratorRuntime(
