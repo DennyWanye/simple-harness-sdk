@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .errors import ArpError
 
@@ -24,12 +24,22 @@ MAX_JSON_DEPTH = 24
 DEFAULT_MAX_BYTES = 256 * 1024
 
 
+def plain(value: Any) -> Any:
+    """Deep copy of a JSON-like value with every Mapping / tuple turned into dict / list."""
+
+    if isinstance(value, Mapping):
+        return {str(k): plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(v) for v in value]
+    return value
+
+
 def canonical(value: object) -> bytes:
     """Canonical UTF-8 bytes; raises ``ArpError('NONFINITE_JSON')`` on NaN/Infinity."""
 
     try:
         return json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+            plain(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode("utf-8")
     except ValueError as error:  # allow_nan=False raises ValueError
         raise ArpError("NONFINITE_JSON") from error

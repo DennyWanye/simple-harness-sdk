@@ -37,7 +37,7 @@ from simple_harness.runtime import RunStart
 from . import PROTOCOL, store
 from .codec import check
 from .errors import ArpError
-from .pins import Pin, original_receipt_pin, pin_for
+from .pins import Pin, original_receipt_pin
 from .ports import ArpPorts, RootIdentity, TrustedCaller
 from .profile import RuntimeProfile
 from .strict import canonical, digest, parse_strict

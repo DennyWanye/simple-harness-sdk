@@ -126,6 +126,8 @@ def assemble_runtime(
     extra_tools: tuple[FunctionTool, ...] = (),
     delegation_counter=None,  # type: ignore[no-untyped-def]
     delegation_reconciliation=None,  # type: ignore[no-untyped-def]
+    context_factory=None,  # type: ignore[no-untyped-def]
+    wire_factory=None,  # type: ignore[no-untyped-def]
 ) -> AssembledRuntime:
     """Compose the kernel for BaseAgents; root and child profiles both drive ``base_agent``."""
 
@@ -184,7 +186,9 @@ def assemble_runtime(
         admission = LocalProviderAdmission(
             ports.max_concurrent_model_calls, ports.provider_handoff_fence
         )
-    wire = AgentProviderWire(
+    # The native runtime plane (ARP) swaps the wire / Context port through these
+    # factories; legacy assembly keeps the exact original objects.
+    wire = (AgentProviderWire if wire_factory is None else wire_factory)(
         ports.provider,
         database,
         request_guard=guard,
@@ -227,7 +231,7 @@ def assemble_runtime(
         clock=ports.clock,
     )
     recall_messages = _RecallAdapter(retriever, tokenizer, ports.recall_limit)
-    context = JournalContextPort(
+    context = (JournalContextPort if context_factory is None else context_factory)(
         uow,
         tokenizer=tokenizer,
         policy=ports.context_policy,
@@ -834,7 +838,13 @@ class AgentRuntime:
         return binding
 
 
-def build_agent_runtime(ports: AgentRuntimePorts, *, owner_scope: str = "default") -> AgentRuntime:
+def build_agent_runtime(
+    ports: AgentRuntimePorts,
+    *,
+    owner_scope: str = "default",
+    context_factory=None,  # type: ignore[no-untyped-def]
+    wire_factory=None,  # type: ignore[no-untyped-def]
+) -> AgentRuntime:
     """Assemble a BaseAgent runtime with no user Memory; use ``async with``.
 
     ``agent.delegate`` is registered before the tool registry seals and late-bound
@@ -851,6 +861,8 @@ def build_agent_runtime(ports: AgentRuntimePorts, *, owner_scope: str = "default
         extra_tools=(delegate.function_tool(), *session_tools.function_tools()),
         delegation_counter=lambda turn_id: delegate.runtime.uow.count_agent_delegations(turn_id),
         delegation_reconciliation=AgentDelegationReconciliation,
+        context_factory=context_factory,
+        wire_factory=wire_factory,
     )
     runtime = AgentRuntime(assembled, ports, owner_scope=owner_scope)
     delegate.bind(runtime)

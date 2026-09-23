@@ -142,6 +142,13 @@ class ArpPorts:
     # Optional deterministic hook for crash-window tests: called with a point name.
     fault: Callable[[str], None] | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
+    # RP-B: the deployment's certified counter + model limits (``meter.MeterBinding``).
+    # None is refused by the factory: ARP never meters with an uncertified bound.
+    meter: Any | None = None
+    # RP-B: the real embedding resource (``EmbeddingPort``) and its approved
+    # deployment pin; None means the §6 truth table decides (reject / LEXICAL_ONLY).
+    embedding: Any | None = None
+    embedding_resource_ref: Any | None = None
 
 
 __all__ = (

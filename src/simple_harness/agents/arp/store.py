@@ -16,7 +16,6 @@ execution UOW's own ``run_events`` writer and binds them in ``arp_event_bindings
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -864,14 +863,18 @@ def claim_jobs_locked(
     lease_ms: int,
     limit: int = 8,
     per_session: int = 2,
+    session_id: str | None = None,
 ) -> tuple[JobRow, ...]:
-    """PENDING → LEASED (or expired LEASED re-lease), ≤limit per tick, ≤per_session each."""
+    """PENDING → LEASED (or expired LEASED re-lease), ≤limit per tick, ≤per_session each;
+    ``session_id`` restricts the claim to one Session's jobs."""
 
     require_transaction(connection)
+    scope = "" if session_id is None else " AND session_id=?"
+    params: tuple[Any, ...] = (now_ms, now_ms) if session_id is None else (now_ms, session_id, now_ms, session_id)
     rows = connection.execute(
-        f"SELECT {_JOB_COLUMNS} FROM arp_jobs WHERE (state='PENDING' AND next_at_ms<=?)"
-        " OR (state='LEASED' AND lease_until_ms<?) ORDER BY next_at_ms, job_id LIMIT ?",
-        (now_ms, now_ms, limit * 4),
+        f"SELECT {_JOB_COLUMNS} FROM arp_jobs WHERE ((state='PENDING' AND next_at_ms<=?){scope})"
+        f" OR ((state='LEASED' AND lease_until_ms<?){scope}) ORDER BY next_at_ms, job_id LIMIT ?",
+        (*params, limit * 4),
     ).fetchall()
     claimed: list[JobRow] = []
     per: dict[str, int] = {}
@@ -965,6 +968,380 @@ def put_blob_root_locked(
     )
 
 
+# ---- context requests (ContextManifest v2, immutable) --------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ContextRequestRow:
+    context_id: str
+    session_id: str
+    agent_id: str
+    turn_id: str
+    provider_request_ordinal: int
+    session_generation: int
+    journal_highwater: int
+    manifest_hash: str
+    manifest: Mapping[str, Any]
+    planned_request_hash: str
+    original_request_key: str
+    input_charge: int
+    input_budget: int
+    output_reserve: int
+    catalog_epoch: int
+    source_read_set: Mapping[str, Any]
+    created_at_ms: int
+
+    @property
+    def pin(self) -> Pin:
+        return Pin("context", self.context_id, 0, self.manifest_hash)
+
+
+_CONTEXT_COLUMNS = (
+    "context_id,session_id,agent_id,turn_id,provider_request_ordinal,session_generation,journal_highwater,"
+    "manifest_hash,manifest_json,planned_request_hash,original_request_key,input_charge,input_budget,"
+    "output_reserve,catalog_epoch,source_read_set_json,created_at_ms"
+)
+
+
+def _context(row: sqlite3.Row | tuple) -> ContextRequestRow:
+    return ContextRequestRow(
+        str(row[0]), str(row[1]), str(row[2]), str(row[3]), int(row[4]), int(row[5]), int(row[6]), str(row[7]),
+        _load(row[8]), str(row[9]), str(row[10]), int(row[11]), int(row[12]), int(row[13]), int(row[14]),
+        _load(row[15]), int(row[16]),
+    )
+
+
+def read_context(connection: sqlite3.Connection, context_id: str) -> ContextRequestRow | None:
+    row = connection.execute(f"SELECT {_CONTEXT_COLUMNS} FROM arp_context_requests WHERE context_id=?", (context_id,)).fetchone()
+    return None if row is None else _context(row)
+
+
+def read_context_by_request_key(connection: sqlite3.Connection, original_request_key: str) -> ContextRequestRow | None:
+    row = connection.execute(
+        f"SELECT {_CONTEXT_COLUMNS} FROM arp_context_requests WHERE original_request_key=?", (original_request_key,)
+    ).fetchone()
+    return None if row is None else _context(row)
+
+
+def latest_context(connection: sqlite3.Connection, session_id: str) -> ContextRequestRow | None:
+    row = connection.execute(
+        f"SELECT {_CONTEXT_COLUMNS} FROM arp_context_requests WHERE session_id=? ORDER BY created_at_ms DESC, provider_request_ordinal DESC LIMIT 1",
+        (session_id,),
+    ).fetchone()
+    return None if row is None else _context(row)
+
+
+def put_context_locked(
+    connection: sqlite3.Connection,
+    *,
+    manifest: Json,
+    original_request_key: str,
+    catalog_epoch: int,
+    source_read_set: Json,
+    now_ms: int,
+) -> ContextRequestRow:
+    """Freeze one ``ContextManifest``; same request key + same body replays, another body conflicts."""
+
+    require_transaction(connection)
+    value = check("ContextManifest", dict(manifest))
+    manifest_hash = digest(value)
+    existing = read_context_by_request_key(connection, original_request_key)
+    if existing is not None:
+        if existing.manifest_hash != manifest_hash:
+            raise ArpError("REQUEST_HASH_MISMATCH", "request key already frozen with another manifest")
+        return existing
+    connection.execute(
+        f"INSERT INTO arp_context_requests({_CONTEXT_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            value["context_id"], value["session_id"], value["agent_id"], value["turn_id"],
+            int(value["provider_request_ordinal"]), int(value["session_generation"]), int(value["journal_highwater"]),
+            manifest_hash, _json_column(value), value["planned_request_hash"], original_request_key,
+            int(value["input_token_charge"]), int(value["effective_input_budget"]), int(value["reserved_output_tokens"]),
+            int(catalog_epoch), _json_column(dict(source_read_set)), int(now_ms),
+        ),
+    )
+    created = read_context(connection, value["context_id"])
+    assert created is not None
+    return created
+
+
+# ---- context recalls (R3 coordination row) --------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ContextRecallRow:
+    recall_key: str
+    session_id: str
+    agent_id: str
+    turn_id: str
+    original_request_key: str
+    provider_request_ordinal: int
+    control_generation: int
+    request_hash: str
+    request: Mapping[str, Any]
+    query_id: str
+    index_snapshot_ref: Pin | None
+    embedding_invocation_ref: Pin | None
+    phase: str
+    checkpoint: Mapping[str, Any]
+    result: Mapping[str, Any] | None
+    result_hash: str | None
+    deadline_ms: int
+    next_wake_at_ms: int
+    row_version: int
+
+    @property
+    def terminal(self) -> bool:
+        return self.phase in ("READY", "SKIPPED", "BLOCKED", "STALE")
+
+
+_RECALL_COLUMNS = (
+    "recall_key,session_id,agent_id,turn_id,original_request_key,provider_request_ordinal,control_generation,"
+    "request_hash,request_json,query_id,index_snapshot_ref_json,embedding_invocation_ref_json,phase,progress_json,"
+    "result_json,result_hash,deadline_ms,next_wake_at_ms,row_version"
+)
+
+
+def _recall(row: sqlite3.Row | tuple) -> ContextRecallRow:
+    return ContextRecallRow(
+        str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]), int(row[5]), int(row[6]), str(row[7]),
+        _load(row[8]), str(row[9]),
+        None if row[10] is None else Pin.from_json(_load(row[10])),
+        None if row[11] is None else Pin.from_json(_load(row[11])),
+        str(row[12]), _load(row[13]),
+        None if row[14] is None else _load(row[14]),
+        None if row[15] is None else str(row[15]),
+        int(row[16]), int(row[17]), int(row[18]),
+    )
+
+
+def read_context_recall(connection: sqlite3.Connection, recall_key: str) -> ContextRecallRow | None:
+    row = connection.execute(f"SELECT {_RECALL_COLUMNS} FROM arp_context_recalls WHERE recall_key=?", (recall_key,)).fetchone()
+    return None if row is None else _recall(row)
+
+
+def get_context_recall_exact(connection: sqlite3.Connection, original_request_key: str) -> ContextRecallRow | None:
+    row = connection.execute(
+        f"SELECT {_RECALL_COLUMNS} FROM arp_context_recalls WHERE original_request_key=?", (original_request_key,)
+    ).fetchone()
+    return None if row is None else _recall(row)
+
+
+def list_pending_recalls(connection: sqlite3.Connection, *, limit: int = 8) -> tuple[ContextRecallRow, ...]:
+    rows = connection.execute(
+        f"SELECT {_RECALL_COLUMNS} FROM arp_context_recalls WHERE phase NOT IN ('READY','SKIPPED','BLOCKED','STALE')"
+        " ORDER BY next_wake_at_ms, recall_key LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    return tuple(_recall(r) for r in rows)
+
+
+def put_context_recall_locked(connection: sqlite3.Connection, *, request: Json, checkpoint: Json) -> ContextRecallRow:
+    """C0: freeze the ``ContextRecallRequest`` and its PREPARING checkpoint under one identity."""
+
+    require_transaction(connection)
+    value = check("ContextRecallRequest", dict(request))
+    request_hash = digest(value)
+    point = check("ContextRecallCheckpoint", dict(checkpoint))
+    if point["phase"] != "PREPARING" or point["request_hash"] != request_hash or point["recall_key"] != value["recall_key"]:
+        raise ArpError("RECALL_BINDING_INVALID", "initial checkpoint must be PREPARING for this request")
+    if point["deadline_ms"] != value["deadline_ms"]:
+        raise ArpError("RECALL_BINDING_INVALID", "checkpoint deadline differs from the request")
+    existing = get_context_recall_exact(connection, value["original_request_key"])
+    if existing is not None:
+        if existing.request_hash != request_hash:
+            raise ArpError("RECALL_BINDING_INVALID", "request key already coordinated with another request")
+        return existing
+    connection.execute(
+        f"INSERT INTO arp_context_recalls({_RECALL_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,'PREPARING',?,NULL,NULL,?,?,1)",
+        (
+            value["recall_key"], value["session_id"], value["agent_id"], value["turn_id"], value["original_request_key"],
+            int(value["provider_request_ordinal"]), int(value["control_generation"]), request_hash, _json_column(value),
+            point["query_id"], _json_column(point), int(value["deadline_ms"]), int(point["next_wake_at_ms"]),
+        ),
+    )
+    created = read_context_recall(connection, value["recall_key"])
+    assert created is not None
+    return created
+
+
+def cas_context_recall_locked(
+    connection: sqlite3.Connection,
+    current: ContextRecallRow,
+    *,
+    checkpoint: Json,
+    result: Json | None = None,
+) -> ContextRecallRow:
+    """Advance one recall row by CAS on ``row_version``; terminal rows never change."""
+
+    require_transaction(connection)
+    if current.terminal:
+        raise ArpError("RECALL_PREPARE_BLOCKED", "recall already terminal")
+    point = check("ContextRecallCheckpoint", dict(checkpoint))
+    if point["recall_key"] != current.recall_key or point["request_hash"] != current.request_hash:
+        raise ArpError("RECALL_BINDING_INVALID", "checkpoint identity differs from the row")
+    if point["query_id"] != current.query_id or point["deadline_ms"] != current.deadline_ms:
+        raise ArpError("RECALL_BINDING_INVALID", "checkpoint query/deadline immutable")
+    if current.checkpoint.get("mode") is not None and point["mode"] != current.checkpoint["mode"]:
+        raise ArpError("RECALL_BINDING_INVALID", "mode is frozen once chosen")
+    if current.checkpoint.get("index_snapshot_ref") is not None and point["index_snapshot_ref"] != current.checkpoint["index_snapshot_ref"]:
+        raise ArpError("RECALL_BINDING_INVALID", "snapshot is frozen once chosen")
+    if point["last_observed_at_ms"] < int(current.checkpoint["last_observed_at_ms"]):
+        raise ArpError("CLOCK_ROLLBACK", "observed clock went backwards")
+    phase = point["phase"]
+    result_json: str | None = None
+    result_hash: str | None = None
+    if phase in ("READY", "SKIPPED"):
+        if result is None:
+            raise ArpError("RECALL_BINDING_INVALID", "terminal READY/SKIPPED needs its result")
+        value = check("ContextRecallResult", dict(result))
+        if value["recall_key"] != current.recall_key or value["request_hash"] != current.request_hash:
+            raise ArpError("RECALL_BINDING_INVALID", "result identity differs from the row")
+        if (value["outcome"] == "READY") != (phase == "READY"):
+            raise ArpError("RECALL_BINDING_INVALID", "result outcome differs from the phase")
+        result_json = _json_column(value)
+        result_hash = digest(value)
+    elif result is not None:
+        raise ArpError("RECALL_BINDING_INVALID", "only READY/SKIPPED carry a result")
+    snapshot_ref = point["index_snapshot_ref"]
+    embedding_ref = point["embedding_invocation_ref"]
+    updated = connection.execute(
+        "UPDATE arp_context_recalls SET phase=?, progress_json=?, result_json=?, result_hash=?, next_wake_at_ms=?,"
+        " index_snapshot_ref_json=COALESCE(index_snapshot_ref_json, ?), embedding_invocation_ref_json=COALESCE(embedding_invocation_ref_json, ?),"
+        " row_version=row_version+1 WHERE recall_key=? AND row_version=?",
+        (
+            phase, _json_column(point), result_json, result_hash, int(point["next_wake_at_ms"]),
+            None if snapshot_ref is None else _json_column(snapshot_ref),
+            None if embedding_ref is None else _json_column(embedding_ref),
+            current.recall_key, current.row_version,
+        ),
+    ).rowcount
+    if updated != 1:
+        raise ArpError("RECALL_BINDING_INVALID", "recall row changed concurrently")
+    after = read_context_recall(connection, current.recall_key)
+    assert after is not None
+    return after
+
+
+# ---- index publications (the only active-generation pointer) --------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class IndexPublicationRow:
+    session_id: str
+    index_generation: int
+    partition_id: str
+    generation_manifest_hash: str
+    source_highwater: int
+    state: str
+    publish_receipt_ref: Pin
+
+    @property
+    def pin(self) -> Pin:
+        return Pin("index_generation", f"{self.session_id}:gen:{self.index_generation}", self.index_generation, self.generation_manifest_hash)
+
+
+def _publication(row: sqlite3.Row | tuple) -> IndexPublicationRow:
+    return IndexPublicationRow(str(row[0]), int(row[1]), str(row[2]), str(row[3]), int(row[4]), str(row[5]), Pin.from_json(_load(row[6])))
+
+
+_PUBLICATION_COLUMNS = "session_id,index_generation,partition_id,generation_manifest_hash,source_highwater,state,publish_receipt_ref_json"
+
+
+def active_index_publication(connection: sqlite3.Connection, session_id: str) -> IndexPublicationRow | None:
+    row = connection.execute(
+        f"SELECT {_PUBLICATION_COLUMNS} FROM arp_index_publications WHERE session_id=? AND state='ACTIVE' ORDER BY index_generation DESC LIMIT 1",
+        (session_id,),
+    ).fetchone()
+    return None if row is None else _publication(row)
+
+
+def publish_index_generation_locked(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+    index_generation: int,
+    partition_id: str,
+    generation_manifest_hash: str,
+    source_highwater: int,
+    publish_receipt_ref: Pin,
+) -> IndexPublicationRow:
+    """Adopt one READY partition generation centrally; an older ACTIVE one is RETIRED."""
+
+    require_transaction(connection)
+    publish_receipt_ref.require_kind("receipt")
+    row = connection.execute(
+        f"SELECT {_PUBLICATION_COLUMNS} FROM arp_index_publications WHERE session_id=? AND index_generation=?",
+        (session_id, index_generation),
+    ).fetchone()
+    if row is not None:
+        existing = _publication(row)
+        if existing.generation_manifest_hash != generation_manifest_hash or existing.partition_id != partition_id:
+            raise ArpError("GENERATION_STALE", "generation already published with another manifest")
+        return existing
+    current = active_index_publication(connection, session_id)
+    if current is not None:
+        if current.index_generation > index_generation:
+            raise ArpError("GENERATION_STALE", "a newer generation is already active")
+        connection.execute(
+            "UPDATE arp_index_publications SET state='RETIRED' WHERE session_id=? AND index_generation=? AND state='ACTIVE'",
+            (session_id, current.index_generation),
+        )
+    connection.execute(
+        f"INSERT INTO arp_index_publications({_PUBLICATION_COLUMNS}) VALUES (?,?,?,?,?,'ACTIVE',?)",
+        (session_id, index_generation, partition_id, generation_manifest_hash, int(source_highwater), _pin_column(publish_receipt_ref)),
+    )
+    created = active_index_publication(connection, session_id)
+    assert created is not None
+    return created
+
+
+# ---- original receipts (run_events rows for facts that have no table of their own) -----------
+
+
+def append_original_receipt_locked(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    kind: str,
+    receipt_key: str,
+    body: Json,
+    now: float,
+) -> Pin:
+    """Persist one immutable fact as an original run event; same key + same body replays."""
+
+    require_transaction(connection)
+    value = dict(body)
+    body_hash = digest(value)
+    event_id = f"arp:{kind}:{digest({'key': receipt_key})[:32]}"
+    existing = connection.execute("SELECT payload_json FROM run_events WHERE event_id=?", (event_id,)).fetchone()
+    if existing is not None:
+        stored = _load(existing[0])
+        if stored.get("body_hash") != body_hash:
+            raise ArpError("SOURCE_HASH_CONFLICT", f"{kind} receipt key reused with another body")
+        return Pin("receipt", f"{kind}:{receipt_key}", 0, body_hash)
+    sequence = int(
+        connection.execute(
+            "SELECT COALESCE(MAX(durable_seq), 0) + 1 FROM run_events WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
+    )
+    payload = {"schema_version": 1, "kind": kind, "receipt_key": receipt_key, "body_hash": body_hash, "body": value}
+    connection.execute(
+        "INSERT INTO run_events(event_id, run_id, durable_seq, kind, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (event_id, run_id, sequence, f"arp.{kind}.v1", _json_column(payload), now),
+    )
+    from simple_harness.execution.sqlite.audit_witness import record_event_witness
+
+    record_event_witness(connection, event_id)
+    return Pin("receipt", f"{kind}:{receipt_key}", 0, body_hash)
+
+
+def read_original_receipt(connection: sqlite3.Connection, *, kind: str, receipt_key: str) -> Mapping[str, Any] | None:
+    event_id = f"arp:{kind}:{digest({'key': receipt_key})[:32]}"
+    row = connection.execute("SELECT payload_json FROM run_events WHERE event_id=?", (event_id,)).fetchone()
+    return None if row is None else _load(row[0])["body"]
+
+
 def json_text(value: object) -> str:
     """Canonical JSON text for callers that store bodies in their own columns."""
 
@@ -976,6 +1353,9 @@ def load_json(text: str) -> Any:
 
 
 __all__ = (
+    "ContextRecallRow",
+    "ContextRequestRow",
+    "IndexPublicationRow",
     "CreationIntentRow",
     "EVENT_TYPES",
     "EventBindingRow",
