@@ -12,7 +12,8 @@ native creation service so every root / batch / delegate creation goes through i
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from contextlib import nullcontext
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +160,25 @@ def _freeze_profile(database: Database, ports: ArpPorts) -> tuple[store.ProfileR
     return profile, policy
 
 
+def _standalone_fence(agent_id: str, turn_id: str):  # type: ignore[no-untyped-def]
+    """A deployment without its own lifecycle fence: nothing to hold across the handoff."""
+    del agent_id, turn_id
+    return nullcontext()
+
+
+def _admitted_ports(ports: AgentRuntimePorts) -> AgentRuntimePorts:
+    """The composer runs on ``prepare_request``; the kernel prepares a request *before* the
+    physical handoff only when an admission port exists (without one the legacy wire
+    prepares inside ``invoke``, after the invocation is already ``handed_off``).  A frozen
+    context request must precede the handoff — the prior-output reserve reads the run's
+    recorded invocations and would otherwise meet the request's own, unresolved one — so a
+    deployment that brings no admission gets the SDK's local one with a no-op fence.  The
+    concurrency cap moves from the wire semaphore to that admission unchanged."""
+    if ports.provider_admission is not None or ports.local_provider_admission is not None or ports.provider_handoff_fence is not None:
+        return ports
+    return replace(ports, provider_handoff_fence=_standalone_fence)
+
+
 def build_arp_runtime(
     ports: AgentRuntimePorts, arp: ArpPorts, *, owner_scope: str = "default"
 ) -> AgentRuntime:
@@ -175,6 +195,7 @@ def build_arp_runtime(
     if arp.embedding is not None and arp.embedding_resource_ref is None:
         raise ArpError("EMBEDDING_RESOURCE_MISSING", "an embedding port needs its approved deployment pin")
     root = read_root(arp.root_dir)
+    ports = _admitted_ports(ports)
     path = Path(ports.database_path)
     Database.open(path).close()  # fresh v10 when missing; validates an existing library
     migrate_execution_to_v11(path)

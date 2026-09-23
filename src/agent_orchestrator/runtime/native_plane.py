@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from simple_harness.agents.arp.errors import ArpError
@@ -69,9 +70,9 @@ class RunPriorReserve:
             record = self._uow.read_effective_provider_invocation(previous.invocation_id)
             if record is None or str(record.state) == "claimed":
                 continue
-            usage = record.usage_json
-            values = usage.get("usage") if isinstance(usage, dict) else None
-            output = values.get("output_tokens") if isinstance(values, dict) else None
+            usage = record.usage_json  # a read-only mapping on real records, a dict in fakes
+            values = usage.get("usage") if isinstance(usage, Mapping) else None
+            output = values.get("output_tokens") if isinstance(values, Mapping) else None
             if str(record.state) not in ("succeeded", "failed") or type(output) is not int or output < 0:
                 raise ArpError(
                     "PRIOR_RESERVE_UNAVAILABLE",

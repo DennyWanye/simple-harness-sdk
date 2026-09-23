@@ -320,9 +320,12 @@ class SessionLifecycleService:
         effects = uow.list_effects_for_run(agent_id)
         calls = [Pin("invocation", str(e.effect_id), int(e.version), _hash(e.request_hash)) for e in effects if str(e.state) in OPEN_EFFECT_STATES]
         unknown = [Pin("invocation", str(e.effect_id), int(e.version), _hash(e.request_hash)) for e in effects if str(e.state) == "unknown"]
+        # A ``claimed`` invocation never entered transport (the kernel's "not started";
+        # its reconciliation skips it too) — e.g. a request the composer refused before
+        # the handoff.  Only an uncertain handoff is UNKNOWN.
         unknown.extend(
             Pin("invocation", str(p.invocation_id), int(p.version), _hash(p.request_fingerprint))
-            for p in uow.list_incomplete_provider_invocations() if str(p.run_id) == agent_id
+            for p in uow.list_incomplete_provider_invocations() if str(p.run_id) == agent_id and str(p.state) != "claimed"
         )
         # Embedding intents without a call receipt are calls whose outcome nobody recorded yet.
         unknown.extend(Pin("invocation", key, 0, digest(intent)) for key, intent in embedding_call.list_open_intents(connection, agent_id))

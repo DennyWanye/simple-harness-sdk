@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 from arp_fixture import HASH, ExactWordTokenizer, RecordingAuthorization, activation_receipt, meter_binding, standalone_profile
@@ -98,7 +98,8 @@ def test_allow_all_authorization_is_refused_for_a_native_pool(tmp_path) -> None:
 
 
 def _invocation(invocation_id: str, state: str, output: int | None) -> SimpleNamespace:
-    usage = None if output is None else {"usage": {"input_tokens": 3, "output_tokens": output}}
+    # Real records expose ``usage_json`` as a read-only mapping (not a dict); the fake does too.
+    usage = None if output is None else MappingProxyType({"usage": MappingProxyType({"input_tokens": 3, "output_tokens": output})})
     return SimpleNamespace(invocation_id=invocation_id, state=state, usage_json=usage)
 
 
