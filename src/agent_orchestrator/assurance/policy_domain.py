@@ -9,7 +9,11 @@ POLICY_DOMAIN_KIND = "assurance-policy-domain-v1"
 
 
 def policy_domain_hash(
-    purpose: str, *, scope_hash: str | None, task_hash: str | None = None
+    purpose: str,
+    *,
+    scope_hash: str | None,
+    task_hash: str | None = None,
+    effect_key: str | None = None,
 ) -> str:
     """The approved check-policy domain of a purpose.
 
@@ -22,7 +26,8 @@ def policy_domain_hash(
     MISSION_FINAL, ACTION_PROPOSAL and OPERATION_OUTCOME judge a different
     catalogue than the Scope's content criteria (the whole root requirements, the
     proposal checks, an effect slot), so their domain is the Scope plus the
-    purpose; no Scope is invented.
+    purpose; OPERATION_OUTCOME is judged per effect slot, so its domain also
+    names the effect key. No Scope is invented.
     """
     if purpose in {"TASK_CONTENT", "COMPOSITION"}:
         if scope_hash is None:
@@ -33,11 +38,12 @@ def policy_domain_hash(
             raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
         return task_hash
     if purpose in {"MISSION_FINAL", "ACTION_PROPOSAL", "OPERATION_OUTCOME"}:
-        if scope_hash is None:
+        if scope_hash is None or (purpose == "OPERATION_OUTCOME") != (effect_key is not None):
             raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
-        return fingerprint(
-            {"kind": POLICY_DOMAIN_KIND, "purpose": purpose, "scope_hash": scope_hash}
-        )
+        domain = {"kind": POLICY_DOMAIN_KIND, "purpose": purpose, "scope_hash": scope_hash}
+        if effect_key is not None:
+            domain["effect_key"] = effect_key
+        return fingerprint(domain)
     raise AssuranceError("SUBJECT_BINDING_INVALID", purpose)
 
 

@@ -667,3 +667,100 @@ pre-Scope METHOD_PLAN 的派发与 official（第 6 项）；MIXED 根 Scope 的
 Worker 结算门、consumed check 正例、真实模型、四 consumer、Host/UI 与前两段相同未覆盖。
 
 下一段：handoff §4 第 4 项（executor check receipt importer）起。
+
+### 2026-09-23 第四段·第三段独立审阅修正 + handoff §4 第 4 项：executor check receipt importer（基线 80c650d4）
+
+**第三段独立审阅（opus 通道下一轮改用 opus5.5；本轮为切换前的最后一次 fable 审阅）**：无阻断；四条重要项全部修正：
+
+1. OPERATION_OUTCOME 策略域原只含 (purpose, scope_hash)，同一 Scope 有两个 effect slot 时第二条策略永远批不进库。
+   现在 `policy_domain_hash(..., effect_key=)` 对 OPERATION_OUTCOME 必带 effect_key；批准/存储回执/`PurposeSubject`/
+   transport 校验（从 `operation_outcome_review_bindings` 按 review_package_id 读 effect_key）四处一致。
+2. ACTION_PROPOSAL 主体 owner_task 原取 producer scope 的 Task，而 scope_ref 取 proposal 的 owner scope，producer≠owner
+   时 transport 必 `REVIEW_OWNER_MISMATCH`。现在 owner_task 由 proposal 指名的 owner Scope 文档的 task_ref 读出（并核对 scope_hash）。
+3. METHOD_PLAN 未批准策略时原以 `PARAMETER_INVALID`/`proposal_not_grounded` 拒绝规划者（理由失真）。现在 admission 内的
+   AssuranceError 包成 `_AssuranceReviewUnavailable`，记录为 `AUTHORIZATION_REQUIRED`（H1 闭合枚举内的真实含义）+
+   `assurance_review_unavailable`，detail 带 purpose 与 code；admission 仍整体回滚（fail-closed 不变）。
+4. `_ask_root_reviewer` assured 分支原总返回 True，AWAITING_REVIEW 期间每个 cycle 都算"有进展"（空转耗 max_cycles）。
+   现在按 review_key 先查 invocation 是否已存在，只有本次新开才返回 True（与旧路径一致）。
+   次要项顺手：MISSION_FINAL 判停增加"根 Task FAILED/CANCELLED"。
+
+**第 4 项做了什么（代码存在，并按下述范围验证）**
+
+- `assurance/check_specs.py`：`EXECUTOR_LAYERS=("code_test",)`、`executor_layer_spec`（execution_kind=EXECUTOR，
+  assertion_key `code_test:pytest-exact-run-v1`）、`layer_spec` 分派；`LOCAL_LAYERS` 常量。
+- 新 `assurance/executor_checks.py`（纯函数）：`pytest_nodeids`（解析 `-rA` 短摘要里的 PASSED/FAILED/ERROR nodeid）、
+  `executor_run_facts`（只看原 `code_test` LayerResult 里每个 target 的真实 `ExecutionReceipt` + `TestRun`：
+  无回执→ERROR；任一 target 超时→CANCELLED；receipt.status≠ok / limit_exceeded / 无 exit_code→ERROR；
+  SUCCEEDED 时任一 returncode≠0→FAIL；未绑定本 Result 未改动的工作区快照（`observation_scope` 缺失）→UNKNOWN；
+  executor 未报告任何 PASSED nodeid 或有 FAILED/ERROR nodeid→UNKNOWN；否则 PASS。**exit 0 单独不算 PASS。**
+  `tree_killed` 是执行器收尾回收进程树的正常标记，不当错误）、`record_actual_run`（同一 local-check-receipt-v1 回执框架，
+  状态由事实给出，不执行任何东西）。
+- `verification/assurance_local.py::LocalVerificationRecorder.record_executor`：把 verifier 已经跑完的 code_test 结果导入
+  为 `execution_receipt`（不重跑），返回带 `assurance_executor_check_ref` 的原 LayerResult。
+- `orchestrator/assurance_local_checks.py`：注册表新增 code_test（EXECUTOR spec）；`LocalCheckImporter._import` 统一
+  local/executor 两种来源（事件 `AssuranceExecutionImported`、回执 `AssuranceExecutorCheckImported`、
+  commit_id `assurance-executor-check:`、输出 artifact `.assurance/executor-checks/`，payload 多带 `execution`
+  摘要：targets/execution_ids/environment_digests/state）；部署哈希纳入 `runtime/sandbox.py`、`runtime/tool_gateway.py`、
+  `assurance/executor_checks.py`。
+- `orchestrator/assurance_check_import.py::read_local_check_binding_locked`：按 execution_ref.kind 表驱动，接受
+  `execution_receipt`（adapter pin `assurance-executor-check-adapter`），注册项 layer 类别必须与来源类别一致。
+- `verification/verifier_router.py`：assured lane 下新跑的 code_test 立即 `record_executor`；`reuse["code_test"]` 只有
+  带 `assurance_executor_check_ref` 才复用（"已通过 executor 的用其真实回执，不重复本地执行"），否则旧缓存不是证明、重跑。
+- `runtime/tool_gateway.py::run_pytest(report_all=)` + bootstrap：verifier 的 code_test 让 pytest 加 `-rA`，回执才有 nodeid；
+  Worker 的 run_tests 工具不受影响。`deterministic_checks.code_test` 传 `report_all=True`。
+- `approve_check_policy`：`required_check_ids=("code_test",)` 现在能解析到注册的 EXECUTOR CheckSpec（CHECKED 映射），
+  SEMANTIC 映射到有 required_check_ids 的准则仍 `CHECK_POLICY_UNRESOLVED`。
+
+**接缝**（本机 ignored，`.local-test-evidence/2026-09-23/assurance-integration/`）
+
+- 新 `scripts/assurance_seams/executor-check-seam.py` PASS：`executor-check-seam-20260923T093750636001.json`
+  （sha256 `3d62b00166082d781aff7bdd4bebbe53136f063383ac707a6e5a39f443b251db`）：真实 `code_test` 经 `ProcessOnlyExecutor`
+  起 pytest 子进程 → recorder 导入 → `AssuranceExecutionImported` 事件 + 回执（过 local-check-receipt-v1 schema）→
+  原 Commit 导入 → CheckBinding（过 check-binding-v2 schema，execution_ref.kind=execution_receipt）：
+  正例 PASS（2 个 PASSED nodeid、execution_id、environment_digest、observation_scope 绑定本 Result + report.json 哈希）；
+  精确重放同一 binding、1 行；失败测试→FAIL（FAILED nodeid）；测试改写输入文件→层状态 PASS 但 binding UNKNOWN；
+  超时（timeout=1s，sleep 5）→CANCELLED/UNKNOWN；无执行器回执的合成 LayerResult→ERROR/UNKNOWN；exit 0 但无 nodeid（合成）→
+  SUCCEEDED/UNKNOWN；DETERMINISTIC+required code_test 的策略：SEMANTIC 拒、CHECKED 批准。
+- 金丝雀重跑 PASS：`purpose-builders-seam-20260923T085305736553.json`（sha256 `4afa3592327e2b4fb9001cd71f5471e870dbfa11a88dca9fe31fa14ed6b2e44b`，
+  含审阅修正后"再问一次返回 False"的新断言）、`validity-accept-seam-20260923T093807793327.json`
+  （`cae3934001cf9ece763000c52a58b6576c2740a76a962a0b02ad31fedc30c54e`）、`check-binding-seam-20260923T093805175640.json`
+  （`d1f62827dcfb36bc85854be70cfad7759d6a669d4d0323e9a019a37569b356bf`）、`check-use-seam-20260923T093805867904.json`
+  （`90376aa359f6c1f510d74c064516a446a67debb4da3018e19ba8d1b474d73a56`）。
+- 定向既有测试：p33 pytest workspace config / p32 code execution modes / p32 sandbox / critic test evidence order /
+  root review coordinator / root review user goal / hierarchical event flow / host_support local code execution /
+  p35 late verifier completion：333 passed，1 failed 且**为交接快照既有**：
+  `test_the_event_handler_asks_the_mode_before_consulting_the_assembly` 数 `self._new_mode(mission)` 期望 21 实际 24，
+  0c3abfdb（交接快照）、048632b9、80c650d4 三个提交都是 24，与本段无关，未改。
+- 既有 `local-check-pin-seam.py` 在 `adapter.prepare` 的 `load_completion_result_inputs` 处以 "original Attempt intent differs"
+  失败：该接缝自建 Attempt 没有 completion 协议的 intent，与交接快照里 `prepare` 的输入加载器不兼容，**先于本段**，未改
+  （本机没有它的任何历史 PASS 证据）。
+
+**改动文件 sha256**
+```
+f935d266b0d21fed5e0f22407c3a68541275da8411083adbbfec174965787797  scripts/assurance_seams/_assured_fixture.py
+c5fc8d052d14ea3b949d4a5ab4711c871f68de26318079dcb4b9b78df8adc2cd  scripts/assurance_seams/executor-check-seam.py
+190073c77ce190b4cb5febbb436c61f60b2e66d6e5e508c50fdb93aceb6db40e  scripts/assurance_seams/purpose-builders-seam.py
+9fd51ab547955d10b7fcb28e201510107435204c996620f8b64f1e9dc7163c17  assurance/check_specs.py
+8c2c8edcb8d5e836c34eaee53222d3935d8679e910038124e3b629f74de8b907  assurance/executor_checks.py
+73fdf155052fc8e44dc45393798b4a7d9a6642f1f42cdcaccb418fef63b0d0dc  assurance/policy_domain.py
+d0426b597ae70c97be83fe12df6bcfea24d2d6cf397d2a64a205d1508f04bccd  orchestrator/assurance_check_import.py
+9e94cb48370e93d9ceade62ed33405c3736138e3a1cf1832335687021794a66c  orchestrator/assurance_check_policy.py
+427815a3a047608a4248d1bf24a2487561bc0ede93ece0bdfe23358b964aa698  orchestrator/assurance_local_checks.py
+7903c664477d6cef360396a395e09711af71a03d2cbde50f6b77436b27cf8303  orchestrator/assurance_purpose_reviews.py
+d8e43188bf1fb594c45354d5653306a6f10441e439f0d39b625931685f798870  orchestrator/assurance_review_import.py
+645d4555380a138d58ee739bc050ea426f30b5a105bb68c4eaa68b91bb4032de  orchestrator/assurance_review_transport.py
+9f71d59bd3e347e0faa5b6d0e1f6e6a086533a2bb130e74d52f0484b3525189a  orchestrator/event_handler.py
+7c984a46ed129f6f34cd8949103c58065098dcc5a5fc17be6c519b1dfa52ad14  runtime/tool_gateway.py
+dfc055e2065bfc0f21ca1a64b7b50788b6439db571a0469f2c6c8ce025ddfda2  storage/assurance_store.py
+69d804496acff639965b842291840573f26465a6a169c8b4e7cf082320f1f887  verification/assurance_local.py
+f90c11c23ae85ea97468efe447a6430d17ea494b793f93cf9937e97f9554d51f  verification/deterministic_checks.py
+e5d0899177353ea4ff0f9fc1faaf52b945a91778a18ca386e581c8c97f897ac8  verification/verifier_router.py
+```
+
+**仍未证明 / 留给后续项**：VerifierRouter 整趟（format→rule→code_test→critic）在 assured lane 上的 code_test 记录分支只有
+代码，接缝直接调用 `code_test`+`record_executor`（router 的 rule 层需要文档/知识夹具）；SeatbeltExecutor 未跑（只跑
+ProcessOnlyExecutor）；executor 类 CheckBinding 被 validity/official review 消费的正例（`prepare_local_check_use` 通用读已
+接受该 kind，但没有跑一条 CHECKED 准则到 official record）；ACTION_PROPOSAL 的四条 DETERMINISTIC criteria 仍需注册各自
+checker；其余同前三段。
+
+下一段：handoff §4 第 5 项（只读证据工具 / 完整曝光）起。

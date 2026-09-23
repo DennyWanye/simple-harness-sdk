@@ -103,9 +103,10 @@ async def mission_final(rt, report):
     assert intent.kind == 'plan' and intent.config.get('assurance_protocol') == 'assurance-exec-v1.1'
     # Legacy root reviewer intent must not exist for an assured Mission.
     assert store.get_intent_for_subject(f'{mission.id}:root-review:{package.package_id}:1') is None
-    # Idempotent: asking again replays the same invocation.
+    # Idempotent: asking again replays the same invocation and, as on the legacy
+    # path, reports no progress (a package already out for review is not a step).
     asked = await rt.orch._ask_root_reviewer(mission, coordinator, package)
-    assert asked is True and len(invocations(rt, 'assurance-mission-final:')) == 1
+    assert asked is False and len(invocations(rt, 'assurance-mission-final:')) == 1
     assert coordinator.state(mission.id).status is RootReviewStatus.AWAITING_REVIEW
     # 4. Actual turn -> collection -> REVIEW consumer -> official record.
     calls_before = rt.provider.calls

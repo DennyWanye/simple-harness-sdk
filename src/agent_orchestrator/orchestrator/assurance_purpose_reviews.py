@@ -61,6 +61,13 @@ def output_manifest_hash(purpose: str, body: Mapping[str, Any]) -> str:
     return fingerprint({"kind": OUTPUT_MANIFEST_KIND, "purpose": text(purpose), **dict(body)})
 
 
+def purpose_review_key(purpose: str, mission_id: str, package_id: str) -> str:
+    """One round key per (purpose, Mission, frozen package); replay-safe by design."""
+    return f"assurance-{purpose.lower().replace('_', '-')}:" + fingerprint(
+        {"mission_id": mission_id, "package": str(package_id)}
+    )
+
+
 def assurance_review_runtime(commit: Any) -> Any:
     """The installed review runtime; a builder never invents a consumer."""
     handoff = getattr(commit, "_assurance_review_handoff", None)
@@ -86,6 +93,8 @@ class PurposeSubject:
     material_refs: frozenset[AssuranceRef]
     #: Identity/complete-snapshot scope; the completion Scope id when there is one.
     scope_id: str
+    #: OPERATION_OUTCOME only: the effect slot this outcome is judged for.
+    effect_key: str | None = None
 
     @property
     def policy_domain_hash(self) -> str:
@@ -93,6 +102,7 @@ class PurposeSubject:
             self.purpose,
             scope_hash=None if self.scope_ref is None else self.scope_ref.pin.content_hash,
             task_hash=self.owner_task.content_hash,
+            effect_key=self.effect_key,
         )
 
 
@@ -188,9 +198,7 @@ def prepare_purpose_review(
         if AssuranceStore(store).lane(mission_id) != "ASSURANCE_1_1":
             raise AssuranceError("ASSURANCE_PROFILE_REQUIRED")
         reader = AssuranceReader(store, tenant_id=tenant_id, mission_id=mission_id)
-        review_key = f"assurance-{purpose.lower().replace('_', '-')}:" + fingerprint(
-            {"mission_id": mission_id, "package": str(package.package_id)}
-        )
+        review_key = purpose_review_key(purpose, mission_id, str(package.package_id))
         package_ref = Pin(str(package.package_id), 0, fingerprint(package.to_json()))
         existing = store.connection.execute(
             "SELECT dispatch_intent_id FROM assurance_review_invocations "
@@ -557,10 +565,20 @@ def action_proposal_subject(
     """T0's frozen payload objects and candidate bytes, as the reviewer's material."""
     proposal = payloads.action_proposal
     htn = HtnStore(store)
-    task_id = str(sources.producer_scope.task_ref.id)
+    # The proposal names the effect owner's Scope; the review's owner Task is that
+    # Scope's Task (the producer may be another occurrence of the same plan).
+    scope_row = store.connection.execute(
+        "SELECT scope_hash, document_json FROM operation_completion_scopes "
+        "WHERE mission_id=? AND scope_id=?",
+        (mission_id, proposal.completion_scope_id),
+    ).fetchone()
+    if scope_row is None or scope_row["scope_hash"] != proposal.completion_scope_hash:
+        raise AssuranceError("SOURCE_UNAVAILABLE", "owner scope")
+    task_id = str(decode(scope_row["document_json"])["task_ref"]["id"])
     binding = htn.task_semantics_of(mission_id, task_id)
     if binding is None:
-        raise AssuranceError("SOURCE_UNAVAILABLE", "producer task")
+        raise AssuranceError("SOURCE_UNAVAILABLE", "owner task")
+    del sources  # the producer Scope is frozen in the package, not a subject field
     scope_ref = AssuranceRef(
         "completion_scope", Pin(proposal.completion_scope_id, 0, proposal.completion_scope_hash)
     )
@@ -665,6 +683,7 @@ def operation_outcome_subject(
         output_manifest_hash=None,
         material_refs=frozenset(materials),
         scope_id=scope_ref.pin.id,
+        effect_key=str(binding.effect_key),
     )
     return subject, requirements
 
@@ -726,4 +745,5 @@ __all__ = (
     "output_manifest_hash",
     "policy_domain_hash",
     "prepare_purpose_review",
+    "purpose_review_key",
 )

@@ -339,6 +339,7 @@ class AssuranceStore:
                 "TASK_CONTENT" if purpose == "CONTENT" else purpose,
                 scope_hash=None if scope_ref is None else scope_ref.pin.content_hash,
                 task_hash=None if subject_ref is None else subject_ref.pin.content_hash,
+                effect_key=approval.get("effect_key"),
             )
             if (
                 original["kind"] != "AssuranceCheckPolicyApproved"

@@ -119,9 +119,16 @@ class LocalVerificationRecorder:
         now_ms: Callable[[], int],
         assert_outside_transaction: Callable[[], None],
         persist: Callable[[RecordedLocalCheck], AssuranceRef],
+        executor_bindings: Mapping[str, LocalLayerBinding] | None = None,
+        persist_executor: Callable[[RecordedLocalCheck, dict[str, Any]], AssuranceRef]
+        | None = None,
     ) -> None:
         if not set(bindings) <= {"format_check", "rule_check"}:
             raise AssuranceError("LOCAL_CHECK_LAYER_UNSUPPORTED")
+        if not set(executor_bindings or {}) <= {"code_test"}:
+            raise AssuranceError("LOCAL_CHECK_LAYER_UNSUPPORTED")
+        self.executor_bindings = dict(executor_bindings or {})
+        self.persist_executor = persist_executor
         self.mission_id = text(mission_id)
         self.subject_hash = digest(subject_hash)
         self.input_manifest_hash = digest(input_manifest_hash)
@@ -194,4 +201,45 @@ class LocalVerificationRecorder:
             actual.status,
             actual.summary,
             {**dict(actual.detail), "assurance_local_check_ref": ref.to_json()},
+        )
+
+    def record_executor(self, layer: str, result: LayerResult) -> LayerResult:
+        """Import the executor's own run of ``layer``; nothing is executed here.
+
+        The verifier already ran pytest through the sandbox executor port; the
+        per-target ExecutionReceipts inside ``result`` are the facts. A result
+        without them stays UNKNOWN, and the returned LayerResult keeps the
+        original status with the imported receipt ref attached.
+        """
+        from ..assurance.executor_checks import executor_run_facts, record_actual_run
+
+        binding = self.executor_bindings.get(layer)
+        if binding is None or self.persist_executor is None:
+            raise AssuranceError("CHECKER_UNAVAILABLE", layer)
+        if not isinstance(result, LayerResult) or result.layer != layer:
+            raise AssuranceError("CHECK_ASSERTION_INVALID")
+        self.assert_outside_transaction()
+        state, verdict, document = executor_run_facts(result.to_json(), layer=layer)
+        output = AssertionOutput(
+            binding.assertion_key, verdict, canonical(document).encode("utf-8")
+        )
+        recorded = record_actual_run(
+            binding.spec_ref,
+            mission_id=self.mission_id,
+            subject_hash=self.subject_hash,
+            input_manifest_hash=self.input_manifest_hash,
+            environment_hash=self.environment_hash,
+            implementation_hash=self.implementation_hash,
+            now_ms=self.now_ms,
+            state=state,
+            outputs=(output,),
+        )
+        ref = self.persist_executor(recorded, document)
+        if not isinstance(ref, AssuranceRef) or ref.kind != "execution_receipt":
+            raise AssuranceError("CHECK_IMPORT_RECEIPT_REQUIRED")
+        return LayerResult(
+            result.layer,
+            result.status,
+            result.summary,
+            {**dict(result.detail), "assurance_executor_check_ref": ref.to_json()},
         )

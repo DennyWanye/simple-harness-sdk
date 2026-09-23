@@ -340,6 +340,8 @@ args = [
     "-c", str(selected or fallback or os.devnull),
     "--rootdir", str(root), "--confcutdir", str(root),
 ]
+if os.environ.get("PYTEST_ASSURANCE_REPORT") == "1":
+    args.append("-rA")  # every outcome with its node id, for the executor receipt
 if requested:
     args.extend(["--", requested])
 raise SystemExit(pytest.main(args))
@@ -352,19 +354,25 @@ async def run_pytest(
     path: str | None,
     timeout: float,
     executor: SandboxExecutorPort | None = None,
+    report_all: bool = False,
 ) -> TestRun:
     """pytest through the sandbox executor port (P3.2 D1): fixed cwd, an explicit
     environment, hard CPU and file limits, every process of the run reaped afterwards.
-    Without an executor the process-only adapter runs it (trusted code, not isolated)."""
+    Without an executor the process-only adapter runs it (trusted code, not isolated).
+    ``report_all`` asks pytest for its full short summary (``-rA``) so the verifier's
+    receipt names every node id the executor actually ran."""
 
     runner = executor if executor is not None else ProcessOnlyExecutor()
     command = [runner.interpreter, "-c", _PYTEST_WORKSPACE_BOOTSTRAP]
     if path:
         command.append(path)
+    env = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0"}
+    if report_all:
+        env["PYTEST_ASSURANCE_REPORT"] = "1"
     spec = SandboxSpec(
         cpu_seconds=max(1, int(timeout)),
         wall_seconds=timeout,
-        env={"PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0"},
+        env=env,
     )
     receipt = await runner.execute(command, cwd=workspace_root, spec=spec)
     if receipt.timed_out:

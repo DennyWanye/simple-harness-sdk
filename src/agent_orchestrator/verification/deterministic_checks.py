@@ -236,7 +236,11 @@ async def code_test(
                 failed = True
                 continue
         run = await run_pytest(
-            str(verification_copy.root), path=target, timeout=timeout, executor=executor
+            str(verification_copy.root),
+            path=target,
+            timeout=timeout,
+            executor=executor,
+            report_all=True,
         )
         runs.append({"target": target, **run.to_json(), "passed": run.passed})
         failed = failed or not run.passed

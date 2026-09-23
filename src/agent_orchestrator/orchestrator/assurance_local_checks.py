@@ -13,8 +13,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..artifacts.store import ArtifactStore
-from ..assurance.check_specs import DOCUMENT_NAMES, CheckSpec, local_layer_spec
+from ..assurance.check_specs import (
+    DOCUMENT_NAMES,
+    EXECUTOR_LAYERS,
+    LOCAL_LAYERS,
+    CheckSpec,
+    layer_spec,
+)
 from ..assurance.codec import AssuranceError, canonical, decode, digest, fingerprint, text
+from ..assurance.executor_checks import OUTPUT_SCHEMA
 from ..assurance.local_checks import RecordedLocalCheck, validate_local_check
 from ..assurance.refs import AssuranceRef, Pin
 from ..contracts import Artifact
@@ -24,6 +31,40 @@ from ..verification.assurance_local import LocalLayerBinding, LocalVerificationR
 
 if TYPE_CHECKING:
     from .commit_service import CommitService
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceNames:
+    payload_key: str
+    ref_kind: str
+    event_type: str
+    receipt_kind: str
+    commit_prefix: str
+    artifact_prefix: str
+    artifact_type: str
+    artifact_dir: str
+
+
+_LOCAL_NAMES = _SourceNames(
+    "local_check",
+    "local_check_receipt",
+    "AssuranceLocalCheckFinished",
+    "AssuranceLocalCheckImported",
+    "assurance-local-check:",
+    "assurance-check-output",
+    "assurance-local-check-output",
+    ".assurance/checks",
+)
+_EXECUTOR_NAMES = _SourceNames(
+    "executor_check",
+    "execution_receipt",
+    "AssuranceExecutionImported",
+    "AssuranceExecutorCheckImported",
+    "assurance-executor-check:",
+    "assurance-executor-check-output",
+    "assurance-executor-check-output",
+    ".assurance/executor-checks",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +80,7 @@ class RegisteredLayer:
         definition = event["payload"]
         spec = CheckSpec.from_json(definition)
         if (
-            spec != local_layer_spec(self.layer, self.binding.implementation_hash)
+            spec != layer_spec(self.layer, self.binding.implementation_hash)
             or spec.assertion_key != self.binding.assertion_key
             or spec.max_runtime_ms != self.binding.max_runtime_ms
         ):
@@ -74,7 +115,7 @@ class LocalCheckImporter:
         self.environment_hash = digest(environment_hash)
         self.recorder_hash = digest(recorder_implementation_hash)
         self.registry = dict(registry)
-        if not set(self.registry) <= {"format_check", "rule_check"} or any(
+        if not set(self.registry) <= {*LOCAL_LAYERS, *EXECUTOR_LAYERS} or any(
             key != value.layer for key, value in self.registry.items()
         ):
             raise AssuranceError("CHECKER_REGISTRY_IDENTITY")
@@ -121,19 +162,38 @@ class LocalCheckImporter:
             input_manifest_hash=self.manifest_ref.pin.content_hash,
             environment_hash=self.environment_hash,
             recorder_implementation_hash=self.recorder_hash,
-            bindings={key: entry.binding for key, entry in self.registry.items()},
+            bindings={
+                key: entry.binding for key, entry in self.registry.items() if key in LOCAL_LAYERS
+            },
             now_ms=lambda: int(self.commit.store.now * 1000),
             assert_outside_transaction=self._outside_transaction,
             persist=self.import_actual,
+            executor_bindings={
+                key: entry.binding for key, entry in self.registry.items() if key in EXECUTOR_LAYERS
+            },
+            persist_executor=self.import_executor,
         )
 
     def import_actual(self, recorded: RecordedLocalCheck) -> AssuranceRef:
         """Trusted recorder sink: exact replay imports once, a changed run conflicts."""
+        return self._import(recorded, executor=False, document=None)
+
+    def import_executor(
+        self, recorded: RecordedLocalCheck, document: Mapping[str, Any]
+    ) -> AssuranceRef:
+        """Trusted sink for a run the sandbox executor already made; never re-executes."""
+        if not isinstance(document, Mapping) or document.get("schema") != OUTPUT_SCHEMA:
+            raise AssuranceError("CHECK_ASSERTION_INVALID")
+        return self._import(recorded, executor=True, document=dict(document))
+
+    def _import(
+        self, recorded: RecordedLocalCheck, *, executor: bool, document: dict[str, Any] | None
+    ) -> AssuranceRef:
         self._outside_transaction()
         body = decode(recorded.receipt_json)
         spec = AssuranceRef.from_json(body["check_spec_ref"], kinds={"check_spec"})
         entries = [entry for entry in self.registry.values() if entry.binding.spec_ref == spec]
-        if len(entries) != 1:
+        if len(entries) != 1 or (entries[0].layer in EXECUTOR_LAYERS) != executor:
             raise AssuranceError("CHECKER_REGISTRY_IDENTITY")
         registered = entries[0]
         # Validate the whole receipt through the same decoder as its consumer.
@@ -153,6 +213,13 @@ class LocalCheckImporter:
             raise AssuranceError("CHECK_SOURCE_IDENTITY")
         if any(item.assertion_key != registered.binding.assertion_key for item in recorded.outputs):
             raise AssuranceError("CHECK_ASSERTION_INVALID")
+        if executor:
+            # The assertion output is exactly the executor facts document.
+            if len(recorded.outputs) != 1 or recorded.outputs[0].output != canonical(
+                document
+            ).encode("utf-8"):
+                raise AssuranceError("CHECK_ASSERTION_INVALID")
+        names = _EXECUTOR_NAMES if executor else _LOCAL_NAMES
         # The actual output bytes go to the original CAS outside the write lock.
         stored = self.commit.store.get_result(self.result_ref.pin.id)
         if stored is None:
@@ -167,12 +234,12 @@ class LocalCheckImporter:
             blob_hash = self.cas.put_bytes(output.output)
             outputs.append(
                 Artifact(
-                    id=f"assurance-check-output:{run_key}:{ordinal}",
+                    id=f"{names.artifact_prefix}:{run_key}:{ordinal}",
                     mission_id=self.mission_id,
                     task_id=stored.envelope.task_id,
                     attempt_id=stored.envelope.attempt_id,
-                    type="assurance-local-check-output",
-                    path=f".assurance/checks/{run_key}/{ordinal}.json",
+                    type=names.artifact_type,
+                    path=f"{names.artifact_dir}/{run_key}/{ordinal}.json",
                     version=1,
                     content_hash=blob_hash,
                     size_bytes=len(output.output),
@@ -181,8 +248,8 @@ class LocalCheckImporter:
                     created_at=body["finished_at_ms"] / 1000,
                 )
             )
-        payload = {
-            "local_check": body,
+        payload: dict[str, Any] = {
+            names.payload_key: body,
             "result_ref": self.result_ref.to_json(),
             "input_manifest_ref": self.manifest_ref.to_json(),
             "outputs": [
@@ -190,8 +257,25 @@ class LocalCheckImporter:
                 for a in outputs
             ],
         }
+        if executor:
+            assert document is not None
+            payload["execution"] = {
+                "targets": list(document["targets"]),
+                "execution_ids": [
+                    None if row["receipt"] is None else row["receipt"]["execution_id"]
+                    for row in document["runs"]
+                ],
+                "environment_digests": sorted(
+                    {
+                        str(row["receipt"]["environment_digest"])
+                        for row in document["runs"]
+                        if row["receipt"] is not None
+                    }
+                ),
+                "execution_state": document["execution_state"],
+            }
         payload_hash = fingerprint(payload)
-        commit_id = f"assurance-local-check:{run_key}"
+        commit_id = f"{names.commit_prefix}{run_key}"
         with atomic(self.commit.store):
             self._validate_sources()
             old = self.commit.store.get_receipt(commit_id)
@@ -205,7 +289,7 @@ class LocalCheckImporter:
                     or old.get("result_ref") != self.result_ref.to_json()
                 ):
                     raise AssuranceError("IMMUTABLE_IDENTITY_CONFLICT", commit_id)
-                ref = AssuranceRef.from_json(old["event_ref"], kinds={"local_check_receipt"})
+                ref = AssuranceRef.from_json(old["event_ref"], kinds={names.ref_kind})
                 event = decode(self.reader.read_exact_metadata(ref).body_json)
                 receipt_row = self.commit.store.connection.execute(
                     "SELECT kind,subject_id,base_version,proposal_hash FROM commit_receipts "
@@ -216,7 +300,7 @@ class LocalCheckImporter:
                     event["payload"] != payload
                     or event["task_id"] != stored.envelope.task_id
                     or event["attempt_id"] != stored.envelope.attempt_id
-                    or receipt_row["kind"] != "AssuranceLocalCheckImported"
+                    or receipt_row["kind"] != names.receipt_kind
                     or receipt_row["subject_id"] != self.result_ref.pin.id
                     or receipt_row["base_version"] != 0
                     or receipt_row["proposal_hash"] != payload_hash
@@ -232,16 +316,14 @@ class LocalCheckImporter:
                     raise AssuranceError("IMMUTABLE_IDENTITY_CONFLICT", artifact.id)
                 self.commit.store.upsert_artifact(artifact)
             event = self.commit._emit(
-                "AssuranceLocalCheckFinished",
+                names.event_type,
                 self.mission_id,
                 key=run_key,
                 task_id=stored.envelope.task_id,
                 attempt_id=stored.envelope.attempt_id,
                 payload=payload,
             )
-            ref = AssuranceRef(
-                "local_check_receipt", Pin(event.id, 0, fingerprint(event.to_json()))
-            )
+            ref = AssuranceRef(names.ref_kind, Pin(event.id, 0, fingerprint(event.to_json())))
             receipt = {
                 "mission_id": self.mission_id,
                 "source_hash": payload_hash,
@@ -251,7 +333,7 @@ class LocalCheckImporter:
             }
             self.commit.store.insert_receipt(
                 commit_id=commit_id,
-                kind="AssuranceLocalCheckImported",
+                kind=names.receipt_kind,
                 subject_id=self.result_ref.pin.id,
                 base_version=0,
                 proposal_hash=payload_hash,
@@ -296,7 +378,10 @@ class AssuranceLocalChecks:
             "verification/evidence_resolver.py",
             "verification/assurance_local.py",
             "assurance/local_checks.py",
+            "assurance/executor_checks.py",
             "assurance/check_specs.py",
+            "runtime/sandbox.py",
+            "runtime/tool_gateway.py",
             "assurance/check_bindings.py",
             "orchestrator/assurance_local_checks.py",
             "orchestrator/assurance_check_import.py",
@@ -355,8 +440,8 @@ class AssuranceLocalChecks:
         registry = {}
         with self.commit.store.read_view() as connection:
             reader._mission_locked(connection)
-            for layer in ("format_check", "rule_check"):
-                definition = local_layer_spec(layer, self.checker_hash).to_json()
+            for layer in (*LOCAL_LAYERS, *EXECUTOR_LAYERS):
+                definition = layer_spec(layer, self.checker_hash).to_json()
                 key = fingerprint({"mission_id": mission_id, "definition": definition})
                 row = connection.execute(
                     "SELECT * FROM commit_receipts WHERE commit_id=?",
@@ -399,8 +484,8 @@ class AssuranceLocalChecks:
                 self.commit.store, tenant_id=self.tenant_id, mission_id=mission_id
             )
             reader._mission_locked(self.commit.store.connection)
-            for layer in ("format_check", "rule_check"):
-                definition = local_layer_spec(layer, self.checker_hash).to_json()
+            for layer in (*LOCAL_LAYERS, *EXECUTOR_LAYERS):
+                definition = layer_spec(layer, self.checker_hash).to_json()
                 key = fingerprint({"mission_id": mission_id, "definition": definition})
                 receipt_id = "assurance-check-spec:" + key
                 old = self.commit.store.get_receipt(receipt_id)

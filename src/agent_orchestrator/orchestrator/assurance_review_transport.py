@@ -88,10 +88,21 @@ def _validate_package(reader: AssuranceReader, package: ReviewPackage, body: dic
     from .assurance_purpose_reviews import policy_domain_hash
 
     scope_pin = subject["completion_scope_ref"]
+    effect_key = None
+    if subject["purpose"] == "OPERATION_OUTCOME":
+        outcome = reader.store.connection.execute(
+            "SELECT effect_key FROM operation_outcome_review_bindings "
+            "WHERE mission_id=? AND review_package_id=?",
+            (body["mission_id"], body["package_ref"]["id"]),
+        ).fetchone()
+        if outcome is None:
+            raise AssuranceError("SOURCE_UNAVAILABLE", "operation outcome binding")
+        effect_key = str(outcome["effect_key"])
     domain = policy_domain_hash(
         subject["purpose"],
         scope_hash=None if scope_pin is None else scope_pin["content_hash"],
         task_hash=subject["owner_task_ref"]["content_hash"],
+        effect_key=effect_key,
     )
     if (
         policy["requirements_ref"] != body["requirements_ref"]

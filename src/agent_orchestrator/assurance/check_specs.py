@@ -105,8 +105,12 @@ class CheckSpec:
         return cls(**args)
 
 
+LOCAL_LAYERS = ("format_check", "rule_check")
+EXECUTOR_LAYERS = ("code_test",)
+
+
 def local_layer_spec(layer: str, implementation_hash: str) -> CheckSpec:
-    one_of(layer, {"format_check", "rule_check"})
+    one_of(layer, set(LOCAL_LAYERS))
     return CheckSpec(
         checker_id="local-verifier:" + layer,
         checker_version="1",
@@ -122,3 +126,36 @@ def local_layer_spec(layer: str, implementation_hash: str) -> CheckSpec:
         ),
         max_runtime_ms=120_000,
     )
+
+
+def executor_layer_spec(layer: str, implementation_hash: str) -> CheckSpec:
+    """The registered code_test check: the actual sandbox executor's pytest run.
+
+    Nothing is executed by the Assurance side; the receipt is the executor's own
+    ExecutionReceipt per target plus the pytest node ids it reported, bound to the
+    exact Result/workspace snapshot. exit 0 alone never grades PASS.
+    """
+    one_of(layer, set(EXECUTOR_LAYERS))
+    return CheckSpec(
+        checker_id="executor-verifier:" + layer,
+        checker_version="1",
+        implementation_hash=implementation_hash,
+        assertion_key=f"{layer}:pytest-exact-run-v1",
+        execution_kind="EXECUTOR",
+        input_schema_ref=document_pin("local-verification-input-v1.schema.json"),
+        result_schema_ref=document_pin("local-check-receipt-v1.schema.json"),
+        scope_rule_ref=document_pin("local-layer-scope-v1.json"),
+        environment_requirements=(
+            "actual_sandbox_execution_receipt_per_target",
+            "pytest_node_ids_reported_by_the_executor",
+            "workspace_snapshot_bound_to_result",
+            "exact_recorder_and_checker_code",
+        ),
+        max_runtime_ms=120_000,
+    )
+
+
+def layer_spec(layer: str, implementation_hash: str) -> CheckSpec:
+    if layer in EXECUTOR_LAYERS:
+        return executor_layer_spec(layer, implementation_hash)
+    return local_layer_spec(layer, implementation_hash)

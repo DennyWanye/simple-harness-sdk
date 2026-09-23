@@ -394,6 +394,15 @@ class _CriticAdmissionFailure(ContractError):
         self.error = jsonable(error)
 
 
+class _AssuranceReviewUnavailable(ContractError):
+    """An admitted planning subject could not open its independent Assurance review."""
+
+    def __init__(self, purpose: str, error: Any) -> None:
+        self.purpose = purpose
+        self.code = str(getattr(error, "code", error))
+        super().__init__(f"Assurance {purpose} review unavailable: {error}")
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -7863,7 +7872,7 @@ class Orchestrator:
                                                             method_reference.content_hash),
                                     producer_agent_ids=(str(intent.agent_id or ""),))
                             except AssuranceError as error:
-                                raise ContractError(f"Assurance METHOD_PLAN review unavailable: {error}") from error
+                                raise _AssuranceReviewUnavailable("METHOD_PLAN", error) from error
                             service_detail = {**service_detail,
                                               "assurance_review_key": review.to_json()["review_key"]}
                     record_decision(request_id=request_id, attempt_ordinal=attempt_ordinal,
@@ -7878,18 +7887,27 @@ class Orchestrator:
                     self._settle_intent(intent, "SETTLED")
                     self._settle_service_if_known(intent.subject_id, mission.id)
             except (ContractError, StoreError) as error:
+                # An admitted proposal whose independent METHOD_PLAN review cannot be
+                # opened (no approved check policy, review runtime unavailable) is not
+                # a malformed proposal: it waits for authorization, and the record
+                # says so instead of blaming the Planner.
+                code, reason, error_detail = "PARAMETER_INVALID", "proposal_not_grounded", {"error": str(error)}
+                if isinstance(error, _AssuranceReviewUnavailable):
+                    code, reason = "AUTHORIZATION_REQUIRED", "assurance_review_unavailable"
+                    error_detail = {"error": str(error), "assurance_purpose": error.purpose,
+                                    "assurance_error": error.code}
                 with self.store.transaction():
                     record_decision(request_id=request_id, attempt_ordinal=attempt_ordinal,
                         raw_output_hash=raw_hash, raw_artifact_ref=raw_artifact_ref,
                         decision_id=decision_id, status=PlanningDecisionStatus.REJECTED,
-                        rejection_codes=("PARAMETER_INVALID",), detail={"error": str(error)},
+                        rejection_codes=(code,), detail=error_detail,
                         canonical_json=canonical_json, canonical_hash=canonical_hash,
                         decision_type=str(decision.decision_type))
                     evaluated(PlanningDecisionStatus.REJECTED, decision_type=str(decision.decision_type),
-                        rejection_codes=["PARAMETER_INVALID"], detail={"error": str(error)})
+                        rejection_codes=[code], detail=error_detail)
                     self._settle_intent(intent, "FAILED")
                     self._settle_service_if_known(intent.subject_id, mission.id)
-                await reject_planning(intent, reason="proposal_not_grounded", detail={"error": str(error)})
+                await reject_planning(intent, reason=reason, detail=error_detail)
                 return
             if prepared_method is not None:
                 _, contract, registration = prepared_method
@@ -12590,13 +12608,19 @@ class Orchestrator:
             from ..assurance.codec import AssuranceError
             if self._assurance_reviews is None:
                 raise ContractError("Assurance review builder is not installed for MISSION_FINAL")
+            from .assurance_purpose_reviews import purpose_review_key
+            review_key = purpose_review_key("MISSION_FINAL", mission.id, str(package.package_id))
+            already = self.store.connection.execute(
+                "SELECT 1 FROM assurance_review_invocations WHERE mission_id=? AND review_key=?",
+                (mission.id, review_key)).fetchone() is not None
             try:
                 self._assurance_reviews.ensure_mission_final(
                     mission, package=package, dispatch=coordinator.dispatch)
             except AssuranceError as error:
                 self._note(f"mission {mission.id}: Assurance MISSION_FINAL review unavailable ({error})")
                 return False
-            return True
+            # As on the legacy path: a package already out for review is not progress.
+            return not already
         request = coordinator.request(
             mission.id,
             package,

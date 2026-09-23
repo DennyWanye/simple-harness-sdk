@@ -272,8 +272,15 @@ class VerifierRouter:
                 # Only the verifier's run (or a durable reused layer) supplies stdout;
                 # the Worker's claimed run_tests output is never an input here.
                 if "code_test" in required and self._local_code_execution:
-                    if reuse is not None and "code_test" in reuse:
-                        prepared_code_test = reuse["code_test"]
+                    reused_test = None if reuse is None else reuse.get("code_test")
+                    if reused_test is not None and (
+                        local_check_recorder is None
+                        or "assurance_executor_check_ref" in reused_test.detail
+                    ):
+                        # An executor run already imported as a receipt is reused as
+                        # is (never re-executed); an old cached layer without one is
+                        # not proof on the assured lane and runs again.
+                        prepared_code_test = reused_test
                     else:
                         prepared_code_test = await code_test(
                             task,
@@ -283,6 +290,10 @@ class VerifierRouter:
                             result_id=envelope.id,
                             artifacts=artifacts,
                         )
+                        if local_check_recorder is not None:
+                            prepared_code_test = local_check_recorder.record_executor(
+                                "code_test", prepared_code_test
+                            )
                     runs = prepared_code_test.detail.get("runs", [])
                     test_output = "\n".join(
                         str(run.get("stdout", "")) for run in runs if isinstance(run, Mapping)

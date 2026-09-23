@@ -130,15 +130,18 @@ class KnownUsageProvider(ScriptedProvider):
         return dataclasses.replace(result, usage=ProviderUsage(10, 10, 20))
 
 
-def build_world(root, *, content_only=False):
+def build_world(root, *, content_only=False, requirements_fn=None, approve_policy=True):
     """Assured Mission with one primitive root, a frozen Scope (MIXED by default,
-    CONTENT_ONLY on request), one verified Result and the approved TASK_CONTENT
-    policy (criterion-report SEMANTIC)."""
+    CONTENT_ONLY on request), one verified Result and, unless ``approve_policy`` is
+    False, the approved TASK_CONTENT policy (criterion-report SEMANTIC).
+    ``requirements_fn`` replaces the factory's Requirements builder."""
     commit_class = FixtureCommit
     command = scoped._command
     if content_only:
         commit_class = type('ContentOnlyFixtureCommit', (FixtureCommit,), {'REQUIREMENTS': staticmethod(content_only_requirements)})
         command = content_only_command
+    if requirements_fn is not None:
+        commit_class = type('CustomFixtureCommit', (commit_class,), {'REQUIREMENTS': staticmethod(requirements_fn)})
     with patch.object(plans, 'CommitService', commit_class), \
          patch.object(scoped, '_command', command), \
          patch.object(approval, '_bind_new_protocol', lambda _: None), \
@@ -147,10 +150,11 @@ def build_world(root, *, content_only=False):
     store, commit = world.store, world.service
     scope_row = store.connection.execute('SELECT * FROM operation_completion_scopes WHERE mission_id=?', (world.mission.id,)).fetchone()
     scope_ref = AssuranceRef('completion_scope', Pin(scope_row['scope_id'], 0, scope_row['scope_hash']))
-    commit.approve_assurance_check_policy(tenant_id=world.mission.tenant_id, mission_id=world.mission.id,
-        command_id='fixture-policy-approval', principal=Principal('fixture-authenticated-user'),
-        requirements_ref=requirements_ref(req),
-        completion_scope=scope_ref, candidate_mapping=(CriterionPolicy('criterion-report', 'SEMANTIC', ()),))
+    if approve_policy:
+        commit.approve_assurance_check_policy(tenant_id=world.mission.tenant_id, mission_id=world.mission.id,
+            command_id='fixture-policy-approval', principal=Principal('fixture-authenticated-user'),
+            requirements_ref=requirements_ref(req),
+            completion_scope=scope_ref, candidate_mapping=(CriterionPolicy('criterion-report', 'SEMANTIC', ()),))
     return world, task, stored, artifact, scope_ref
 
 

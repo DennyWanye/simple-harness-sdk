@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..assurance.check_bindings import CheckBinding
+from ..assurance.check_specs import EXECUTOR_LAYERS
 from ..assurance.codec import AssuranceError, decode, fields, fingerprint
 from ..assurance.local_checks import validate_local_check
 from ..assurance.refs import AssuranceRef, Pin
@@ -17,6 +18,25 @@ from .operation_completion import OperationCompletionReader
 
 if TYPE_CHECKING:
     from .assurance_local_checks import AssuranceLocalChecks
+
+# execution_ref kind -> (payload key, receipt commit prefix, import receipt kind,
+# adapter pin name, executor-run?)
+_SOURCES = {
+    "local_check_receipt": (
+        "local_check",
+        "assurance-local-check:",
+        "AssuranceLocalCheckImported",
+        "assurance-local-check-adapter",
+        False,
+    ),
+    "execution_receipt": (
+        "executor_check",
+        "assurance-executor-check:",
+        "AssuranceExecutorCheckImported",
+        "assurance-executor-check-adapter",
+        True,
+    ),
+}
 
 
 def read_local_check_binding_locked(
@@ -31,8 +51,10 @@ def read_local_check_binding_locked(
     if not store.connection.in_transaction:
         raise AssuranceError("CHECK_IMPORT_TRANSACTION_REQUIRED")
     adapter._require_deployment()
-    if execution_ref.kind != "local_check_receipt" or completion_scope.kind != "completion_scope":
+    source = _SOURCES.get(execution_ref.kind)
+    if source is None or completion_scope.kind != "completion_scope":
         raise AssuranceError("CHECK_IMPORT_SOURCE_UNSUPPORTED")
+    payload_key, commit_prefix, receipt_kind, adapter_name, executor = source
     reader = AssuranceReader(store, tenant_id=adapter.tenant_id, mission_id=mission_id)
     if AssuranceStore(store).lane(mission_id) != "ASSURANCE_1_1":
         raise AssuranceError("ASSURANCE_PROFILE_REQUIRED")
@@ -46,9 +68,16 @@ def read_local_check_binding_locked(
         raise AssuranceError("CHECK_SCOPE_CHANGED")
     event = decode(reader.read_exact_metadata(execution_ref).body_json)
     payload = fields(
-        event["payload"], {"local_check", "result_ref", "input_manifest_ref", "outputs"}
+        event["payload"],
+        {
+            payload_key,
+            "result_ref",
+            "input_manifest_ref",
+            "outputs",
+            *(("execution",) if executor else ()),
+        },
     )
-    actual = payload["local_check"]
+    actual = payload[payload_key]
     result_ref = AssuranceRef.from_json(payload["result_ref"], kinds={"result"})
     manifest_ref = AssuranceRef.from_json(payload["input_manifest_ref"], kinds={"input_manifest"})
     result = decode(reader.read_exact_metadata(result_ref).body_json)
@@ -78,7 +107,7 @@ def read_local_check_binding_locked(
         for entry in adapter._read_registry(mission_id).values()
         if entry.binding.spec_ref == spec
     ]
-    if len(entries) != 1:
+    if len(entries) != 1 or (entries[0].layer in EXECUTOR_LAYERS) != executor:
         raise AssuranceError("CHECKER_REGISTRY_IDENTITY")
     registered = entries[0]
     state, verdict = validate_local_check(
@@ -89,7 +118,7 @@ def read_local_check_binding_locked(
         assertion_key=registered.binding.assertion_key,
     )
     key = fingerprint({"mission_id": mission_id, "run_nonce": actual["run_nonce"]})
-    source_id = "assurance-local-check:" + key
+    source_id = commit_prefix + key
     original = store.connection.execute(
         "SELECT * FROM commit_receipts WHERE commit_id=?", (source_id,)
     ).fetchone()
@@ -102,7 +131,7 @@ def read_local_check_binding_locked(
     }
     if (
         original is None
-        or original["kind"] != "AssuranceLocalCheckImported"
+        or original["kind"] != receipt_kind
         or original["subject_id"] != result_ref.pin.id
         or original["base_version"] != 0
         or original["proposal_hash"] != fingerprint(payload)
@@ -130,7 +159,7 @@ def read_local_check_binding_locked(
         output_manifest_hash=fingerprint(payload["outputs"]),
         assertion_key=registered.binding.assertion_key,
         execution_ref=execution_ref,
-        adapter_ref=Pin("assurance-local-check-adapter", 1, adapter.recorder_hash),
+        adapter_ref=Pin(adapter_name, 1, adapter.recorder_hash),
         environment_hash=adapter.environment_hash,
         scope_hash=scope.content_hash(),
         execution_state=state,

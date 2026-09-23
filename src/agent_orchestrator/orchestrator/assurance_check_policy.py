@@ -211,6 +211,7 @@ def approve_check_policy(
             "TASK_CONTENT" if purpose == "CONTENT" else purpose,
             scope_hash=None if scope is None else scope.content_hash(),
             task_hash=binding.content_hash(),
+            effect_key=effect_key,
         )
         originals = {row.criterion_id: row for row in projection.criteria}
         if set(originals) != {row.criterion_id for row in criteria}:

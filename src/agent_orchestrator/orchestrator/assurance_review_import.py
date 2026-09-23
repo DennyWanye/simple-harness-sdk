@@ -42,6 +42,7 @@ from ..contracts.resolution import (
     ReviewRecord,
     ReviewVerdict,
 )
+from ..contracts.state_machines import TaskStatus
 from ..storage.assurance_blobs import PreparedBlob, read_pinned_blob
 from ..storage.assurance_reads import (
     AssuranceReader,
@@ -93,6 +94,8 @@ def review_subject_stopped(store: Any, binding: AssuranceReviewBinding) -> bool:
         return True
     purpose = body["subject"]["purpose"]
     if purpose == "MISSION_FINAL":
+        if task.status in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            return True
         from ..storage.htn_store import HtnStore
         from ..storage.store import StoreError
         from .hierarchical_dispatch import ROOT_REVIEW_SUPERSEDED
