@@ -508,3 +508,38 @@ def test_lost_embedding_call_is_settled_as_unknown_before_its_job_is_cancelled(t
             assert _ticks_until(runtime, session.session_id, "PURGED").state == "PURGED"
 
     asyncio.run(case())
+
+
+def test_a_creation_key_never_revives_a_destroyed_session(tmp_path) -> None:
+    """Found by the RP-E2 random test (seed 11): re-creating with the key of a PURGED session
+    re-wrote the marker into the purged directory. Refused by name at every non-ACTIVE state."""
+
+    async def case() -> None:
+        runtime = build(tmp_path, ScriptedProvider(["记住了。"]))
+        async with runtime:
+            agent, session = await _seed(runtime)
+            sealed = await lifecycle_destroy(runtime, session)
+            source, _trash = _dirs(runtime, sealed)
+            with pytest.raises(ArpError) as during:
+                await runtime.create(CONFIG, creation_key="k1", caller=trusted_caller())
+            assert during.value.code == "SESSION_NOT_ACTIVE"
+            purged = _ticks_until(runtime, session.session_id, "PURGED")
+            assert purged.state == "PURGED" and not source.exists()
+            with pytest.raises(ArpError) as after:
+                await runtime.create(CONFIG, creation_key="k1", caller=trusted_caller())
+            assert after.value.code == "SESSION_PURGED" and not source.exists()
+            assert store.read_session(runtime.uow.database.connection, session.session_id).state == "PURGED"
+            # Another key still creates a fresh Agent in its own directory; a QUARANTINED
+            # session is live and recoverable, so its key replays the same Agent (review).
+            other = await runtime.create(CONFIG, creation_key="k2", caller=trusted_caller())
+            assert other.agent_id != agent.agent_id and store.read_live_session(runtime.uow.database.connection, other.agent_id).state == "ACTIVE"
+            isolated = runtime.arp.sessions.quarantine(store.read_live_session(runtime.uow.database.connection, other.agent_id).session_id, caller=trusted_caller("q"), command_id="quarantine-1", reason="index anomaly")
+            assert isolated.state == "QUARANTINED"
+            replayed = await runtime.create(CONFIG, creation_key="k2", caller=trusted_caller())
+            assert replayed.agent_id == other.agent_id and store.read_session(runtime.uow.database.connection, isolated.session_id).state == "QUARANTINED"
+
+    asyncio.run(case())
+
+
+async def lifecycle_destroy(runtime, session):  # type: ignore[no-untyped-def]
+    return await runtime.arp.sessions.destroy(_delete_command(runtime, session), caller=trusted_caller("d1"), command_id="destroy-1")

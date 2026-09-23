@@ -216,6 +216,16 @@ class NativeCreationService:
             raise AgentNotFound(agent_id)
         if existing is not None and existing.config_hash != config_hash(config):
             raise ValueError("creation_key reused with a different configuration")
+        # This Agent's own Session (the exact directory the command would write) is never
+        # re-created once it is being destroyed or destroyed: the same command would
+        # otherwise re-write the marker into the purged directory (R08: no mkdir revival).
+        # Refused by name before any filesystem or kernel work; QUARANTINED stays a live,
+        # recoverable Session and replays as before. Keyed by this owner's identity, so
+        # another owner's Session is neither consulted nor named (BA05).
+        previous = store.read_session(uow.database.connection, session_id_for(agent_id, self._root, creation_key))
+        if previous is not None and (previous.destroy_command_id is not None or previous.state in ("DRAINING", "PURGING", "PURGED")):
+            code = "SESSION_PURGED" if previous.state == "PURGED" else "SESSION_NOT_ACTIVE"
+            raise ArpError(code, f"the creation key's session is {previous.state}", detail={"state": previous.state})
         command_hash = self._command_hash(
             owner_scope=owner_scope, creation_key=creation_key, config=config, caller=caller, role=role
         )
