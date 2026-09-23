@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from simple_harness.agents.config import AgentConfig, config_hash
 from simple_harness.contracts import ExecutionSessionId, RequestId, RunId
@@ -183,7 +183,17 @@ class NativeCreationService:
         caller: TrustedCaller | None,
         owner_scope: str,
         role: str = "root",
+        agent_id: str | None = None,
+        kernel_start: Callable[[], Awaitable[None]] | None = None,
     ) -> CreationReceipt:
+        """One creation for root / child / delegate alike (BW01).
+
+        ``agent_id`` lets the original delegation ticket keep its child identity;
+        ``kernel_start`` is the original kernel launch (a child launch under the parent's
+        ticket, or the default root run start) — deferred until the durable intent exists
+        and skipped when the Run already exists.
+        """
+
         if not isinstance(config, AgentConfig):
             raise TypeError("config must use AgentConfig")
         if not isinstance(creation_key, str) or not creation_key.strip():
@@ -196,7 +206,7 @@ class NativeCreationService:
             # without them creation is refused instead of silently standalone (§2).
             raise ArpError("SOURCE_UNAVAILABLE", "MISSION owner mode needs exact sources")
         mode = profile.creation_mode(embedding_available=self._ports.embedding_available)
-        agent_id = self._agent_id_for(owner_scope, creation_key)
+        agent_id = agent_id or self._agent_id_for(owner_scope, creation_key)
         run_id = agent_id
         uow = self._runtime.uow
         existing = uow.read_agent_binding(agent_id)
@@ -229,7 +239,9 @@ class NativeCreationService:
         self._fault("create.after_marker")
         # C2
         replayed = existing is not None
-        if uow.read_run(run_id) is None:
+        if uow.read_run(run_id) is None and kernel_start is not None:
+            await kernel_start()
+        elif uow.read_run(run_id) is None:
             await self._runtime.kernel.start_base_agent_run(
                 RunStart(
                     ExecutionSessionId(f"base-agent:{agent_id}"),

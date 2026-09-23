@@ -488,6 +488,15 @@ class AgentRuntime:
                     settled = await self.indexer.run_once()
                 except Exception:  # noqa: BLE001 - the pump must survive a bad batch
                     settled = 0
+                arp = getattr(self, "arp", None)
+                if arp is not None:
+                    # Native plane tick: due INDEX jobs (embedding outside every lock) and
+                    # non-terminal recalls are driven here, not only inside prepare.
+                    try:
+                        outcome = arp.tick()
+                        settled = settled or bool(outcome.get("jobs") or outcome.get("recalls"))
+                    except Exception:  # noqa: BLE001 - a tick defect must not kill the pump
+                        pass
                 await asyncio.sleep(0.05 if settled else 0.25)
         except asyncio.CancelledError:
             return
@@ -844,6 +853,7 @@ def build_agent_runtime(
     owner_scope: str = "default",
     context_factory=None,  # type: ignore[no-untyped-def]
     wire_factory=None,  # type: ignore[no-untyped-def]
+    session_tools_factory=None,  # type: ignore[no-untyped-def]
 ) -> AgentRuntime:
     """Assemble a BaseAgent runtime with no user Memory; use ``async with``.
 
@@ -855,7 +865,7 @@ def build_agent_runtime(
     from .tools.session_history import SessionHistoryTools
 
     delegate = AgentDelegateTool(clock=ports.clock)
-    session_tools = SessionHistoryTools()
+    session_tools = (SessionHistoryTools if session_tools_factory is None else session_tools_factory)()
     assembled = assemble_runtime(
         ports,
         extra_tools=(delegate.function_tool(), *session_tools.function_tools()),

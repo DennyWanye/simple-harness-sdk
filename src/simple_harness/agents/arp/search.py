@@ -43,6 +43,7 @@ from .strict import canonical, digest
 VECTOR_FLOOR = 0.35
 MAX_QUERY_WORDS = 16
 RESULT_PAGE_ITEMS = 32
+_PAGE_SCHEMA = {"CONTEXT_RECALL": "ContextSearchPage", "MODEL_SEARCH": "SearchPage", "MANAGEMENT_SEARCH": "ManagementSearchPage"}
 MAX_RESULT_PAGES = 16
 MAX_SCAN_PAGES = 256
 MAX_MERGED_BYTES = 16384
@@ -288,8 +289,10 @@ class SessionSearchService:
             "snapshot_id": snapshot["snapshot_id"],
             "purpose": purpose,
             "recall_key": request.get("recall_key"),
+            "page_items": int(limits.get("page_items", RESULT_PAGE_ITEMS)),
+            "max_bytes": int(limits.get("max_bytes", 0)) or None,  # None: no page byte cap (internal recall)
         }
-        options_hash = digest({k: body[k] for k in ("exclusions", "journal_highwater", "mode", "page_rows", "channel_top_k", "global_candidates")})
+        options_hash = digest({k: body[k] for k in ("exclusions", "journal_highwater", "mode", "page_rows", "channel_top_k", "global_candidates", "page_items", "max_bytes")})
         existing = self._p.connection.execute("SELECT 1 FROM search_queries WHERE query_id=?", (query_id,)).fetchone()
         if existing is None:
             snapshot_chunks = self._count_visible(snapshot, body)
@@ -326,8 +329,12 @@ class SessionSearchService:
             return None  # model/host-facing cursors stay random and unrecoverable by design
         return hashlib.sha256(f"first-cursor:{query_id}:{access.owner_scope_hash}:{access.control_generation}".encode("utf-8")).hexdigest()
 
-    def resume_frozen(self, access: SessionAccess, cursor: str) -> tuple[Mapping[str, Any], str | None]:
-        """Materialise the page a PENDING cursor points at, or replay a materialised one."""
+    def resume_frozen(self, access: SessionAccess, cursor: str, *, expect: Mapping[str, Any] | None = None) -> tuple[Mapping[str, Any], str | None]:
+        """Materialise the page a PENDING cursor points at, or replay a materialised one.
+
+        ``expect`` (query_hash / page_items / max_bytes) is the re-sent request: a cursor
+        used with another query, limit or byte cap is ``CURSOR_REQUEST_MISMATCH``.
+        """
 
         token_hash = hashlib.sha256(cursor.encode("utf-8")).hexdigest()
         row = self._p.connection.execute(
@@ -339,6 +346,11 @@ class SessionSearchService:
             raise ArpError("CURSOR_UNKNOWN")
         query_id = str(row[0])
         query = self._query(query_id)
+        if expect is not None:
+            body = query["body"]
+            for key in ("query_hash", "page_items", "max_bytes"):
+                if key in expect and expect[key] != body.get(key):
+                    raise ArpError("CURSOR_REQUEST_MISMATCH", f"cursor belongs to a query with another {key}")
         snapshot = self.snapshot_extras(query["snapshot_id"])
         check_cursor(
             {
@@ -347,7 +359,7 @@ class SessionSearchService:
                 "index_generation": int(snapshot["index_generation"]), "authority_hash": str(row[5]), "root_incarnation": access.root_incarnation,
             },
             {
-                "owner": access.owner_scope_hash, "session": access.session_id, "control_generation": access.control_generation, "purpose": str(row[1]),
+                "owner": access.owner_scope_hash, "session": access.session_id, "control_generation": access.control_generation, "purpose": access.purpose,
                 "query_hash": query["query_hash"], "request_hash": query["options_hash"], "now_ms": self._clock_ms(),
                 "index_generation": int(snapshot["index_generation"]), "authority_hash": access.authority_readset_hash, "root_incarnation": access.root_incarnation,
             },
@@ -370,7 +382,7 @@ class SessionSearchService:
             page["has_more"] = next_token is not None
             page["receipt"] = {**page["receipt"], "has_more": next_token is not None}
             page = _with_body_bytes(page)
-            value = check("ContextSearchPage" if str(row[1]) == "CONTEXT_RECALL" else "SearchPage", page)
+            value = check(_PAGE_SCHEMA[str(row[1])], page)
             page_hash = digest(value)
             updated = connection.execute(
                 "UPDATE cursor_pages SET state='MATERIALIZED', page_json=?, page_hash=?, next_token_hash=? WHERE token_hash=? AND state='PENDING'",
@@ -600,7 +612,9 @@ class SessionSearchService:
         total = len(final)
         if offset > total or (total > 0 and offset == total):
             raise ArpError("CURSOR_UNKNOWN", "no results page at this offset")
-        page_items = final[offset : offset + RESULT_PAGE_ITEMS]
+        body = query["body"]
+        page_size = min(RESULT_PAGE_ITEMS, int(body.get("page_items") or RESULT_PAGE_ITEMS))
+        page_items = final[offset : offset + page_size]
         items = [
             {
                 "chunk_id": item["chunk_id"],
@@ -614,14 +628,29 @@ class SessionSearchService:
             }
             for item in page_items
         ]
-        has_more = offset + len(items) < total
-        receipt = self._receipt(access, query, snapshot, coverage=coverage, searched=int(coverage["indexed_groups"]), elapsed=query["elapsed_ms"], total=total, offset=offset, returned=len(items))
-        page = {
-            "schema_version": 2, "receipt": receipt, "items": items, "has_more": has_more, "next_cursor": None,
-            "cursor_purpose": query["purpose"], "page_semantics": "APPEND_FINAL", "body_bytes": 0,
-        }
+        max_bytes = body.get("max_bytes")
+
+        def assemble(chosen: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+            has_more = offset + len(chosen) < total
+            receipt = self._receipt(access, query, snapshot, coverage=coverage, searched=int(coverage["indexed_groups"]), elapsed=query["elapsed_ms"], total=total, offset=offset, returned=len(chosen))
+            return {
+                "schema_version": 2, "receipt": receipt, "items": chosen, "has_more": has_more,
+                "next_cursor": "0" * 64 if has_more else None,  # placeholder of the real token's size
+                "cursor_purpose": query["purpose"], "page_semantics": "APPEND_FINAL", "body_bytes": 0,
+            }, has_more
+
+        page, has_more = assemble(items)
+        if max_bytes is not None:
+            # Whole items are dropped until the exact canonical page fits (C3 tail); a page
+            # that cannot carry even one item is refused, never silently emptied.
+            while items and _with_body_bytes(page)["body_bytes"] > int(max_bytes):
+                items = items[:-1]
+                page, has_more = assemble(items)
+            if not items:
+                raise ArpError("ITEM_TOO_LARGE", "max_bytes cannot carry one result item with its receipt")
+        page["next_cursor"] = None
         next_position = {"phase": "RESULTS", "offset": offset + len(items)} if has_more else None
-        if next_position is not None and (offset + len(items)) // RESULT_PAGE_ITEMS >= MAX_RESULT_PAGES:
+        if next_position is not None and (offset + len(items)) // page_size >= MAX_RESULT_PAGES:
             raise ArpError("INDEX_SCAN_LIMIT", "result pages exceed the hard budget")
         return page, next_position
 

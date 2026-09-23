@@ -27,6 +27,8 @@ from .context.recall import ContextRecallCoordinator
 from .creation import NativeCreationService
 from .errors import ArpError
 from .indexing import SessionIndexCoordinator
+from .retriever import SessionRetriever
+from .tools import ArpSessionHistoryTools
 from .meter import MeterBinding, NativeMeterAdapter
 from .migration import migrate_execution_to_v11
 from .pins import Pin
@@ -48,6 +50,7 @@ class ArpRuntime:
     index: SessionIndexCoordinator
     recall: ContextRecallCoordinator
     context: ArpContextPort
+    retriever: SessionRetriever | None = None
     _services: dict[str, SessionSearchService] = field(default_factory=dict)
 
     @property
@@ -149,7 +152,13 @@ def build_arp_runtime(
         kwargs["request_guard"] = None  # the ARP budget and meter govern the final count
         return ArpProviderWire(inner, database, context=lambda: holder["context"], **kwargs)
 
-    runtime = build_agent_runtime(ports, owner_scope=owner_scope, context_factory=context_factory, wire_factory=wire_factory)
+    def session_tools_factory():  # type: ignore[no-untyped-def]
+        holder["tools"] = ArpSessionHistoryTools()
+        return holder["tools"]
+
+    runtime = build_agent_runtime(
+        ports, owner_scope=owner_scope, context_factory=context_factory, wire_factory=wire_factory, session_tools_factory=session_tools_factory
+    )
     try:
         profile, policy = _freeze_profile(runtime.uow.database, arp)
         creation = NativeCreationService(
@@ -185,6 +194,8 @@ def build_arp_runtime(
             context,
         )
         context.bind(state)
+        state.retriever = SessionRetriever(state, capture=lambda session, highwater: holder["context"]._capture(session, highwater))
+        holder["tools"].attach(state.retriever)
     except BaseException:
         runtime.uow.database.close()
         raise
