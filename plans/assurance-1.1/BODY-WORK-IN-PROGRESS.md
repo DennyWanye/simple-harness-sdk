@@ -528,3 +528,43 @@ cde4cdd5c6aa5a75e58aef762d94b8a9e22f56548db9ed4b7b02f13342938c4c  scripts/assura
 
 下一段：handoff §4 第 3 项起（其余五 builder → executor check receipt importer → 只读证据工具 →
 四 consumer 装配 → use/终态写口 → 恢复/pin），第 9、10 项前停下汇报。
+
+### 2026-09-23 第二段·独立审阅修正（基线 0dfbf35d）
+
+独立审阅（fable 子代理，只挡大错）对 0dfbf35d 的结论：一条阻断、一条重要、三条次要。已按下述修正：
+
+1. **阻断（已修）**：真实事件流中 `_run_critic` 返回后，router 的 recorder 仍会把 critic 层写进 `verifications`
+   （清单表，同事务 barrier 推进 mission epoch），随后才调用 `accept_result`；原先在 `_licensed` 里准备的候选证书
+   到接受时必然 `RECHECK_REQUIRED`，且无人重算；`ResolutionCommitRejected` 还会逃出 event handler 的
+   `except (CommitRejected, IllegalTransition)`。修正：准备移到接受路径——`CommitService.accept_result`
+   在开写事务之前调用 `_prepare_assured_acceptance`（read_view 判 lane/协议/重放，事务外
+   `AssuranceValidity.prepare_accept_use_for_result` 由 result 精确定位 official record 并准备），
+   UoW 头部 `_lock_assured_acceptance` 提前锁；若锁到 `RECHECK_REQUIRED` 则事务外重算一次并重试一次
+   （有界，不靠重试取得许可）；成功后再 `forget`。`_licensed` 不再准备，只在 validity 未绑定时拒绝。
+   event handler 的接受异常捕获加入 `ResolutionCommitRejected`（与旧 CommitRejected 同样"丢弃 verdict"）。
+2. **重要（已修）**：快照里的正极性 observation 若与系统谓词同 key，可冒充 check 锚。修正
+   `knowledge/assurance_sources.py`：check 当前 grade 为 UNKNOWN 时不再注册其签名；observation 的
+   proposition_key 属于系统谓词、或 observer_id 为 `assurance-validity-v1`、或注册表把该 key 解析成系统
+   谓词/系统观察者，一律以 `SYSTEM_PREDICATE_IMPERSONATION` 拒绝，不进入 selector。
+3. **次要**：`forget` 移出 UoW（见 1）；`_require_assured_use` 增加 mission_id 比对（subject_hash 因 V1
+   subject_ref 是任务合同而非结果指纹，不可直接比对，未加）；`licence_reasons` 仍为空（不影响 soundness，未改）。
+
+接缝 `validity-accept-seam.py` 相应改为：PASS 后由接缝显式准备一次用于检查证书与反例；新增反例
+"冒充系统观察者的 observation → SYSTEM_PREDICATE_IMPERSONATION"；"未绑定 validity → USE_CERTIFICATE_REQUIRED
+且 0 行"；然后**像 router 一样记录 critic 层**（epoch 35→36），再走生产 `accept_result`，由它自行准备/锁/提交。
+
+证据（本机 ignored）：`validity-accept-seam-20260923T080317009471.json`（sha256 `9b022a48b364c7b324cc714cf0d2c756958a1b7e8b23e37adbf850dbca361961`）PASS；
+`critic-format-repair-seam-20260923T080317934063.json`（sha256 `12d0e2a15025cf720815a79976bf6c3cdec37f136cac84904243efdc51284935`）PASS。
+
+改动文件 sha256：
+```
+a0173942f37a7190a6e6257193e4dfbdb236efde2d856b7b8a191b02dfcc8540  knowledge/assurance_sources.py
+94bf4ffa35659369d1d1fece68bf91b1c98c3bbc98be7a8a2149d39f530e1c56  orchestrator/assurance_validity.py
+efac65e9c6d4b1b5a407254895cdcc236c7fe66b0cfdd009242f229bc78d1676  orchestrator/resolution_commits.py
+8ff31e6b9f377e580a7951f114c4bcb9d0d62a59b3eb2f904ae45fa4b1a3cf63  orchestrator/assurance_review_runtime.py
+fc25c06096fe04262971071298c488b954baef396124b310614c4e5b2732f2a4  orchestrator/commit_service.py
+f98ef064ee6b5f9efca5af05e7d1fbabbf7e6616fad5a66f04e1dd3142cfac9e  orchestrator/event_handler.py
+82ed51bbdfdb8e51b0ddf8ada0ac0acd8d5e9c5d964bf4eab9338deac74b2235  scripts/assurance_seams/validity-accept-seam.py
+```
+仍未证明：真实 router 全链（`_verify_result` → recorder → accept_result）只在接缝里按同一顺序手工复现，没有跑
+批量回归；Worker 结算门、consumed check 正例、真实模型、四 consumer、Host/UI 与上一段相同未覆盖。

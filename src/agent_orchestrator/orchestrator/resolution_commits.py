@@ -1905,6 +1905,7 @@ class ResolutionCommitsMixin:
             candidate.record != command.record
             or candidate.identity.purpose != "ACCEPT"
             or candidate.identity.consumer_id != command.acceptance_id
+            or candidate.identity.mission_id != command.mission_id
             or candidate.certificate_id != command.witness_id
         ):
             raise ResolutionCommitRejected(
@@ -1917,7 +1918,8 @@ class ResolutionCommitsMixin:
             raise ResolutionCommitRejected(
                 error.code, "the current use certificate refused this acceptance"
             ) from error
-        validity.forget(command.mission_id, str(command.record.record_id))
+        # The candidate is forgotten by accept_result after this UoW commits; a
+        # rolled-back decision keeps it for the bounded re-preparation there.
         return (
             AssuredAcceptance(
                 effective_grades=candidate.effective_grades,

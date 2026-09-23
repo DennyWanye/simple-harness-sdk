@@ -62,6 +62,7 @@ from ..storage.assurance_reads import (
     require_epochs_locked,
 )
 from ..storage.assurance_store import AssuranceStore
+from ..storage.htn_store import HtnStore
 from ..storage.assurance_work import atomic
 from .assurance_check_use import (
     CurrentAuthority,
@@ -193,6 +194,35 @@ class AssuranceValidity:
         return None
 
     # ---------------------------------------------------------------- prepare
+    def official_record_for_result(self, mission_id: str, result_id: str) -> ReviewRecord:
+        """The exact official TASK_CONTENT record bound to this Result; no latest fallback."""
+        store = self.store
+        with store.read_view():
+            result = store.get_result(result_id)
+            if result is None or result.envelope.mission_id != mission_id:
+                raise AssuranceError("REVIEW_RESULT_SOURCE_MISSING")
+            rows = store.connection.execute(
+                "SELECT package_id FROM assurance_review_bindings WHERE mission_id=? "
+                "AND subject_hash=? "
+                "AND json_extract(binding_json,'$.subject.purpose')='TASK_CONTENT'",
+                (mission_id, fingerprint(result.envelope.to_json())),
+            ).fetchall()
+            if len(rows) > 1:
+                raise AssuranceError("REVIEW_RESULT_SOURCE_AMBIGUOUS")
+            if not rows:
+                raise AssuranceError("REVIEW_NOT_OFFICIAL")
+            record = HtnStore(store).official_review_record(rows[0][0])
+            if record is None:
+                raise AssuranceError("REVIEW_NOT_OFFICIAL")
+            read_official_review_binding_locked(self.commit, self.tenant_id, record)
+        return record
+
+    def prepare_accept_use_for_result(
+        self, mission_id: str, result_id: str
+    ) -> CandidateUseCertificate:
+        """Fresh preparation at the head of the acceptance path (outside its UoW)."""
+        return self.prepare_accept_use(self.official_record_for_result(mission_id, result_id))
+
     def prepare_accept_use(self, record: ReviewRecord) -> CandidateUseCertificate:
         """Bounded read/compute outside the write lock; nothing is written."""
         store = self.store

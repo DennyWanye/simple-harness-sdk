@@ -164,23 +164,20 @@ class AssuranceReviewRuntime:
         )
 
     def _licensed(self, record: Any) -> CriticVerdict:
-        """Historical verdict plus a freshly prepared current ACCEPT use.
+        """Historical verdict; the licence is prepared later by the acceptance path.
 
-        The verdict itself is not a licence. When it passes, the deployment's
-        validity evaluator recomputes the use certificate candidate from the
-        official binding, current checks and the complete snapshot, so the
-        original acceptance writer can commit the certificate beside the
-        Acceptance. A preparation failure surfaces as a review error rather
-        than a silently unlicensed PASS.
+        The verdict itself is not a licence. The router still records layers
+        (inventoried sources) after this returns, so the current ACCEPT use is
+        computed by ``CommitService.accept_result`` immediately before its UoW.
+        A deployment without a validity evaluator is refused here rather than
+        producing an unlicensed PASS.
         """
         with self.store.read_view():
             verdict = self._verdict(record)
         if not verdict.passed:
             return verdict
-        validity = getattr(self.orchestrator.commit, "_assurance_validity", None)
-        if validity is None:
+        if getattr(self.orchestrator.commit, "_assurance_validity", None) is None:
             raise AssuranceError("ASSURANCE_VALIDITY_UNBOUND")
-        validity.prepare_accept_use(record)
         return verdict
 
     async def run_task(self, mission: Any, task: Any, *, attempt_id: str) -> CriticVerdict:

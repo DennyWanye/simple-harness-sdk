@@ -104,6 +104,11 @@ SYSTEM_PREDICATES: Mapping[str, PredicateSignature] = {
 }
 
 
+def _is_system_key(proposition: str) -> bool:
+    predicate_id, _, _ = proposition.partition("@")
+    return predicate_id in SYSTEM_PREDICATES
+
+
 def review_accepted_key(mission_id: str, record_id: str) -> str:
     return proposition_key(
         REVIEW_ACCEPTED, {"mission_id": text(mission_id), "record_id": text(record_id)}
@@ -484,17 +489,33 @@ def evaluate_acceptance_support(
     refs_by_anchor[review_candidate.observation.observation_id] = review.record_ref
     for check in checks:
         candidate = _check_candidate(check, mission_id=mission_id, scope_id=scope_id)
-        signatures[check_passed_key(mission_id, check.binding_ref.pin.id)] = CHECK_PASSED
+        # A check whose current grade is UNKNOWN contributes no anchor and no
+        # registered signature: nothing stored may stand in for it.
         if candidate is not None:
+            signatures[check_passed_key(mission_id, check.binding_ref.pin.id)] = CHECK_PASSED
             candidates.append(candidate)
             refs_by_anchor[candidate.observation.observation_id] = check.binding_ref
+    impersonated: list[tuple[str, str]] = []
     for row in observations:
         key = row.record.proposition_key
+        # System predicates are only ever anchored by this evaluator's own
+        # review/check candidates. A stored observation naming one of them, or
+        # claiming the system observer, cannot license anything.
+        if _is_system_key(key) or row.record.observer_id == ASSURANCE_OBSERVER:
+            impersonated.append((row.record.observation_id, "SYSTEM_PREDICATE_IMPERSONATION"))
+            continue
         if key not in signatures and resolve_signature is not None:
             resolved = resolve_signature(key)
             if resolved is not None:
                 if not isinstance(resolved, PredicateSignature):
                     raise AssuranceError("PREDICATE_REGISTRY_INVALID")
+                if resolved.predicate_ref.id in SYSTEM_PREDICATES or ASSURANCE_OBSERVER in (
+                    resolved.observer_ids
+                ):
+                    impersonated.append(
+                        (row.record.observation_id, "SYSTEM_PREDICATE_IMPERSONATION")
+                    )
+                    continue
                 signatures[key] = resolved
         candidate = _observation_candidate(row)
         candidates.append(candidate)
@@ -544,8 +565,11 @@ def evaluate_acceptance_support(
             deadlines.append(observation.valid_until_ms)
     rejected_anchors = tuple(
         sorted(
-            (entry.candidate.observation.observation_id, str(entry.reason))
-            for entry in selection.rejected
+            [
+                (entry.candidate.observation.observation_id, str(entry.reason))
+                for entry in selection.rejected
+            ]
+            + impersonated
         )
     )
     reasons = [

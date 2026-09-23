@@ -249,7 +249,7 @@ from .occurrence_tasks import (
     verification_failure_fingerprint,
 )
 from .plan_commits import PlanCommitRejected, PlanPrincipal
-from .resolution_commits import eligible_root_receipts
+from .resolution_commits import ResolutionCommitRejected, eligible_root_receipts
 
 logger = logging.getLogger("agent_orchestrator")
 
@@ -9355,9 +9355,10 @@ class Orchestrator:
                 )
             else:
                 self.commit.fail_result(result_id, failures=verdict.failures, owner=self._owner)
-        except (CommitRejected, IllegalTransition) as error:
+        except (CommitRejected, IllegalTransition, ResolutionCommitRejected) as error:
             # the Attempt was closed / taken over while we verified (P1-4): the verdict is
-            # dropped; the library's state is whatever the other Commit made it
+            # dropped; the library's state is whatever the other Commit made it. An
+            # assured acceptance refused by its current use certificate lands here too.
             self._note(f"result {result_id}: verdict dropped ({error})")
             return True
         if self.commit.selection_policy_for(task.id) is not None:

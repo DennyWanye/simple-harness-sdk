@@ -5058,14 +5058,31 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         owner: str | None = None, connectors: Mapping[str, Any] | None = None,
         deployment: DeploymentPolicy | None = None,
     ) -> Task:
-        with self._store.transaction():
-            stored = self._require_result(result_id)
-            if self.selection_policy_for(stored.envelope.task_id) is not None:
-                raise CommitRejected("COMPARE requires the selected-result acceptance gate")
-            already_accepted = stored.verification_state == "DONE" and stored.verdict == "PASS"
-            completed = self._accept_result(result_id, verifier_results=verifier_results,
-                                            owner=owner, connectors=connectors,
-                                            deployment=deployment)
+        from .resolution_commits import ResolutionCommitRejected
+
+        prepared = self._prepare_assured_acceptance(result_id)
+        for retry in (False, True):
+            try:
+                with self._store.transaction():
+                    stored = self._require_result(result_id)
+                    if self.selection_policy_for(stored.envelope.task_id) is not None:
+                        raise CommitRejected("COMPARE requires the selected-result acceptance gate")
+                    already_accepted = (stored.verification_state == "DONE"
+                                        and stored.verdict == "PASS")
+                    completed = self._accept_result(result_id, verifier_results=verifier_results,
+                                                    owner=owner, connectors=connectors,
+                                                    deployment=deployment)
+            except ResolutionCommitRejected as error:
+                # A source moved between the fresh preparation and BEGIN IMMEDIATE.
+                # Exactly one bounded re-preparation; never a licence by retry.
+                if error.reason != "RECHECK_REQUIRED" or retry or prepared is None:
+                    raise
+                prepared = self._prepare_assured_acceptance(result_id)
+                continue
+            break
+        if prepared is not None:
+            self._assurance_validity.forget(prepared.identity.mission_id,
+                                            str(prepared.record.record_id))
         if not already_accepted and completed.status is TaskStatus.COMPLETED:
             for observer in tuple(self._accepted_task_observers):
                 try:
@@ -5077,6 +5094,38 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                                task_id=completed.id,
                                payload={"reason": type(error).__name__})
         return completed
+
+    def _prepare_assured_acceptance(self, result_id: str) -> Any:
+        """Assurance 1.1: compute the current ACCEPT use right before the acceptance UoW.
+
+        Every layer the router recorded (an inventoried source) has already moved
+        the mission epoch by now, so a candidate prepared earlier would be stale.
+        Outside the write transaction, read only; the UoW then locks it first."""
+        from ..assurance.codec import AssuranceError
+        from ..storage.assurance_store import AssuranceStore
+        from .resolution_commits import ResolutionCommitRejected
+        from .scoped_content_review import uses_completion_protocol
+
+        with self._store.read_view():
+            stored = self._store.get_result(result_id)
+            if stored is None:
+                return None
+            mission_id = stored.envelope.mission_id
+            if AssuranceStore(self._store).lane(mission_id) != "ASSURANCE_1_1":
+                return None
+            if not uses_completion_protocol(self._store, mission_id):
+                return None
+            if stored.verification_state == "DONE" and stored.verdict == "PASS":
+                return None  # replay; the committed certificate licenses it
+        validity = getattr(self, "_assurance_validity", None)
+        if validity is None:
+            return None  # accept_review refuses USE_CERTIFICATE_REQUIRED; never a fallback
+        try:
+            return validity.prepare_accept_use_for_result(mission_id, result_id)
+        except AssuranceError as error:
+            raise ResolutionCommitRejected(
+                error.code, "the current use certificate could not be prepared"
+            ) from error
 
     def _lock_assured_acceptance(self, mission_id: str, task_id: str, result_id: str) -> None:
         """Assurance 1.1: the prepared ACCEPT use is locked before this UoW's own writes.

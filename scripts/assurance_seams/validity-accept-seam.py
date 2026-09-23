@@ -38,6 +38,7 @@ from agent_orchestrator.assurance.codec import AssuranceError, canonical, decode
 from agent_orchestrator.assurance.evidence import ReadItem
 from agent_orchestrator.assurance.policy import AssurancePolicy
 from agent_orchestrator.assurance.refs import AssuranceRef, Pin
+from agent_orchestrator.assurance.reviews import REVIEW_CODEC_VERSION
 from agent_orchestrator.assurance.root_gate import AssuranceRootGate, CurrentReadPermission
 from agent_orchestrator.contracts.evidence_state import ObservationRecord, QueryCompleteness
 from agent_orchestrator.contracts.resolution import (AllExpr, CriterionExpr, EvaluationKind,
@@ -238,8 +239,12 @@ async def main():
         # The public V1 projection hides SEMANTIC PASS; the candidate carries the real grade.
         legacy = {o.criterion_id: (o.verdict.value, o.check_execution.value, tuple(o.limitations)) for o in record.criteria}
         assert legacy['criterion-report'][0] == 'UNKNOWN' and 'ASSURANCE_SEMANTIC_GRADE_IN_BOUND_MANIFEST' in legacy['criterion-report'][2], legacy
-        candidate = validity.candidate_for(mission_id, str(record.record_id))
-        assert candidate is not None and candidate.usable, candidate
+        # The runtime no longer prepares on PASS (layers recorded afterwards move the
+        # epoch); the acceptance path prepares its own. Here the seam prepares once to
+        # inspect the certificate and to drive the counter-cases.
+        assert validity.candidate_for(mission_id, str(record.record_id)) is None
+        candidate = validity.prepare_accept_use_for_result(mission_id, stored.envelope.id)
+        assert candidate.usable, candidate
         certificate = candidate.certificate
         assert certificate.truth == 'TRUE' and certificate.decision == 'USABLE' and certificate.purpose == 'ACCEPT'
         assert {r.channel for r in certificate.read_set} == {'OBJECT', 'QUERY_SET', 'ACCESS', 'POLICY'}
@@ -287,10 +292,37 @@ async def main():
         assert fresh.usable and fresh.epochs != again.epochs
         rejected = [r for r in fresh.evaluation.rejected_anchors if r[0] == 'seam-counter-observation']
         assert rejected and rejected[0][1] == 'UNREGISTERED_PREDICATE', fresh.evaluation.rejected_anchors
-        # Counter 5: no prepared certificate -> the original acceptance writer refuses.
+        # Counter 5: a stored observation impersonating the system observer/predicate
+        # is rejected and never becomes an anchor.
+        from agent_orchestrator.knowledge.assurance_sources import ASSURANCE_OBSERVER, review_accepted_key
+        HtnStore(store).insert_observation(mission_id, ObservationRecord(
+            observation_id='seam-impersonation', proposition_key=review_accepted_key(mission_id, str(record.record_id)),
+            polarity=True, source_ref=TypedRef(kind=TypedRefKind.SOURCE, id='seam-forged', revision=1, content_hash='d' * 64),
+            observed_at_ms=int(store.now * 1000), recorded_at_ms=int(store.now * 1000),
+            coverage=QueryCompleteness.BEST_EFFORT, observer_id=ASSURANCE_OBSERVER))
+        fresh = validity.prepare_accept_use(record)
+        forged = [r for r in fresh.evaluation.rejected_anchors if r[0] == 'seam-impersonation']
+        assert forged == [('seam-impersonation', 'SYSTEM_PREDICATE_IMPERSONATION')], fresh.evaluation.rejected_anchors
+        assert 'seam-impersonation' not in fresh.evaluation.admitted_anchor_ids
+        report['impersonation'] = forged[0][1]
+        # Counter 6: no validity evaluator bound -> the original acceptance writer refuses,
+        # nothing is written; a stale in-memory candidate is not a licence either.
         validity.forget(mission_id, str(record.record_id))
+        world.service._assurance_validity = None
         report['missing_candidate'] = refused(lambda: accept_now(world, task, stored, artifact), {'USE_CERTIFICATE_REQUIRED'})
+        world.service._assurance_validity = validity
         assert count(store, certificates_sql) == 0 and count(store, 'SELECT COUNT(*) FROM acceptances WHERE mission_id=?', mission_id) == 0
+        # As the production router does after _run_critic: record the critic layer with
+        # its official provenance. verifications is an inventoried source, so the mission
+        # epoch moves here; the acceptance path must prepare after this, not before.
+        epoch_before = validity.prepare_accept_use(record).epochs.mission
+        world.service.record_verification_layer(stored.envelope.id, layer='critic_review', status='PASS',
+            detail={'summary': 'assurance official', 'official_review_record_id': str(record.record_id),
+                    'evidence_manifest_hash': record.evidence_manifest_hash, 'verifier_version': REVIEW_CODEC_VERSION})
+        validity.forget(mission_id, str(record.record_id))
+        report['critic_layer_epoch'] = {'before': epoch_before, 'after': validity.prepare_accept_use(record).epochs.mission}
+        assert report['critic_layer_epoch']['after'] > epoch_before
+        validity.forget(mission_id, str(record.record_id))
         # The fixture Worker never ran in the AgentRuntime, so its executor cannot be
         # closed by the assured settlement reader. Production defers that settlement
         # to the usage import path when a call's price is still unknown; the seam
@@ -299,8 +331,8 @@ async def main():
         world.service.import_usage(stored.envelope.attempt_id, mission_id,
                                    (UsageFact('fixture-worker-usage', 10, 10, None, unknown=True),))
         report['worker_settlement'] = 'DEFERRED_UNKNOWN_USAGE (fixture worker; not covered here)'
-        # The real path: prepare (as the runtime does after a PASS) then accept.
-        validity.prepare_accept_use(record)
+        # The real path: accept_result prepares the current use itself, locks it at
+        # the head of its UoW, and commits the certificate beside the Acceptance.
         completed = accept_now(world, task, stored, artifact)
         assert completed.accepted_result_id == stored.envelope.id, completed
         acceptance_id = acceptance_id_for(task.id, stored.envelope.id)
@@ -337,7 +369,7 @@ async def main():
         store = world.store
         assert not verdict.passed
         assert validity.candidate_for(world.mission.id, str(record.record_id)) is None
-        candidate = validity.prepare_accept_use(record)
+        candidate = validity.prepare_accept_use_for_result(world.mission.id, stored.envelope.id)
         assert candidate.certificate.decision != 'USABLE' and candidate.effective_grades == {'criterion-report': 'FAIL'}
         with store.transaction():
             report['rejected_review'] = {'decision': candidate.certificate.decision, 'truth': candidate.certificate.truth,
@@ -356,7 +388,7 @@ async def main():
     out = EVIDENCE / ('validity-accept-seam-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f') + '.json')
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({'status': 'PASS', 'evidence': str(out), 'certificate': report['certificate']['decision'],
-                      'counters': {k: report[k] for k in ('identity_swap', 'expiry', 'authority_change', 'source_change', 'missing_candidate')},
+                      'counters': {k: report[k] for k in ('identity_swap', 'expiry', 'authority_change', 'source_change', 'impersonation', 'missing_candidate')}, 'critic_layer_epoch': report['critic_layer_epoch'],
                       'rejected_review': report['rejected_review']}, ensure_ascii=False))
 
 
