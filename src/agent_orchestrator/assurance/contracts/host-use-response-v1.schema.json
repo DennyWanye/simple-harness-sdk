@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/host-use-response-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "mission_id",
+    "view",
+    "snapshot_seq",
+    "root_incarnation_id",
+    "sdk_fingerprint",
+    "host_fingerprint",
+    "subject_ref",
+    "purpose",
+    "decision",
+    "diagnostic_only",
+    "coverage",
+    "reason_codes",
+    "checked_at_ms",
+    "expires_at_ms",
+    "certificate_ref"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "view": {
+      "enum": [
+        "CURRENT",
+        "HISTORY"
+      ]
+    },
+    "snapshot_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "root_incarnation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "sdk_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "host_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "subject_ref": {
+      "$ref": "common.schema.json#/$defs/ref"
+    },
+    "purpose": {
+      "enum": [
+        "PLAN",
+        "START",
+        "MAINTAIN",
+        "ACCEPT",
+        "CONTEXT",
+        "DISCLOSE",
+        "RECOVERY"
+      ]
+    },
+    "decision": {
+      "enum": [
+        "USABLE",
+        "RECHECK_REQUIRED",
+        "BLOCKED",
+        "UNAVAILABLE"
+      ]
+    },
+    "diagnostic_only": {
+      "const": true
+    },
+    "coverage": {
+      "enum": [
+        "COMPLETE",
+        "INCOMPLETE"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      },
+      "minItems": 0,
+      "maxItems": 64
+    },
+    "checked_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "expires_at_ms": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      ]
+    },
+    "certificate_ref": {
+      "type": "null"
+    }
+  }
+}

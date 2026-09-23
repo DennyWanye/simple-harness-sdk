@@ -351,6 +351,9 @@ class AssuranceDeploymentPorts:
     resolve_signature: Any | None = None
     admitted_rules: Mapping[str, Any] | None = None
     read_ttl_ms: int = DEFAULT_READ_TTL_MS
+    # SHA-256 identity of the Host build that reads through the S25 verbs; None
+    # binds the constant "unbound" digest (isolated candidates, seams).
+    host_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -366,6 +369,7 @@ class InstalledAssurance:
     tick: AssuranceTick
     root_incarnation_id: str
     startup: Mapping[str, Any]
+    api: Any = None
 
 
 def install_assurance(orchestrator: Any, ports: AssuranceDeploymentPorts) -> InstalledAssurance:
@@ -473,9 +477,19 @@ def install_assurance(orchestrator: Any, ports: AssuranceDeploymentPorts) -> Ins
         resolve_signature=ports.resolve_signature,
         admitted_rules=ports.admitted_rules,
     )
+    from ..api.assurance import AssuranceApi
+
+    api = AssuranceApi(
+        commit,
+        tenant_id=tenant_id,
+        principal=ports.principal,
+        validity=validity,
+        host_fingerprint=ports.host_fingerprint or fingerprint({"host": "unbound"}),
+    )
     commit._assurance_read_authority = authority.read
     commit._assurance_factory = factory
     orchestrator._assurance_tick = tick
+    orchestrator.install_assurance_read_api(api, tenant_id=tenant_id, principal=ports.principal)
     startup = reconcile_startup(orchestrator, tenant_id=tenant_id, root_incarnation_id=root)
     return InstalledAssurance(
         policy=policy,
@@ -489,6 +503,7 @@ def install_assurance(orchestrator: Any, ports: AssuranceDeploymentPorts) -> Ins
         tick=tick,
         root_incarnation_id=root,
         startup=startup,
+        api=api,
     )
 
 

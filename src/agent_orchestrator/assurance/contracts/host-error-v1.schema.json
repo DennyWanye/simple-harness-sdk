@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/host-error-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "code",
+    "message",
+    "retryable"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "code": {
+      "enum": [
+        "NOT_FOUND",
+        "PROFILE_UNBOUND",
+        "RESTORE_QUARANTINED",
+        "SNAPSHOT_CHANGED",
+        "SOURCE_UNAVAILABLE",
+        "LIMIT_REACHED",
+        "CONTRACT_INVALID"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "retryable": {
+      "type": "boolean"
+    }
+  }
+}

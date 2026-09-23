@@ -197,6 +197,30 @@ class MissionControlV1:
         except AssuranceError as error:
             raise FacadeError(error.code, "restored read authorization refused") from error
 
+    # ------------------------------------------------------ assurance reads
+    def _assurance_read(self, verb: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        """S25 read verbs: caller fixed at construction; the body never names it."""
+        from .assurance import AssuranceReadError
+
+        try:
+            api = self._orchestrator.assurance_read_api(tenant_id=self._tenant, principal=self._principal)
+            return getattr(api, verb)(dict(body))
+        except AssuranceReadError as error:
+            request_id = body.get("request_id") if isinstance(body, Mapping) else None
+            wire = error.to_json(request_id if isinstance(request_id, str) and request_id else "unknown")
+            raised = FacadeError(error.code, str(error))
+            raised.wire = wire  # type: ignore[attr-defined]
+            raise raised from error
+
+    def assurance_snapshot(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        return self._assurance_read("snapshot", body)
+
+    def assurance_review(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        return self._assurance_read("review", body)
+
+    def assurance_use_check(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        return self._assurance_read("use_check", body)
+
     def _mission(self, mission_id: object) -> Any:
         self._require_native_root()
         mission = self._store.get_mission(str(mission_id))

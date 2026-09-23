@@ -1100,3 +1100,77 @@ eca9b297cba8  storage/assurance_schema.sql
 ```
 
 下一段：按 handoff 指示在第 9 项（Host/UI）与第 10 项（集中真实验收/默认开启）前停下汇报。
+
+## 第九段（2026-09-23）：Host/UI 接线——固定 caller 三读 verb、Host 生产装配、MissionsView 保证视图（handoff §4 第 9 项）
+
+用户拍板：第 9、10 项"都做"，且合成一次完整验收（第 10 项按 acceptance.md §14 顺序集中跑，本段只做第 9 项的接线与金丝雀）。
+
+**做了什么（代码存在，定向测试验证）**
+- SDK `api/assurance.py`（新）：`AssuranceApi`——每个已安装的 (tenant, principal) 一个固定 caller 实例，由 `install_assurance` 绑到
+  Orchestrator（`install_assurance_read_api`/`assurance_read_api`），`MissionControlV1.assurance_snapshot/review/use_check` 只把
+  自己的租户/principal 交给它，请求体永远不能命名租户或 principal（多余字段 → `CONTRACT_INVALID`）。CURRENT 快照按
+  CRITERION/REVIEW/EFFECT/CLOSEOUT/CONTRIBUTION 五类从真实 store（requirements revision、review bindings + official record、
+  证书行 + `AssuranceUseCertified` 回执、closeout check_body、`OperationOutcomeAccepted`）拼装，`current_use` 只来自当前权威
+  下的证书/validity 状态；HISTORY 视图钉在 `at_event_seq`（激活前 `SOURCE_UNAVAILABLE`、越过 head `NOT_FOUND`），历史状态与
+  当前可用性分列；分页游标 = base64url(规范 JSON{version,mission_id,view,at_seq,filter_hash,last_sort_key})，最多 100 条，
+  epoch/head 变化 → `SNAPSHOT_CHANGED`；`use_check` 只诊断，`diagnostic_only=true`、`certificate_ref=null`，不写证书行。
+  七个 `host-*-v1` 合同 JSON 复制进 `assurance/contracts/` 并附最小 checker（`validate`，拒绝多余字段/枚举漂移），facade 错误带
+  `wire`（host-error-v1）。`sdk_fingerprint` 取自已装 SDK 的 assurance 源码摘要；`host_fingerprint` 由 Host 提供。
+- SDK `scripts/build/development_candidate.py`（新）：从当前 checkout 构建开发候选 wheel 并写 candidate-manifest（记录 commit、
+  脏树、src 输入摘要）。本段候选：`0.13.0.dev20260923+assurance.1`，wheel `16f9f0b44e34…`，manifest `de2b1fa8cf99…`，
+  源 commit `4d59fdfd`（第八段提交）。
+- Host：先把 `development/taskgraph-host-overlay/` 的 7 个 TaskGraph UI2 源文件覆盖进根 Host（handoff §4 第 9 项前置），再接
+  Assurance——`deskpet/orchestration/assurance.py`（新）：`root_setup`（`install_assurance_root`，command_id 固定、按根/租户/
+  principal 幂等）、`install_assurance`（`AssuranceDeploymentPorts`：租户/认证 principal、Requirements 用 Host 已有
+  `root_requirements`、单一选择点 `settings.assurance_profile=="on"` → `AssurancePolicy()` 否则 None、通知 transport 追加到
+  `service._assurance_notices` 并唤醒变更泵、`host_fingerprint`=Host commit+脏标+钉版 wheel 摘要）、`read_assurance`（先走原
+  facade 归属检查再调 verb）。`service.py` 在 start 与 rebuild 的 `startup_assembly` 里 hierarchical → taskgraph → assurance
+  顺序装配，`Orchestrator(assurance_root_setup=…)`；status 新增 `assurance_available/assurance_profile/assurance_notices`。
+  `handlers.py` 注册 `mission_assurance_snapshot/_review/_use_check`（`request_id` 保留在体内交 SDK 校验；拒绝时 payload 带
+  `assurance_error`=host-error-v1）。`hierarchical.py::initialize_root` 不再重复插 Requirements（factory 已建 revision 1 时只核对
+  同一体，冲突 raise）。`settings.assurance_profile` 默认 `"off"`（第 10 项验收通过后同次翻 ON）。Host 钉版：
+  `sdk_candidate.py` + pyproject（dependency/override/uv.sources）+ uv.lock 重锁，venv 同步。
+- 前端：`stores/assuranceStore.ts`（新，按七个合同的严格解析：字段集合精确、枚举、64 位十六进制指纹/摘要、`ev-` 证据标签、
+  100 条上限、`diagnostic_only`/`certificate_ref` 硬校验、mission 不符拒绝）；`views/MissionAssurance.tsx`（新，按需读取、当前/
+  历史事件序号、分页与 `SNAPSHOT_CHANGED` 从第一页重来、审阅详情按 review_key 钉住、use check 表单只诊断、`mission_changed`
+  置 stale、重连/换 Mission 清屏、无效 DTO 保留上次画面并报协议错误、30s 超时）；`MissionsView` 在执行图之后按
+  `status.assurance_available` 挂载。
+
+**证据（本机 ignored，`.local-test-evidence/2026-09-23/host-assurance/`）**
+- SDK `tests/orchestrator/full_target/assurance_exec/test_c07_host_api.py` 2 passed（真实 Orchestrator + install_assurance：
+  NOT_FOUND/PROFILE_UNBOUND/CONTRACT_INVALID/他人 principal/他租户拒绝、CURRENT 内容、分页 + SNAPSHOT_CHANGED、HISTORY 钉序、
+  review NOT_FOUND、use_check UNAVAILABLE 且不写证书、合同 checker 漂移拒绝）。ruff：新文件除 E501 外 0 告警（E741/UP033 已修），
+  facade/event_handler 相对基线只多 E501。
+- Host `tests/orchestration/test_assurance_host_api.py` 3 passed（profile on：lane ASSURANCE_1_1、单一 revision-1 Requirements、
+  合同快照、`assurance_error`、伪造 tenant 字段 → CONTRACT_INVALID、rebuild 后根身份不变；profile off：COMPLETION_V1 +
+  PROFILE_UNBOUND；settings 解析）+ `test_handlers_contract.py` 通过。
+- Host `tests/orchestration` 全目录：全量 26 failed / 355 passed / 20 skipped（788s）；用 monkeypatch 禁用 Assurance 装配、再禁用 TaskGraph 装配两路各 28 failed / 353 passed（多出的 2 个正是本段新加的 Host Assurance 用例，其余 26 个集合逐条相同）——即 26 个既有失败与本段装配无关：6 个因 Mission 停在 CREATED（Host 启动门要求已批准的完成 Spec，用例写于 2026-09-13）、5 个 `not enough values to unpack`、1 个用例自绑 package 6 与 planning-decision-v1 冲突、1 个要求 SDK 源根为 Git 根、1 个超时等；归第 10 项 legacy/全量回归阶段处理，不作为本段通过依据。
+- 前端 vitest 103 文件 875 passed（含新 `MissionAssurance.test.tsx` 9 个：合同体、审阅详情、无效/他请求/他任务/枚举漂移保留画面、
+  SNAPSHOT_CHANGED 重来、历史钉序、stale/重连/换任务、use check 只诊断且带证书的响应被拒、超时/无连接、解析器漂移）；
+  `tsc -b` 通过；eslint 新文件 0 告警（`MissionsView.tsx:616` 的 `react-hooks/refs` 报错在 HEAD 与 overlay 源里同样存在，非本段引入）。
+- SDK 金丝雀接缝 four-consumer / final-writer 重跑 PASS（`…T124219664097` / `…T124220887775`）。
+- 日卡通道实测可用（换密钥后重启网关；Cloudflare 只拦 urllib UA，httpx 正常），第 10 项真实模型 12 局走它。
+
+**明确没有证明 / 边界**
+- 未做原生 Host 点击（Tauri）验收、真实模型、48 组/继承 66/OCC 12/变异/stateful/legacy H1 全量——全部归第 10 项一次完整跑。
+- `verify_development_handoff.py` 自第一段起就对已改源码报"differs"（清单是 2026-09-23 交接冻结时的源码完整性快照），本段
+  未重生成；第 10 项冻结新候选时一并重生成。
+- Host 既有 5 个失败与本段无关（见上）；旧 `htn.1` wheel 未能在钉版守卫下做对照安装，归因依据是 monkeypatch 禁用装配的二分。
+- Host `assurance_profile` 仍 `off`：这是第 10 项未完成，不是灰度。
+
+**改动文件 sha256（前 12 位）**
+```
+aa5f9e1feeee  sdk: api/assurance.py（新）        e0c7e3d4b704  sdk: api/facade.py
+5889f27375ca  sdk: assurance/contracts/__init__.py（新，7 合同 JSON 同目录）
+3a643c22743a  sdk: orchestrator/assurance_assembly.py   96b736dd9aa2  sdk: orchestrator/event_handler.py
+8cea78b1d39a  sdk: tests/…/assurance_exec/test_c07_host_api.py（新）   a6636f8fb568  sdk: scripts/build/development_candidate.py（新）
+a87d51e668d1  backend/deskpet/orchestration/assurance.py（新）   7741a664fef0  service.py   fdeb7b4ed181  handlers.py
+b8f109762c0f  hierarchical.py   936fd8287b23  settings.py   f7f3b7f7073f  taskgraph.py（overlay）   5edf6338e462  sdk_candidate.py
+e06f712437b7  backend/tests/orchestration/test_assurance_host_api.py（新）
+121b48754c4b  tauri-app/src/stores/assuranceStore.ts（新）   0bb9d39edb7d  views/MissionAssurance.tsx（新）
+024605a52600  views/MissionAssurance.test.tsx（新）   74b0e842a662  views/MissionsView.tsx   749ea881d113  stores/missionsStore.ts
+4874df772f9a  stores/taskgraphStore.ts（overlay）   9aa312e16263  views/MissionTaskGraph.tsx（overlay）   49f3cc4c9406  MissionTaskGraph.css（overlay）
+```
+
+下一段：第 10 项合成一次完整验收（§14 顺序：SDK 确定性场景 + 继承 MUST → SQL 迁移/并发/kill → 变异 → stateful → legacy/全量 H1 →
+隔离原生 Host 点击 → 真实模型 12 局 ×3（日卡）→ 独立审阅 → 默认 ON + 出厂回归 → 文档）。

@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/host-response-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "mission_id",
+    "view",
+    "snapshot_seq",
+    "root_incarnation_id",
+    "sdk_fingerprint",
+    "host_fingerprint",
+    "items",
+    "next_cursor",
+    "truncated"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "view": {
+      "enum": [
+        "CURRENT",
+        "HISTORY"
+      ]
+    },
+    "snapshot_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "root_incarnation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "sdk_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "host_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "items": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "id",
+          "history_state",
+          "current_use",
+          "reason_codes",
+          "evidence_count",
+          "artifact_ref"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "CRITERION",
+              "REVIEW",
+              "EFFECT",
+              "CLOSEOUT",
+              "CONTRIBUTION"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "history_state": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "current_use": {
+            "enum": [
+              "USABLE",
+              "STALE",
+              "BLOCKED",
+              "UNAVAILABLE",
+              "NOT_APPLICABLE"
+            ]
+          },
+          "reason_codes": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "uniqueItems": true
+          },
+          "evidence_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "artifact_ref": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "common.schema.json#/$defs/ref"
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "artifact"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "uniqueItems": true
+    },
+    "next_cursor": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      ]
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  }
+}

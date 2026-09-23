@@ -445,6 +445,7 @@ class Orchestrator:
         self._assurance_root_setup = assurance_root_setup
         self._assurance_management_only = False
         self._taskgraph_read_apis: list[Any] = []
+        self._assurance_read_apis: list[Any] = []
         self._taskgraph_operator: Any = None
         self._taskgraph_policy: Any = None
         self._provider = provider
@@ -1398,6 +1399,22 @@ class Orchestrator:
                 return api
         from ..api.taskgraph import _fail
         _fail("SOURCE_UNAVAILABLE", "TaskGraph source assembly is not installed", retry="OPERATOR_REPAIR")
+
+    def install_assurance_read_api(self, api: Any, *, tenant_id: str, principal: Any) -> None:
+        """Fixed-caller Assurance read verbs (S25); bound by the deployment assembly only."""
+        from ..api.assurance import AssuranceApi
+        if not isinstance(api, AssuranceApi) or not api.matches_binding(self.commit, tenant_id, principal):
+            raise ValueError("Assurance read API must bind this Store and authenticated caller")
+        if any(item.matches_binding(self.commit, tenant_id, principal) for item in self._assurance_read_apis):
+            raise ValueError("Assurance read API is already installed for this caller")
+        self._assurance_read_apis.append(api)
+
+    def assurance_read_api(self, *, tenant_id: str, principal: Any) -> Any:
+        for api in self._assurance_read_apis:
+            if api.matches_binding(self.commit, tenant_id, principal):
+                return api
+        from ..api.assurance import AssuranceReadError
+        raise AssuranceReadError("PROFILE_UNBOUND", "Assurance read assembly is not installed for this caller")
 
     def taskgraph_operator_api(self, *, tenant_id: str, principal: Any) -> Any:
         """Authenticated internal operator access, never part of model tools."""
