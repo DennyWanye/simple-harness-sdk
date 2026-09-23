@@ -44,10 +44,13 @@ class AssuranceMissionFactory:
         require_creation_root: Callable[[], None],
         requirements: Callable[[Mission, MissionSpec], RequirementsRevision],
         reconcile: Callable[[str], Mapping[str, Sequence[WorkTarget]]],
+        selector: Callable[[MissionSpec], bool] | None = None,
     ) -> None:
         if not isinstance(policy, AssurancePolicy) or not all(
             callable(value) for value in (require_creation_root, requirements, reconcile)
         ):
+            raise AssuranceError("ASSURANCE_FACTORY_UNBOUND")
+        if selector is not None and not callable(selector):
             raise AssuranceError("ASSURANCE_FACTORY_UNBOUND")
         self.commit = commit
         self.tenant_id = text(tenant_id)
@@ -55,6 +58,18 @@ class AssuranceMissionFactory:
         self.require_creation_root = require_creation_root
         self.requirements = requirements
         self.reconcile = reconcile
+        self.selector = selector
+
+    def selects(self, spec: MissionSpec) -> bool:
+        """Whether this new Mission takes the assured lane (spec §11).
+
+        Only the planning-decision protocol can be assured. Without a selector
+        (isolated candidates, seams) every such Mission is; the production
+        installer passes the single default selection point.
+        """
+        if spec.planning_protocol_version != PLANNING_DECISION_V1:
+            return False
+        return self.selector is None or bool(self.selector(spec))
 
     def create(self, mission: Mission, spec: MissionSpec, event: Event) -> None:
         store = self.commit.store
@@ -159,7 +174,7 @@ def record_mission_creation(
     """Called only for a new row, after the actual original MissionCreated event."""
     if not commit.store.connection.in_transaction or event.mission_id != mission.id:
         raise AssuranceError("FACTORY_TRANSACTION_REQUIRED")
-    if commit._assurance_factory is not None:
+    if commit._assurance_factory is not None and commit._assurance_factory.selects(spec):
         commit._assurance_factory.create(mission, spec, event)
         return
     lane = "COMPLETION_V1" if spec.planning_protocol_version == PLANNING_DECISION_V1 else "LEGACY"

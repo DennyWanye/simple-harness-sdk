@@ -73,6 +73,26 @@ class ImportedReview:
     exposed: frozenset[str]
 
 
+PRE_SCOPE_ID = "mission"
+
+
+def review_scope_id(body: Mapping[str, Any]) -> str:
+    """The use-identity scope of a review binding.
+
+    Only METHOD_PLAN may be bound before a completion Scope exists (subject
+    shape rule); its use scope is the Mission itself, exactly as the purpose
+    builder froze it (``PurposeSubject.scope_id == "mission"``). Every other
+    purpose without a Scope is refused rather than given a guessed scope.
+    """
+    subject = body["subject"]
+    scope = subject["completion_scope_ref"]
+    if scope is not None:
+        return str(scope["id"])
+    if subject["purpose"] != "METHOD_PLAN":
+        raise AssuranceError("REVIEW_SCOPE_UNAVAILABLE")
+    return PRE_SCOPE_ID
+
+
 def review_subject_stopped(store: Any, binding: AssuranceReviewBinding) -> bool:
     """Whether the reviewed subject can no longer use an answer; purpose-aware.
 
@@ -606,8 +626,7 @@ def prepare_official_review(
             identity.consumer_kind != "REVIEW"
             or identity.consumer_id != body["review_key"]
             or identity.purpose != "ACCEPT"
-            or scope is None
-            or identity.scope_id != scope["id"]
+            or identity.scope_id != review_scope_id(body)
         ):
             raise AssuranceError("REVIEW_IMPORT_IDENTITY")
         if AssuranceStore(store).lane(identity.mission_id) != "ASSURANCE_1_1":
@@ -620,11 +639,12 @@ def prepare_official_review(
             _raw_ref(imported),
             AssuranceRef("review_package", Pin.from_json(body["package_ref"])),
             AssuranceRef("requirements", Pin.from_json(body["requirements_ref"])),
-            AssuranceRef("completion_scope", Pin.from_json(scope)),
             AssuranceRef.from_json(body["criterion_policy_ref"]),
             AssuranceRef.from_json(body["subject"]["target"]),
             AssuranceRef("task", Pin.from_json(body["subject"]["owner_task_ref"])),
         }
+        if scope is not None:
+            refs.add(AssuranceRef("completion_scope", Pin.from_json(scope)))
         refs.update(item.ref for item in imported.catalogue)
         refs.update(item.ref for item in imported.disclosure_metadata)
         metadata = tuple(

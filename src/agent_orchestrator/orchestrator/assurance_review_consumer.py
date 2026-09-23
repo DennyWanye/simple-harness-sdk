@@ -19,6 +19,7 @@ from .assurance_review_import import (
     prepare_official_review,
     read_imported_review_locked,
     read_official_review_binding_locked,
+    review_scope_id,
     review_subject_stopped,
 )
 from .assurance_review_pins import ensure_review_blob_pins
@@ -155,13 +156,11 @@ class AssuranceReviewConsumer:
             if review_subject_stopped(self.store, imported.binding):
                 return self._prepare_late(reader, imported, "REVIEW_SUBJECT_STOPPED")
             scope = body["subject"]["completion_scope_ref"]
-            if scope is None:
-                return AssuranceWait("RECHECK_REQUIRED", int(self.store.now * 1000))
             identity = UseIdentity(
                 claim.mission_id,
                 "REVIEW",
                 body["review_key"],
-                scope["id"],
+                review_scope_id(body),
                 self.principal_id,
                 "ACCEPT",
                 self.commit._assurance_root_gate.require_execution().root_incarnation_id,
@@ -172,15 +171,23 @@ class AssuranceReviewConsumer:
                 for group in policy["any_check_sets"]
                 for ref in group
             }
-            candidates = self.store.connection.execute(
-                "SELECT * FROM assurance_check_bindings WHERE mission_id=? AND subject_hash=? "
-                "AND json_extract(binding_json,'$.scope_hash')=? ORDER BY created_at_ms,check_binding_id LIMIT 257",
-                (
-                    claim.mission_id,
-                    body["subject"]["target"]["pin"]["content_hash"],
-                    scope["content_hash"],
-                ),
-            ).fetchall()
+            # A pre-Scope METHOD_PLAN review has no Scope-bound check bindings:
+            # its policy domain is the planning subject and only SEMANTIC checks
+            # apply, so no executor/local check is selected for it.
+            candidates = (
+                []
+                if scope is None
+                else self.store.connection.execute(
+                    "SELECT * FROM assurance_check_bindings WHERE mission_id=? AND subject_hash=? "
+                    "AND json_extract(binding_json,'$.scope_hash')=? "
+                    "ORDER BY created_at_ms,check_binding_id LIMIT 257",
+                    (
+                        claim.mission_id,
+                        body["subject"]["target"]["pin"]["content_hash"],
+                        scope["content_hash"],
+                    ),
+                ).fetchall()
+            )
             if len(candidates) > 256:
                 return AssuranceWait("RECHECK_REQUIRED", int(self.store.now * 1000))
             selected = {}

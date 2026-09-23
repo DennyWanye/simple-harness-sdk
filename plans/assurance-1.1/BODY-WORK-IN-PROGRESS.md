@@ -847,4 +847,103 @@ a833dd74af9d78f89e28e163b171be40978f1977fb251b860f5175d1c151733c  scripts/assura
 a2492d9ce829e11d9134bd5ad3fc2f2938c513633cc1e5a08af8e32de05e194e  scripts/assurance_seams/seam_paths.py
 ```
 
-下一段：handoff §4 第 6 项（四 consumer 生产装配；pre-Scope METHOD_PLAN 的派发/official 消费归此）起。
+下一段（已做，见下）：handoff §4 第 6 项。
+
+## 2026-09-23 第六段：四 consumer 生产装配 / pre-Scope METHOD_PLAN 消费（handoff §4 第 6 项）
+
+**做了什么（代码存在，并有单点接缝证据）**
+
+- 新 `orchestrator/assurance_consumers.py`：三个真实 adapter，都在原 `AssuranceTick` 的 classify/prepare/commit 协议上，
+  不开池、不调模型、不改 Mission 状态。
+  - VALIDITY（计时 owner，规格 §8.4）：`AssuranceUseExpiryDue` 用 `classify_expiry`；`AssuranceEvidenceChanged`/本地·执行器检查导入
+    事件唤醒本 Mission 每个"最新一张 USABLE 证书"的 consumer（work_key=`validity_work_key`，≤256 行否则
+    `VALIDITY_WAKEUP_INVENTORY_INCOMPLETE`）。工作只是"重读这张证书并记录观察"：ROOT_CHANGED / SOURCE_CHANGED（捕获的
+    mission/global/clock 代次 ≠ 当前）/ TIME_DISCONTINUITY / EXPIRED / SUPERSEDED，结论 CURRENT|STALE 写成
+    `AssuranceUseValidityChecked` 回执+事件；不延期、不重签、不修任何已用证书（原 use writer 每次使用自己重核）。
+  - CLOSEOUT（规格 §7.2 的投影）：`closeout:<mission>`，来源事件按 event-consumer-map 的 SOURCE_OR_AUTHORITY_CHANGED /
+    BUSINESS_OR_RUNTIME_SETTLED 显式登记（`CLOSEOUT_SOURCE_EVENTS`，不按前缀猜）。评估：无采纳根 GoalResolution →
+    NOT_READY(ROOT_RESOLUTION_MISSING)；根决议非 ACCEPT/CURRENT 或根 Scope 未满足 → NOT_READY；批准效果处于
+    RECONCILIATION_REQUIRED → BLOCKED_UNKNOWN；未关闭 intent / RESERVED 预留 / usage 未知 → DRAINING；否则 READY。
+    只有存在根决议才写 `assurance_closeouts` 行（首次 INSERT NOT_READY v1，再 UPDATE 到计算状态，row_version 严格 +1）；
+    每次评估一条 `AssuranceCloseoutEvaluated` 回执+事件；FINALIZED 行永不回退；READY 时调用可选 `finalizer`（第 7 项接口，
+    本段不装）。**本段不写 READY→FINALIZED，也不动 judge_mission。**
+  - NOTIFY（规格 §7.3）：`AssuranceStatusNotificationRequested{final_event_id,state_version}` → `notify:<mission>:<final_event_id>`；
+    先查根门与既有回执，再事务外调用部署的 `transport({mission_id,event_id,state_version})`（不带报告正文），成功后写
+    `AssuranceStatusNotified` 回执+事件；重放不再发送（至少一次，Host 按 event_id 去重）。transport 缺失 → `NOTIFY_TRANSPORT_UNBOUND`
+    留在 WAITING 预算内。三个 consumer 自己的输出事件在分类表里全部 IGNORE（DIAGNOSTIC_ONLY）。
+- 新 `orchestrator/assurance_assembly.py`：生产装配唯一入口 `install_assurance(orchestrator, AssuranceDeploymentPorts)`，
+  从部署的 `startup_assembly` 回调调用（根门已存在、恢复未启动时）。
+  - `FixedPrincipalAuthority`：固定已认证 principal + 租户归属 = 本部署真实拥有的 ACL；ACCESS 见证 key=canonical
+    `{principal,tenant,scope,use}`，fingerprint 绑 principal/tenant/mission 归属/ref/purpose/根状态种类与 incarnation/全局
+    access-policy epoch/时钟代次；POLICY 见证绑冻结 AssurancePolicy + DeploymentPolicy；TTL=min(24h, approval_ttl)。
+    同一对象同时充当 consumer 的 `CurrentAuthority(identity, ref)` 与 facade 的 `commit._assurance_read_authority(principal,
+    tenant, mission, ref, purpose)`；其他 principal/租户 → `ROOT_READ_NOT_AUTHORIZED`，非法 purpose → `CURRENT_READ_AUTHORITY_REQUIRED`。
+  - `mission_spec_requirements(principal)`：原批准 Requirements = MissionSpec.success_criteria（`req-<mission>-1`、`c-user-<n>`、
+    USER_EXPLICIT/REQUIRED_OUTCOME/SEMANTIC、authority_subject=principal），与 Host `initialize_root` 写的文档逐字节一致；
+    Host 可用 ports.requirements 传自己的 builder。
+  - `activation_inventory`：激活对账诚实计算——只有本事务新建的 Mission 能激活，因此查 results/review_invocations/
+    certificates/goal_resolutions/closeouts/通知事件都必须为空，否则 `ACTIVATION_RECONCILIATION_UNEXPECTED`；不是 no-op 冒充。
+  - `reconcile_startup`：本租户每个 assured Mission 缺失的 cursor 以 0 重建（按稳定 work_key 去重重放）、立即 `emit_due`；
+    返回清单（missions/cursors_rebuilt/expiry_events/pending 状态计数）。
+  - 装配顺序：全部构造完成后再绑定；重复安装 `ASSURANCE_ALREADY_INSTALLED`；无根门 `ASSURANCE_ROOT_GATE_UNBOUND`；
+    CAS=原 `assembled.workspaces.artifact_store`；REVIEW consumer 与 validity 都带真实 `AssuranceLocalChecks`。
+- `orchestrator/assurance_factory.py`：新增 `selector`（默认 None=只要是 planning-decision-v1 就 assured，接缝/隔离候选用法不变）；
+  生产装配传"单一默认选择点 `default_assurance_profile_for_new_mission()`"（仍返回 None，默认 OFF 直到第 10 项）；
+  `record_mission_creation` 只在 `factory.selects(spec)` 时走 assured，否则原 COMPLETION_V1/LEGACY 分类——**装 factory 不再让
+  legacy 协议的创建报 `ASSURANCE_CREATION_PROTOCOL_MISMATCH`**。
+- pre-Scope METHOD_PLAN 的派发/official 消费：`assurance_review_import.review_scope_id(body)`——只有 METHOD_PLAN 可无 Scope，
+  其 use scope = `"mission"`（与 `PurposeSubject.scope_id` 冻结值一致），其他目的无 Scope 仍 `REVIEW_SCOPE_UNAVAILABLE`。
+  接到 handoff `require_current_locked`、`reviewer_evidence_tools._identity`、REVIEW consumer `prepare`（无 Scope 时不查
+  Scope 绑定的 check bindings，只 SEMANTIC）、`prepare_official_review`（refs 不再强制 completion_scope）。
+- 接缝夹具：purpose-builders-seam 3d 由"停在 REVIEW_SCOPE_UNAVAILABLE"改为"派发→真实轮次→official ACCEPT"。
+
+**单点接缝证据（本机 ignored 目录）**
+
+`four-consumer-seam-20260923T104306537628.json`（`9941ff13a6998f67b3f369dee202ffda5d23d776d2d80666d9b3680d18f24ba5`）：
+- A 段（真实 `Orchestrator` 启动 + `install_assurance` 作 startup_assembly，原生根由 `assurance_root_setup` 安装）：
+  tick/factory/local_checks/review runtime/validity/read_authority 全部绑到原对象；二次安装拒绝；创建 assured Mission →
+  lane ASSURANCE_1_1、`req-<id>-1` 含 `c-user-1/2`、四 cursor 都在激活 seq、pending 为空；同 spec 重放不新建；legacy 协议
+  → LEGACY，v1 未选中 → COMPLETION_V1；固定 principal 授权（同 purpose 同见证、换 purpose 见证不同、其他 principal/租户/
+  非法 purpose 拒绝）；空闲 tick 不产生工作；手工发 `AssuranceStatusNotificationRequested` → tick 两轮 → transport 收到
+  恰一条 `{mission_id,event_id,state_version}`、回执+事件各一、NOTIFY 行 DONE，再 tick 不重发；删掉 NOTIFY cursor 后
+  `reconcile_startup` 报 `cursors_rebuilt=[<mission>:NOTIFY]`，重放后仍只发过一次。
+- B 段（assured 夹具 Mission，真实 `AssuranceTick` + 四 consumer 代替单 REVIEW pump）：叶子 official → 原 accept_result →
+  CLOSEOUT NOT_READY(ROOT_RESOLUTION_MISSING)，VALIDITY 观察到已消费的 ACCEPT 证书 STALE(SOURCE_CHANGED)；MISSION_FINAL
+  原 cut → official ACCEPT → coordinator READY；**根决议未能形成**：生产触发器 `attempt_root_resolution` 对单原语根报
+  `METHOD_INSTANCE_NOT_ADOPTED`（对每个根都陈述 compound facts，既有），用同一读输入 compound=None 直调
+  `commit_goal_resolution` 报 `NOT_ACCEPTABLE: SUCCESS_EXPRESSION_NOT_PASS`——因为 official 记录的公开 CriterionOutcome 把
+  SEMANTIC PASS 投影为 UNKNOWN（`ASSURANCE_SEMANTIC_GRADE_IN_BOUND_MANIFEST`），根决议必须消费绑定 manifest 的有效等级，
+  这正是第 7 项（use/终态写口）；closeout 因而停在 NOT_READY，`assurance_closeouts` 行写口没有被走到。pre-Scope METHOD_PLAN：
+  策略批准在规划主体 → invocation → `_dispatch` 成功 → 真实轮次 → official ACCEPT（record binding 回执存在，REVIEW 工作 DONE）。
+  时钟前推 61s → tick 从证书表 `emit_due` 1 条 `AssuranceUseExpiryDue` → VALIDITY 回执 reasons 含 EXPIRED、工作 DONE。
+  NOTIFY 同 A 段。全程 3 次模型调用（scripted）。
+金丝雀重跑 PASS：evidence-tools、purpose-builders（`purpose-builders-seam-20260923T104142000535.json`，`c016767f…`）、
+tick-factory、validity-accept、review-runtime、executor-check、check-use。定向既有测试
+`tests/orchestrator/full_target/operation_completion` + `test_resolution_commits.py`：261 passed。ruff：两个新模块 0 告警；
+其余改动文件只剩基线既有的 E501/I001。
+
+**明确没有证明 / 边界**
+- 真实模型未跑；Host 未接（第 9 项）：Host 需在 `startup_assembly` 里调 `install_assurance`，并让 `initialize_root`
+  在 factory 已写 revision 1 时不再重复插入 Requirements（同一 builder 文档）。
+- CLOSEOUT 的行写口（INSERT NOT_READY v1 → UPDATE → DRAINING/READY）与 `finalizer` 只有代码：assured 根决议要等第 7 项接入
+  绑定 manifest 等级后才能形成。夹具 Worker 的 usage 是 UNKNOWN 导入，即使有根决议也只能到 DRAINING(USAGE_UNKNOWN)。
+- VALIDITY 的 STALE 是观察不是撤销；MAINTAIN 连续监测能力仍不存在（规格 §8.4 缺能力应阻断 MAINTAIN 用途，本段没有 MAINTAIN 用途）。
+- NOTIFY 的 transport 是部署回调；Host 侧推送链（seq 补读、去重）未接。
+- `default_assurance_profile_for_new_mission()` 仍 None（默认 OFF）；第 10 项翻转。
+- 启动重绑（`_bind_startup_tools`/`recover()`）仍未在重启接缝里验证（第 8 项）。
+
+**改动文件 sha256**
+```
+b1f2a46e4d84ec3b1db57866f2cdd045dcaa11d6e415a397b0c0678a40947d83  orchestrator/assurance_assembly.py
+af0e0404ffc501442ae32d0d5c8872b0870bbe4c850ddc1f594e5986136496de  orchestrator/assurance_consumers.py
+c32bdc024d36553fc80a232055aca538f92972bb86f092fd4b0aa9f342c2f6d1  orchestrator/assurance_factory.py
+bb0ac06eb7f967f1081fa241fa979843855173ef06d22b53ed641825733846a2  orchestrator/assurance_review_import.py
+c2d262e8967bd465098426cce90b43f75a910ed7e18cba97d938410b2e5e3395  orchestrator/assurance_review_consumer.py
+bfa05052b0f74a45611e3d00f90a19cc2d7c03e67de1f9f9019f037da6027c06  orchestrator/assurance_review_handoff.py
+52a4ec77e05be6cee82941011ded6e14a5c294f513754936c3389dada99f8e09  verification/reviewer_evidence_tools.py
+8ceeb265ecf359a0d75bcab4cc0a7916c8cdabb5bebe55c1bdca98f55b751704  scripts/assurance_seams/four-consumer-seam.py
+888508be9123027f60d652537785f1153b8132f64191da82d07d53753d8bf540  scripts/assurance_seams/purpose-builders-seam.py
+```
+
+下一段：handoff §4 第 7 项（全部 use/终态写口：assured 根决议消费绑定 manifest 等级 → judge_mission → closeout → 唯一 final writer
++ `AssuranceStatusNotificationRequested`）起。

@@ -197,18 +197,22 @@ async def method_plan(rt, report):
     # Replay returns the same invocation; a different package for the same key cannot appear.
     again = ensure('task-seam-plan', pin)()
     assert again.to_json() == invocation.to_json() and len(invocations(rt, 'assurance-method-plan:')) == 1
-    # 3d. Pre-Scope consumption is not built yet: the original dispatch handoff and
-    #     the REVIEW consumer still require a completion Scope, so this invocation
-    #     honestly waits at the handoff (REVIEW_SCOPE_UNAVAILABLE) and no model call
-    #     is spent. Item 6 (consumer production assembly) owns that path.
+    # 3d. Pre-Scope consumption (item 6): the handoff, the evidence tools and the
+    #     REVIEW consumer bind the METHOD_PLAN use identity to scope "mission"
+    #     (the purpose builder's own scope_id), so the invocation is dispatched,
+    #     the actual turn is collected and the official record is imported.
     notes_before, calls_before = len(rt.notes), rt.provider.calls
+    rt.provider.script.append(json.dumps(METHOD_REPLY))
     dispatched = await rt.orch._dispatch(intent)
-    assert dispatched is False and rt.provider.calls == calls_before
-    assert any('REVIEW_SCOPE_UNAVAILABLE' in note for note in rt.notes[notes_before:]), rt.notes[notes_before:]
-    assert rt.store.get_intent(intent.intent_id).state == 'PENDING'
+    assert dispatched is True, rt.notes[notes_before:]
+    await rt.drive_review(review_key)
+    assert rt.provider.calls == calls_before + 1
+    with store.read_view():
+        record = htn.official_review_record(bound['package_ref']['id'])
+    assert record is not None and record.verdict is ReviewVerdict.ACCEPT and str(record.purpose) == 'METHOD_PLAN', record
     report['method_plan'] = {'method': pin.to_json(), 'review_key': review_key, 'policy_domain': row['scope_hash'],
-                             'scope_present': False, 'invocations': 1, 'intent_state': 'PENDING',
-                             'official_record': 'NOT_REACHED: pre-Scope handoff/consumer (REVIEW_SCOPE_UNAVAILABLE) is item 6'}
+                             'scope_present': False, 'invocations': 1, 'intent_state': rt.store.get_intent(intent.intent_id).state,
+                             'official_record': str(record.record_id), 'identity_scope': 'mission'}
 
 
 async def main():

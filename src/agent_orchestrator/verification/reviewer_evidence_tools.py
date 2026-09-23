@@ -150,15 +150,18 @@ class ReviewerEvidenceTools:
 
     def _identity(self, binding: AssuranceReviewBinding) -> UseIdentity:
         body = binding.to_json()
-        scope = body["subject"]["completion_scope_ref"]
-        if scope is None:
-            raise _refuse("REVIEW_SCOPE_UNAVAILABLE", "this review has no completion Scope yet")
+        from ..orchestrator.assurance_review_import import review_scope_id
+
+        try:
+            scope_id = review_scope_id(body)
+        except AssuranceError as error:
+            raise _refuse(error.code, "this review has no completion Scope yet") from error
         root = self.orchestrator.commit._assurance_root_gate.require_execution()
         return UseIdentity(
             body["mission_id"],
             "REVIEW",
             body["review_key"],
-            scope["id"],
+            scope_id,
             self.consumer.principal_id,
             "DISCLOSE",
             root.root_incarnation_id,

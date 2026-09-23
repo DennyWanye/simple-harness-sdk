@@ -21,7 +21,7 @@ from ..storage.assurance_pins import require_live_pin_locked
 from ..storage.assurance_reads import AssuranceReader, read_epochs_locked, require_epochs_locked
 from ..storage.htn_store import HtnStore
 from .assurance_check_use import _permission
-from .assurance_review_import import review_subject_stopped
+from .assurance_review_import import review_scope_id, review_subject_stopped
 from .assurance_review_transport import _validate_package
 
 
@@ -47,14 +47,11 @@ class AssuranceReviewHandoff:
             or review_subject_stopped(store, binding)
         ):
             raise AssuranceError("REVIEW_SUBJECT_STOPPED")
-        scope = body["subject"]["completion_scope_ref"]
-        if scope is None:
-            raise AssuranceError("REVIEW_SCOPE_UNAVAILABLE")
         identity = UseIdentity(
             mission.id,
             "REVIEW",
             body["review_key"],
-            scope["id"],
+            review_scope_id(body),
             self.consumer.principal_id,
             "DISCLOSE",
             root.root_incarnation_id,
