@@ -305,8 +305,29 @@ def _compound_content(
             return False
         # The approved root formula may contain ANY. The Scope catalogue is a
         # coverage boundary, not a replacement ALL expression over every ID.
+        outcomes = record.criteria
+        from ..storage.assurance_store import AssuranceStore
+
+        if AssuranceStore(htn._store).lane(mission_id) == "ASSURANCE_1_1":
+            # The V1 record cannot carry SEMANTIC PASS + NOT_RUN losslessly: the
+            # assured import writes UNKNOWN/NOT_RUN + ASSURANCE_SEMANTIC_GRADE_IN_BOUND_MANIFEST
+            # and the effective grade lives in the bound manifest. The resolution
+            # was committed only under a current ROOT_RESOLUTION UseCertificate and
+            # restates exactly those certified grades, so it is the conclusive
+            # source here (Host real model run 17, 2026-09-23: ACCEPTed root read
+            # as UNKNOWN from the record → ROOT_SCOPE_UNMET → stall).
+            from ..contracts.resolution import CheckExecution, CriterionOutcome
+
+            outcomes = tuple(
+                CriterionOutcome(
+                    criterion_id=item.criterion_id,
+                    verdict=item.verdict,
+                    check_execution=CheckExecution.SUCCEEDED,
+                )
+                for item in resolution.criteria
+            )
         return evaluate_success_expression(
-            requirements.success_expression, outcomes_by_id(record.criteria)
+            requirements.success_expression, outcomes_by_id(outcomes)
         ).passed
     passed = {
         item.criterion_id for item in resolution.criteria if item.verdict is CriterionVerdict.PASS
