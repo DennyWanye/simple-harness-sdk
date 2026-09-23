@@ -175,6 +175,12 @@ def record_mission_creation(
     """Called only for a new row, after the actual original MissionCreated event."""
     if not commit.store.connection.in_transaction or event.mission_id != mission.id:
         raise AssuranceError("FACTORY_TRANSACTION_REQUIRED")
+    if not commit.store.has_table("assurance_creation_contracts"):
+        # A store whose schema predates Assurance (the schema 8/9 read-only audit
+        # snapshots): no deployment, no lane to classify, nothing is recorded.
+        if commit._assurance_factory is not None:
+            raise AssuranceError("ASSURANCE_SCHEMA_REQUIRED")
+        return
     if commit._assurance_factory is not None and commit._assurance_factory.selects(spec):
         commit._assurance_factory.create(mission, spec, event)
         return

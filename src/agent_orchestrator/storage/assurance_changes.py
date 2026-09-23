@@ -138,7 +138,14 @@ def original_source_mutation(store: Store, *, writer: str) -> Iterator[None]:
 
     text(writer)
     with atomic(store) as connection:
-        enabled = connection.execute("SELECT 1 FROM assurance_mission_bindings LIMIT 1").fetchone()
+        # A read-only pre-Assurance snapshot (schema 8/9 audits) has no Assurance
+        # tables at all; it is not an assured deployment and records nothing.
+        present = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='assurance_mission_bindings'"
+        ).fetchone()
+        enabled = None if present is None else connection.execute(
+            "SELECT 1 FROM assurance_mission_bindings LIMIT 1"
+        ).fetchone()
         if enabled is None or store._assurance_change_context is not None:
             yield
             return

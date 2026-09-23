@@ -6569,7 +6569,18 @@ class Orchestrator:
         try:
             self.commit.settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
         except BudgetError:
+            from ..storage.assurance_store import AssuranceStore
             from .taskgraph_dispatch import taskgraph_enabled
+            # Assurance 1.1 (Host real-model run 4, 2026-09-23): an assured Attempt whose
+            # physical/accounting responsibility is still open (a provider turn that
+            # failed before any usage fact, an UNKNOWN charge) keeps its reservation,
+            # visible and traceable, exactly like the service path above — it must
+            # not crash the loop, which would re-raise on every later round.
+            if AssuranceStore(self.store).lane(attempt.mission_id) == "ASSURANCE_1_1":
+                self.commit.record_reservation_held(attempt.id, attempt.mission_id,
+                    task_id=attempt.task_id, reason="assurance_settlement_pending")
+                self._note(f"attempt {attempt.id}: Assurance settlement pending, reservation held")
+                return
             if not taskgraph_enabled(self.store, attempt.mission_id):
                 raise
             self.commit.record_reservation_held(attempt.id, attempt.mission_id,
