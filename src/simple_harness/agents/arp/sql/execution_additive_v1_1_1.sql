@@ -322,6 +322,17 @@ CREATE TABLE arp_skill_evaluations (
  PRIMARY KEY(namespace_id,evaluation_id,revision), UNIQUE(namespace_id,command_id)
 ) STRICT;
 CREATE TRIGGER arp_skill_evaluations_update_deny BEFORE UPDATE ON arp_skill_evaluations BEGIN SELECT RAISE(ABORT,'immutable skill evaluation binding'); END;
+-- Skill evaluation dispatches (SKILL-CATALOGUE §3, BW09): the durable intent link between
+-- an evaluation binding and the original Assurance Mission that evaluates it; one mission
+-- per evaluation and one evaluation per mission across every namespace; immutable.
+CREATE TABLE arp_skill_evaluation_dispatches (
+ namespace_id TEXT NOT NULL, evaluation_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0),
+ content_hash TEXT NOT NULL CHECK(length(content_hash)=64), mission_id TEXT NOT NULL, task_id TEXT NOT NULL,
+ command_id TEXT NOT NULL, body_json TEXT NOT NULL CHECK(json_valid(body_json)),
+ PRIMARY KEY(namespace_id,evaluation_id,revision), UNIQUE(mission_id), UNIQUE(namespace_id,command_id)
+) STRICT;
+CREATE TRIGGER arp_skill_evaluation_dispatches_update_deny BEFORE UPDATE ON arp_skill_evaluation_dispatches BEGIN SELECT RAISE(ABORT,'immutable skill evaluation dispatch'); END;
+CREATE TRIGGER arp_skill_evaluation_dispatches_delete_deny BEFORE DELETE ON arp_skill_evaluation_dispatches BEGIN SELECT RAISE(ABORT,'skill evaluation dispatch retained'); END;
 -- Skill admissions (§9.7): which official acceptance admitted which evaluation; immutable.
 CREATE TABLE arp_skill_admissions (
  namespace_id TEXT NOT NULL, skill_id TEXT NOT NULL, skill_revision INTEGER NOT NULL CHECK(skill_revision>0),

@@ -175,6 +175,70 @@ class SkillLifecycleService:
                 unavailable.append({"tool_ref": pin.to_json(), "reasons": reasons})
         return allowed, unavailable
 
+    # ---- evaluation dispatch link (SKILL-CATALOGUE §3, BW09) ----------------------------------
+
+    def dispatch_for(self, evaluation: Pin) -> Mapping[str, Any] | None:
+        """The recorded Assurance Mission that evaluates ``evaluation``; None when the Host
+        never dispatched it (then no acceptance can be official for it)."""
+
+        raw = self.catalogue.connection.execute(
+            "SELECT body_json FROM arp_skill_evaluation_dispatches WHERE namespace_id=? AND evaluation_id=? AND revision=? AND content_hash=?",
+            (self.catalogue.namespace_id, evaluation.id, evaluation.revision, evaluation.content_hash),
+        ).fetchone()
+        return None if raw is None else json.loads(str(raw[0]))
+
+    def record_evaluation_dispatch(
+        self, evaluation: Pin, *, mission_id: str, task_id: str, caller: TrustedCaller, command_id: str
+    ) -> Mapping[str, Any]:
+        """Record, once, which original Assurance Mission and which evaluated task the Host
+        dispatched for this evaluation binding. The link is what later lets an acceptance
+        certificate be tied to the evaluation (together with the Mission's idempotency key
+        and the issue-after-dispatch rule in ``assurance_acceptance``); it never marks the
+        evaluation as passed."""
+
+        if not isinstance(caller, TrustedCaller):
+            raise ArpError("AUTHORITY_SOURCE_MISSING", "skill commands need an authenticated caller")
+        evaluation.require_kind("evaluation")
+        if type(mission_id) is not str or not mission_id.strip():
+            raise ArpError("MISSING_FIELD", "mission_id is required", field_path="$.mission_id")
+        if type(task_id) is not str or not task_id.strip():
+            raise ArpError("MISSING_FIELD", "task_id is required", field_path="$.task_id")
+        binding = self.binding_by_evaluation(evaluation)
+        if binding is None:
+            raise ArpError("SKILL_TRIAL_REQUIRED", "no trial binding for this evaluation")
+        if int(binding["expires_at_ms"]) < self.clock_ms():
+            raise ArpError("SKILL_TRIAL_REQUIRED", "the trial binding expired")
+        existing = self.dispatch_for(evaluation)
+        if existing is not None:
+            if existing["mission_id"] != mission_id or existing["task_id"] != task_id:
+                raise ArpError("SOURCE_HASH_CONFLICT", "this evaluation was dispatched to another mission")
+            return existing
+        body = {
+            "schema_version": 1,
+            "evaluation_ref": evaluation.to_json(),
+            "skill_ref": binding["skill_ref"],
+            "mission_id": mission_id,
+            "task_id": task_id,
+            "command_id": command_id,
+            "caller": caller.to_json(),
+            "recorded_at_ms": self.clock_ms(),
+        }
+        connection = self.catalogue.connection
+        taken = connection.execute(
+            "SELECT evaluation_id, command_id FROM arp_skill_evaluation_dispatches WHERE mission_id=? OR (namespace_id=? AND command_id=?)",
+            (mission_id, self.catalogue.namespace_id, command_id),
+        ).fetchone()
+        if taken is not None:
+            if str(taken[1]) == command_id:
+                raise ArpError("SOURCE_HASH_CONFLICT", "dispatch command id re-sent for another evaluation")
+            raise ArpError("SOURCE_HASH_CONFLICT", "this mission already evaluates another skill evaluation")
+        with self.catalogue.uow.database.transaction() as txn:
+            txn.execute(
+                "INSERT INTO arp_skill_evaluation_dispatches(namespace_id,evaluation_id,revision,content_hash,mission_id,task_id,command_id,body_json) VALUES (?,?,?,?,?,?,?,?)",
+                (self.catalogue.namespace_id, evaluation.id, evaluation.revision, evaluation.content_hash, mission_id, task_id, command_id, _json_column(body)),
+            )
+        return body
+
     # ---- admit / suspend / lifecycle (§9.7) --------------------------------------------------
 
     def _verified_acceptance(self, revision: cat.RevisionRow, activation: cat.ActivationRow, acceptance_ref: Pin, *, policy: Pin | None, scope: Pin | None, lock_ref: Pin | None) -> Mapping[str, Any]:

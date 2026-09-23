@@ -39,7 +39,7 @@ def md_bundle(name: str, body: str = "先读这里。") -> bytes:
     return zip_bytes({"SKILL.md": f"---\nname: {name}\ndescription: 一个说明技能。\n---\n# {name}\n\n{body}\n".encode(), "notes/ref.md": f"{name} 的参考。".encode()})
 
 
-def native_bundle(runtime, *, skill_id: str, implementation: dict, files: dict[str, tuple[bytes, str]], required_tool_refs: list | None = None, input_schema: Pin | None = None, output_schema: Pin | None = None, capability: Pin | None = None) -> bytes:  # type: ignore[no-untyped-def]
+def native_bundle(runtime, *, skill_id: str, implementation: dict, files: dict[str, tuple[bytes, str]], required_tool_refs: list | None = None, input_schema: Pin | None = None, output_schema: Pin | None = None, capability: Pin | None = None, required_skill_refs: list | None = None) -> bytes:  # type: ignore[no-untyped-def]
     """A NATIVE bundle whose skill.json lists ``files`` (path → (bytes, role))."""
 
     report = runtime.arp.bootstrap
@@ -50,7 +50,7 @@ def native_bundle(runtime, *, skill_id: str, implementation: dict, files: dict[s
         "instructions_path": "SKILL.md",
         "input_schema_ref": (input_schema or schema).to_json(), "output_schema_ref": (output_schema or schema).to_json(),
         "capability_ref": (capability or report.instructions_capability_ref).to_json(),
-        "required_tool_refs": required_tool_refs or [], "required_skill_refs": [],
+        "required_tool_refs": required_tool_refs or [], "required_skill_refs": required_skill_refs or [],
         "implementation": implementation,
         "requested_permission_policy_ref": Pin("policy", "p", 0, digest("p")).to_json(),
         "verification_policy_ref": report.verification_policy_ref.to_json(),

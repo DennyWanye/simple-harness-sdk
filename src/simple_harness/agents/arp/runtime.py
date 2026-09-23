@@ -260,6 +260,11 @@ def build_arp_runtime(
             state.bootstrap.verification_policy_ref, arp.clock_ms,
         )
         state.lifecycle = SkillLifecycleService(state.catalogue, state.skills, arp.acceptance, arp.clock_ms)
+        # BW09: an acceptance reader that needs the catalogue's dispatch links (the real
+        # Assurance adapter) binds to the lifecycle service here; test doubles ignore it.
+        bind = getattr(arp.acceptance, "bind_lifecycle", None)
+        if callable(bind):
+            bind(state.lifecycle)
         from .context.skill_blocks import skill_blocks_for
 
         def skill_capacity() -> int:
