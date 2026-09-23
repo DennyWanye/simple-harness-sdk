@@ -129,6 +129,7 @@ with TemporaryDirectory(prefix='assurance-check-binding-') as temp:
             ReadItem('POLICY','fixture-current-policy','f'*64),deadline)
     from agent_orchestrator.orchestrator.assurance_review_runtime import AssuranceReviewRuntime
     from agent_orchestrator.orchestrator.assurance_review_consumer import AssuranceReviewConsumer
+    from agent_orchestrator.orchestrator.assurance_validity import AssuranceValidity
     from agent_orchestrator.storage.assurance_work import AssuranceWorkStore
     from agent_orchestrator.orchestrator.assurance_tick import PreparedAssuranceWork
     from agent_orchestrator.runtime.first_request_budget import FirstRequestBudgetUnknown
@@ -180,6 +181,8 @@ with TemporaryDirectory(prefix='assurance-check-binding-') as temp:
             consumer=AssuranceReviewConsumer(commit,tenant_id=world.mission.tenant_id,principal_id='fixture-current-consumer',authority=builder_authority,cas=cas,check_adapter=None)
             runner=AssuranceReviewRuntime(orch,consumer)
             runner.install()
+            # A PASS verdict in an assured Mission prepares a current ACCEPT use; the runtime refuses to run unbound.
+            AssuranceValidity(commit,tenant_id=world.mission.tenant_id,principal_id='fixture-current-consumer',cas=cas,check_adapter=None,authority=builder_authority)
             orch._assurance_tick=ReviewPump(consumer)
             verdict=await orch._run_critic(world.mission,task,view_id=stored.envelope.attempt_id,
                 subject_prefix=stored.envelope.attempt_id+':critic',account_id='budget:'+task.id,

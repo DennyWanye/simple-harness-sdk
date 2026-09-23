@@ -163,6 +163,26 @@ class AssuranceReviewRuntime:
             },
         )
 
+    def _licensed(self, record: Any) -> CriticVerdict:
+        """Historical verdict plus a freshly prepared current ACCEPT use.
+
+        The verdict itself is not a licence. When it passes, the deployment's
+        validity evaluator recomputes the use certificate candidate from the
+        official binding, current checks and the complete snapshot, so the
+        original acceptance writer can commit the certificate beside the
+        Acceptance. A preparation failure surfaces as a review error rather
+        than a silently unlicensed PASS.
+        """
+        with self.store.read_view():
+            verdict = self._verdict(record)
+        if not verdict.passed:
+            return verdict
+        validity = getattr(self.orchestrator.commit, "_assurance_validity", None)
+        if validity is None:
+            raise AssuranceError("ASSURANCE_VALIDITY_UNBOUND")
+        validity.prepare_accept_use(record)
+        return verdict
+
     async def run_task(self, mission: Any, task: Any, *, attempt_id: str) -> CriticVerdict:
         orch = self.orchestrator
         tick = orch._assurance_tick
@@ -172,9 +192,11 @@ class AssuranceReviewRuntime:
             raise AssuranceError("ASSURANCE_TENANT_MISMATCH")
         with self.store.read_view():
             record = self.task_record(mission.id, attempt_id)
-            if record is not None:
-                return self._verdict(record)
-            result = self.store.find_result_for_attempt(attempt_id)
+            if record is None:
+                result = self.store.find_result_for_attempt(attempt_id)
+        if record is not None:
+            return self._licensed(record)
+        with self.store.read_view():
             if result is None or result.envelope.task_id != task.id:
                 raise AssuranceError("REVIEW_RESULT_SOURCE_MISMATCH")
             prior = self.store.connection.execute(
@@ -237,8 +259,9 @@ class AssuranceReviewRuntime:
             self._require_live(mission.id, task.id, attempt_id)
             with self.store.read_view():
                 record = self.task_record(mission.id, attempt_id)
-                if record is not None:
-                    return self._verdict(record)
+            if record is not None:
+                return self._licensed(record)
+            with self.store.read_view():
                 row = self.store.connection.execute(
                     "SELECT dispatch_intent_id FROM assurance_review_invocations "
                     "WHERE mission_id=? AND review_key=? ORDER BY ordinal DESC LIMIT 1",

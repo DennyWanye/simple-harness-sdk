@@ -671,13 +671,24 @@ class ResolutionCommitsMixin:
                     f"presents revision {int(command.requirements.revision)}",
                 )
             self._check_reads(semantics, command.mission_id, command.read_set, principal)
-            witness = self._require_accept_witness(
-                semantics,
-                command.mission_id,
-                command.witness_id,
-                subject=command.task_id,
-                now_ms=int(command.accepted_at_ms),
-            )
+            from ..storage.assurance_store import AssuranceStore
+
+            assured_lane = AssuranceStore(self._store).lane(command.mission_id) == "ASSURANCE_1_1"
+            witness = None
+            assured = None
+            licence_id = command.witness_id
+            if assured_lane:
+                # The legacy self-issued witness never licenses an assured Mission.
+                # The current UseCertificate is committed here, in this transaction.
+                assured, licence_id = self._require_assured_use(command)
+            else:
+                witness = self._require_accept_witness(
+                    semantics,
+                    command.mission_id,
+                    command.witness_id,
+                    subject=command.task_id,
+                    now_ms=int(command.accepted_at_ms),
+                )
             self._check_posture(command.posture)
             subject = AcceptanceSubject(
                 revision=command.requirements,
@@ -690,6 +701,11 @@ class ResolutionCommitsMixin:
             from .scoped_content_review import uses_completion_protocol
 
             projection: Any = None
+            if assured_lane and not uses_completion_protocol(self._store, command.mission_id):
+                raise ResolutionCommitRejected(
+                    "USE_PURPOSE_UNSUPPORTED",
+                    "an assured acceptance requires the completion protocol's frozen Scope",
+                )
             if uses_completion_protocol(self._store, command.mission_id):
                 from ..verification.scoped_acceptance import (
                     acceptable_scoped_task_content, acceptable_scoped_operation_outcome,
@@ -713,7 +729,11 @@ class ResolutionCommitsMixin:
                     projected_expression=projection.expression,
                     now_ms=int(command.accepted_at_ms),
                     witness=witness,
-                    current_scope_epoch=semantics.epoch(command.mission_id, witness.scope_id),
+                    current_scope_epoch=semantics.epoch(
+                        command.mission_id,
+                        command.scope_id if witness is None else witness.scope_id,
+                    ),
+                    assured=assured,
                 )
             else:
                 decision = acceptable(
@@ -767,7 +787,7 @@ class ResolutionCommitsMixin:
                 "requirements_revision": int(command.requirements.revision),
                 "contract_revision": int(binding.contract_revision),
                 "input_manifest_hash": acceptance.input_manifest_hash,
-                "witness_id": witness.witness_id,
+                "witness_id": licence_id,
                 "intent_hash": intent,
                 "read_set_hash": content_hash_of(command.read_set.to_json()),
                 "artifact_refs": [ref.to_json() for ref in acceptance.artifact_refs],
@@ -1854,6 +1874,57 @@ class ResolutionCommitsMixin:
             raise ResolutionCommitRejected("READ_SET_UNRESOLVED", verdict.unresolved_detail())
         if verdict.stale:
             raise ResolutionCommitRejected("READ_SET_STALE", verdict.stale_detail())
+
+    def _require_assured_use(self, command: AcceptReviewCommand) -> tuple[Any, str]:
+        """BW08/BW10: commit the current UseCertificate inside this acceptance UoW.
+
+        The candidate was computed outside the write lock by the deployment's
+        validity evaluator from the official record binding, the current typed
+        check results and the complete source snapshot. Committing it repeats
+        the bounded epoch/authority/expiry/root checks under this lock, so the
+        Acceptance and its licence either both land or neither does.
+        """
+
+        from ..assurance.codec import AssuranceError
+        from ..verification.scoped_acceptance import AssuredAcceptance
+
+        validity = getattr(self, "_assurance_validity", None)
+        if validity is None:
+            raise ResolutionCommitRejected(
+                "USE_CERTIFICATE_REQUIRED",
+                "no current validity evaluator is installed for this deployment",
+            )
+        candidate = validity.candidate_for(command.mission_id, str(command.record.record_id))
+        if candidate is None:
+            raise ResolutionCommitRejected(
+                "USE_CERTIFICATE_REQUIRED",
+                f"no current use certificate is prepared for official review "
+                f"{command.record.record_id!s}",
+            )
+        if (
+            candidate.record != command.record
+            or candidate.identity.purpose != "ACCEPT"
+            or candidate.identity.consumer_id != command.acceptance_id
+            or candidate.certificate_id != command.witness_id
+        ):
+            raise ResolutionCommitRejected(
+                "USE_CERTIFICATE_IDENTITY",
+                "the prepared use certificate does not name this acceptance and record",
+            )
+        try:
+            validity.commit_use_locked(candidate, now_ms=int(self._store.now * 1000))
+        except AssuranceError as error:
+            raise ResolutionCommitRejected(
+                error.code, "the current use certificate refused this acceptance"
+            ) from error
+        validity.forget(command.mission_id, str(command.record.record_id))
+        return (
+            AssuredAcceptance(
+                effective_grades=candidate.effective_grades,
+                gate_reasons=candidate.gate_reasons,
+            ),
+            candidate.certificate_id,
+        )
 
     @staticmethod
     def _require_accept_witness(

@@ -311,9 +311,7 @@ class AgentDelegateTool:
                     "status": "failed",
                 },
             )
-        async def launch_child() -> None:
-            # The original delegation ticket + kernel child launch (unchanged); under the
-            # native plane it runs as the creation factory's deferred kernel step (BW01).
+        if uow.read_run(child_run_id) is None:
             uow.issue_profile_launch_ticket(
                 ProfileLaunchTicket(
                     ticket_id,
@@ -350,44 +348,8 @@ class AgentDelegateTool:
                     cast(FrozenJsonValue, snapshot),
                 )
             )
-
-        arp = getattr(runtime, "arp", None)
-        if arp is not None:
-            # Native plane: the delegate is one more caller of NativeCreationService
-            # (durable intent → deferred child launch → binding + Session in one txn).
-            from ..arp.errors import ArpError
-            from ..arp.pins import Pin
-            from ..arp.ports import TrustedCaller
-            from ..arp.strict import digest
-
-            caller = TrustedCaller(
-                principal_ref=Pin("principal", f"agent:{parent.agent_id}", 0, digest({"agent": parent.agent_id})),
-                owner_contract_ref=Pin("policy", f"{arp.profile.profile_id}:owner-mode:{arp.ports.profile.owner_mode}", arp.profile.revision, arp.profile.body_hash),
-                command_receipt_ref=Pin("receipt", f"delegation:{delegation_id}", 0, digest({"delegation": delegation_id, "intent": intent_hash})),
-            )
-            try:
-                await arp.creation.create(
-                    child_config,
-                    creation_key=f"delegation:{parent.agent_id}:{delegation_id}",
-                    caller=caller,
-                    owner_scope=parent.owner_scope,
-                    role="child",
-                    agent_id=child_agent_id,
-                    kernel_start=launch_child,
-                )
-            except (ArpError, UnitOfWorkConflict) as error:
-                uow.set_agent_delegation_state(delegation_id=delegation_id, state="failed", now=now)
-                return _failed(
-                    context,
-                    "agent_instance_cap_exceeded" if "max_agents" in str(error) else "agent_delegation_creation_refused",
-                    f"child Agent could not be created: {error}",
-                )
-            self._fault("delegate.after_launch")
-        else:
-            if uow.read_run(child_run_id) is None:
-                await launch_child()
-            self._fault("delegate.after_launch")
-        if arp is None and uow.read_agent_binding(child_agent_id) is None:
+        self._fault("delegate.after_launch")
+        if uow.read_agent_binding(child_agent_id) is None:
             try:
                 uow.create_agent_binding(
                     agent_id=child_agent_id,

@@ -515,8 +515,12 @@ class LeafAcceptanceAssembly:
             producer_agent_ids,
             projection=projection,
         )
-        record = self._record(package, outcomes, result_id, reviewer_agent_id)
+        from ..storage.assurance_store import AssuranceStore
+
+        assured = AssuranceStore(self.store).lane(mission_id) == "ASSURANCE_1_1"
+        record = self._record(package, outcomes, result_id, reviewer_agent_id, assured=assured)
         acceptance_id = f"acc-{content_hash_of({'task': task_id, 'result': result_id})[:32]}"
+        previous = None
         if projection is not None:
             try:
                 previous = self.semantics.get_acceptance(acceptance_id)
@@ -524,7 +528,42 @@ class LeafAcceptanceAssembly:
                 previous = None
             if previous is not None:
                 now_ms = previous.accepted_at_ms
-        witness = self._witness(mission_id, task_id, acceptance_id=acceptance_id, now_ms=now_ms)
+        if assured:
+            # An assured Mission is licensed by a current UseCertificate prepared
+            # outside this transaction and committed by accept_review beside the
+            # Acceptance. The legacy self-issued ValidityWitness is not minted.
+            from .resolution_commits import ResolutionCommitRejected
+
+            validity = getattr(self.commit, "_assurance_validity", None)
+            candidate = (
+                None
+                if validity is None
+                else validity.candidate_for(mission_id, str(record.record_id))
+            )
+            committed = self.store.connection.execute(
+                "SELECT certificate_id FROM assurance_use_certificates WHERE mission_id=? "
+                "AND consumer_kind='ACCEPTANCE' AND consumer_id=? AND purpose='ACCEPT' "
+                "AND json_extract(certificate_json,'$.decision')='USABLE' "
+                "ORDER BY issued_at_ms DESC LIMIT 1",
+                (mission_id, acceptance_id),
+            ).fetchone()
+            if committed is not None and previous is not None:
+                # Exact replay of an already licensed acceptance: the command names
+                # the certificate that was committed beside it, never a new one.
+                witness_id = str(committed[0])
+            elif candidate is None:
+                raise ResolutionCommitRejected(
+                    "USE_CERTIFICATE_REQUIRED",
+                    f"no current use certificate is prepared for official review "
+                    f"{record.record_id!s}; an assured acceptance is not licensed by a "
+                    "cached verdict",
+                )
+            else:
+                witness_id = candidate.certificate_id
+        else:
+            witness_id = self._witness(
+                mission_id, task_id, acceptance_id=acceptance_id, now_ms=now_ms
+            ).witness_id
         command = AcceptReviewCommand(
             command_id=command_id or f"accept:{result_id}",
             mission_id=mission_id,
@@ -534,7 +573,7 @@ class LeafAcceptanceAssembly:
             package=package,
             record=record,
             requirements=revision,
-            witness_id=witness.witness_id,
+            witness_id=witness_id,
             independence=IndependenceFacts(
                 producer_agent_ids=tuple(producer_agent_ids),
                 reviewer_can_write_candidate=False,
@@ -756,7 +795,22 @@ class LeafAcceptanceAssembly:
         layers: Sequence[LayerOutcome],
         result_id: str,
         reviewer_agent_id: str | None,
+        *,
+        assured: bool = False,
     ) -> ReviewRecord:
+        if assured:
+            # Only the authenticated runtime importer writes an assured official
+            # record; the local layers never assemble a second one.
+            official = self.semantics.official_review_record(str(package.package_id))
+            if official is None:
+                from .resolution_commits import ResolutionCommitRejected
+
+                raise ResolutionCommitRejected(
+                    "REVIEW_NOT_OFFICIAL",
+                    f"no official Assurance review record is stored for package "
+                    f"{package.package_id!s}",
+                )
+            return official
         outcomes = outcomes_for(package.criteria, layers, result_id=result_id)
         passed = all(item.verdict is CriterionVerdict.PASS for item in outcomes)
         record = ReviewRecord(

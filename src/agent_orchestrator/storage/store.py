@@ -177,6 +177,9 @@ class Store:
         self._lock = threading.RLock()
         self._depth = 0
         self._holder: object | None = None
+        # Counts outermost write transactions; a consumer that locked a use early
+        # in a UoW proves it commits in that same UoW by this number.
+        self._transaction_generation = 0
         self._reading = False  # host support S2 review P1-B: a read view writes nothing
         self._armed: set[str] = set()
         self._skips: dict[str, int] = {}
@@ -433,6 +436,7 @@ class Store:
                 raise
             self._depth = 1
             self._holder = self._current_task()
+            self._transaction_generation += 1
             try:
                 yield self._connection
             except BaseException:
@@ -450,6 +454,11 @@ class Store:
             finally:
                 self._depth = 0
                 self._holder = None
+
+    @property
+    def transaction_generation(self) -> int:
+        """Identity of the open outermost write transaction; 0 before the first."""
+        return self._transaction_generation
 
     @contextmanager
     def read_view(self) -> Iterator[sqlite3.Connection]:

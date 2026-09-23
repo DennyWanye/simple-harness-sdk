@@ -10,9 +10,6 @@ from dataclasses import dataclass
 from importlib.resources import files
 
 SCHEMA_VERSION = 10
-# ARP-EXEC-1.1.1 additive descriptor applied on top of the frozen v10 by an explicit
-# upgrade (``simple_harness.agents.arp.migration.migrate_execution_to_v11``).
-ARP_SCHEMA_VERSION = 11
 
 _V6_CATALOG_COLUMNS = """
 ALTER TABLE tool_catalog_snapshots ADD COLUMN provider_specs_fingerprint TEXT
@@ -78,19 +75,6 @@ def fresh_descriptor() -> Migration:
     return Migration(10, "0010_fresh", sql, hashlib.sha256(sql.encode()).hexdigest())
 
 
-def arp_descriptor() -> Migration:
-    """ARP 1.1.1 side tables: additive DDL only, never a re-issue of the v10 bytes."""
-
-    sql = (
-        files("simple_harness.agents.arp")
-        .joinpath("sql/execution_additive_v1_1_1.sql")
-        .read_text(encoding="utf-8")
-    )
-    return Migration(
-        ARP_SCHEMA_VERSION, "0011_arp_v1_1_1", sql, hashlib.sha256(sql.encode()).hexdigest()
-    )
-
-
 def accepted_descriptor_rows():
     def row(d):
         return (d.version, d.name, d.checksum)
@@ -104,7 +88,7 @@ def accepted_descriptor_rows():
             fresh_descriptor(),
         ),
     )
-    base = (
+    return (
         # Existing v9 libraries stay openable; the in-place v9 -> v10 upgrader
         # belongs to a later slice.
         (nine,),
@@ -118,9 +102,6 @@ def accepted_descriptor_rows():
         (eight, nine, ten),
         (seven, eight, nine, ten),
     )
-    # v11: any accepted v10 library plus the explicit ARP additive descriptor.
-    eleven = row(arp_descriptor())
-    return base + tuple(rows + (eleven,) for rows in base if rows[-1][0] == 10)
 
 
 def migrations() -> tuple[Migration, ...]:
@@ -134,9 +115,7 @@ def initial_migration() -> Migration:
 
 
 __all__ = (
-    "ARP_SCHEMA_VERSION",
     "SCHEMA_VERSION",
-    "arp_descriptor",
     "Migration",
     "accepted_descriptor_rows",
     "fresh_descriptor",

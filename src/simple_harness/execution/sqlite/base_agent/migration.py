@@ -92,14 +92,10 @@ def _validate(connection: sqlite3.Connection) -> int:
         connection.execute("PRAGMA foreign_key_check")
     ):
         raise ExecutionSchemaIncompatible("execution_base_agent_upgrade_integrity_failed")
-    # The ARP additive descriptor (v11) sits on top of v10 and is owned by its own
-    # explicit upgrader; for this v9 -> v10 upgrader it is "already v10".
-    version = max(r[0] for r in rows if r[0] <= 10)
+    version = rows[-1][0]
     tables = {
         str(r[0]) for r in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")
     }
-    if rows[-1][0] == 11 and "arp_profiles" not in tables:
-        raise ExecutionSchemaIncompatible("execution_base_agent_upgrade_partial_library")
     if version == 9 and "base_agent_bindings_v1" in tables:
         raise ExecutionSchemaIncompatible("execution_base_agent_upgrade_partial_library")
     if version == 10 and "base_agent_upgrade_receipt_v1" not in tables:
@@ -113,7 +109,7 @@ def _receipt(
     rows = list(
         connection.execute("SELECT receipt_json,receipt_hash FROM base_agent_upgrade_receipt_v1")
     )
-    descriptors = tuple(r[0] for r in _descriptor_rows(connection) if r[0] <= 10)
+    descriptors = tuple(r[0] for r in _descriptor_rows(connection))
     if not rows and descriptors == (10,):
         return None  # fresh v10: nothing was upgraded
     if len(rows) != 1 or descriptors == (10,):

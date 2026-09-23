@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.simpleharness.invalid/assurance/1.1/use-certificate-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mission_id",
+    "consumer_kind",
+    "consumer_id",
+    "scope_id",
+    "principal_id",
+    "purpose",
+    "truth",
+    "freshness",
+    "availability",
+    "decision",
+    "coverage",
+    "policy_ref",
+    "read_set",
+    "clean_support_refs",
+    "issued_at_ms",
+    "not_after_ms",
+    "reasons",
+    "mission_epoch",
+    "environment_epoch",
+    "clock_generation",
+    "root_incarnation_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "mission_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "consumer_kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "consumer_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "scope_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "principal_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "purpose": {
+      "enum": [
+        "PLAN",
+        "START",
+        "MAINTAIN",
+        "ACCEPT",
+        "CONTEXT",
+        "DISCLOSE",
+        "RECOVERY"
+      ]
+    },
+    "truth": {
+      "enum": [
+        "TRUE",
+        "FALSE",
+        "UNKNOWN",
+        "CONFLICT"
+      ]
+    },
+    "freshness": {
+      "enum": [
+        "CURRENT",
+        "STALE",
+        "REVOKED"
+      ]
+    },
+    "availability": {
+      "enum": [
+        "READABLE",
+        "REDACTED",
+        "UNAVAILABLE"
+      ]
+    },
+    "decision": {
+      "enum": [
+        "USABLE",
+        "NEEDS_REVIEW",
+        "BLOCKED",
+        "UNAVAILABLE"
+      ]
+    },
+    "coverage": {
+      "enum": [
+        "COMPLETE",
+        "INCOMPLETE"
+      ]
+    },
+    "policy_ref": {
+      "$ref": "common.schema.json#/$defs/pin"
+    },
+    "read_set": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20000,
+      "items": {
+        "$ref": "common.schema.json#/$defs/read_item"
+      },
+      "uniqueItems": true
+    },
+    "clean_support_refs": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 20000,
+      "items": {
+        "$ref": "common.schema.json#/$defs/ref"
+      },
+      "uniqueItems": true
+    },
+    "issued_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "not_after_ms": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      }
+    },
+    "mission_epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "environment_epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "clock_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "root_incarnation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "USABLE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "const": "COMPLETE"
+          },
+          "truth": {
+            "const": "TRUE"
+          },
+          "freshness": {
+            "const": "CURRENT"
+          },
+          "availability": {
+            "const": "READABLE"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "formula": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "criterion"
+          ],
+          "properties": {
+            "criterion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "all"
+          ],
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "$ref": "#/$defs/formula"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "any"
+          ],
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "$ref": "#/$defs/formula"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

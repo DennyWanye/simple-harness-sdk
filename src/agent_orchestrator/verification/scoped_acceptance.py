@@ -11,9 +11,17 @@ root requirements or its Obligation are satisfied.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from ..assurance.checks import Formula, Grade
 from ..contracts.evidence_state import ValidityWitness
 from ..contracts.resolution import (
+    AllExpr,
+    AnyExpr,
     Criterion,
+    CriterionExpr,
     CriterionOutcome,
     CriterionVerdict,
     RequirementClass,
@@ -27,15 +35,131 @@ from .acceptance_rules import (
     AcceptanceSubject,
     AcceptDecision,
     AcceptReason,
+    CompletenessResult,
+    ExpressionResult,
     GateResult,
     _witness_reasons,
     evaluate_success_expression,
     independence_ok,
+    match_review_criteria,
     outcomes_by_id,
     project_verdict,
     required_checks_complete,
     success_expression_digest,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class AssuredAcceptance:
+    """Current Assurance facts for the pure formula; decoding grants nothing.
+
+    ``effective_grades`` are the per-criterion grades re-decided under the
+    *current* typed check results by the validity evaluator, and
+    ``licence_reasons`` is what that evaluator's committed certificate says
+    about this use. The legacy ``CriterionOutcome`` projection of an assured
+    record (SEMANTIC PASS shown as UNKNOWN/NOT_RUN) is never consulted here.
+    """
+
+    effective_grades: Mapping[str, str]
+    gate_reasons: Mapping[str, str]
+    licence_reasons: tuple[AcceptReason, ...] = ()
+
+
+def _assurance_formula(expression: SuccessExpression) -> dict[str, Any]:
+    if isinstance(expression, CriterionExpr):
+        return {"criterion": str(expression.criterion_id)}
+    if isinstance(expression, (AllExpr, AnyExpr)):
+        return {
+            "all" if isinstance(expression, AllExpr) else "any": [
+                _assurance_formula(child) for child in expression.children
+            ]
+        }
+    raise ValueError("illegal success expression node")
+
+
+def _assured_grades(
+    criteria: tuple[Criterion, ...], assured: AssuredAcceptance
+) -> dict[str, Grade]:
+    grades = {}
+    for criterion in criteria:
+        value = assured.effective_grades.get(criterion.criterion_id, "UNKNOWN")
+        grades[criterion.criterion_id] = (
+            Grade(value) if value in Grade.__members__ else Grade.UNKNOWN
+        )
+    return grades
+
+
+def _assured_hard_gate(criteria: tuple[Criterion, ...], assured: AssuredAcceptance) -> GateResult:
+    failed: list[str] = []
+    unknown: list[str] = []
+    missing: list[str] = []
+    for criterion in criteria:
+        if criterion.requirement_class is not RequirementClass.HARD_CONSTRAINT:
+            continue
+        value = assured.effective_grades.get(criterion.criterion_id)
+        if value is None:
+            missing.append(criterion.criterion_id)
+        elif value == "FAIL":
+            failed.append(criterion.criterion_id)
+        elif value != "PASS":
+            unknown.append(criterion.criterion_id)
+    return GateResult(
+        failed_ids=tuple(failed), unknown_ids=tuple(unknown), missing_ids=tuple(missing)
+    )
+
+
+def _assured_expression(
+    criteria: tuple[Criterion, ...], expression: SuccessExpression, assured: AssuredAcceptance
+) -> ExpressionResult:
+    grades = _assured_grades(criteria, assured)
+    formula = Formula.from_json(_assurance_formula(expression), frozenset(grades))
+    verdict, witness = formula.evaluate(grades)
+    return ExpressionResult(
+        verdict=CriterionVerdict(verdict.value),
+        witness_path=tuple(sorted(witness)),
+        unevaluated_ids=tuple(
+            sorted(
+                criterion.criterion_id
+                for criterion in criteria
+                if criterion.criterion_id not in assured.effective_grades
+            )
+        ),
+    )
+
+
+def _assured_completeness(
+    subject: AcceptanceSubject, assured: AssuredAcceptance
+) -> CompletenessResult:
+    """Required checks are complete when their *current* gate decided the grade."""
+    package = subject.package
+    match = match_review_criteria(subject.record, package, allow_unevaluated_or_branches=True)
+    optional_ids = package.criteria_only_under_any()
+    not_executed: list[str] = []
+    not_passed: list[str] = []
+    declined: list[str] = []
+    independence: list[str] = []
+    for criterion in package.criteria:
+        if criterion.required_evidence_policy.independence_required:
+            independence.append(criterion.criterion_id)
+        grade = assured.effective_grades.get(criterion.criterion_id)
+        if grade is None:
+            if criterion.criterion_id in optional_ids:
+                declined.append(criterion.criterion_id)
+            continue
+        if not criterion.is_required:
+            continue
+        if criterion.required_evidence_policy.required_check_ids:
+            if assured.gate_reasons.get(criterion.criterion_id) == "CHECK_EVIDENCE_INCOMPLETE":
+                not_executed.append(criterion.criterion_id)
+            if grade != "PASS":
+                not_passed.append(criterion.criterion_id)
+    return CompletenessResult(
+        match=match,
+        not_executed_ids=tuple(not_executed),
+        not_passed_ids=tuple(not_passed),
+        declined_ids=tuple(sorted(declined)),
+        independence_required_ids=tuple(independence),
+    )
 
 
 def _projected_hard_gate(
@@ -69,17 +193,24 @@ def _acceptable_scoped(
     projected_criteria: tuple[Criterion, ...],
     projected_expression: SuccessExpression,
     now_ms: int,
-    witness: ValidityWitness,
+    witness: ValidityWitness | None,
     current_scope_epoch: int,
     purpose: ReviewPurpose,
     subject_kinds: frozenset[TypedRefKind],
+    assured: AssuredAcceptance | None = None,
 ) -> AcceptDecision:
     """Evaluate one primitive Task's frozen content projection.
 
     The caller must reconstruct the projection from the persisted Scope plus the
     approved Task/Method/review-policy contracts.  This function performs no store
     lookup and never creates a replacement ``RequirementsRevision``.
+
+    Exactly one licence source is consulted: the legacy ``witness`` or, for an
+    assured Mission, the current certificate facts in ``assured``.
     """
+
+    if (witness is None) == (assured is None):
+        raise ValueError("exactly one of witness or assured must be supplied")
 
     revision = subject.revision
     package = subject.package
@@ -120,18 +251,21 @@ def _acceptable_scoped(
     if structure_violations:
         reasons.append(AcceptReason.HARD_CONSTRAINT_STRUCTURE)
 
-    outcomes = outcomes_by_id(record.criteria)
-    gate = _projected_hard_gate(projected_criteria, outcomes)
+    if assured is None:
+        outcomes = outcomes_by_id(record.criteria)
+        gate = _projected_hard_gate(projected_criteria, outcomes)
+        expression = evaluate_success_expression(projected_expression, outcomes)
+        completeness = required_checks_complete(package, record)
+    else:
+        gate = _assured_hard_gate(projected_criteria, assured)
+        expression = _assured_expression(projected_criteria, projected_expression, assured)
+        completeness = _assured_completeness(subject, assured)
     if gate.failed_ids:
         reasons.append(AcceptReason.HARD_CONSTRAINT_FAILED)
     if gate.unknown_ids or gate.missing_ids:
         reasons.append(AcceptReason.HARD_CONSTRAINT_UNKNOWN)
-
-    expression = evaluate_success_expression(projected_expression, outcomes)
     if not expression.passed:
         reasons.append(AcceptReason.SUCCESS_EXPRESSION_NOT_PASS)
-
-    completeness = required_checks_complete(package, record)
     if not completeness.match.matched and AcceptReason.CRITERIA_NOT_MATCHED not in reasons:
         reasons.append(AcceptReason.CRITERIA_NOT_MATCHED)
     if not completeness.complete:
@@ -146,9 +280,12 @@ def _acceptable_scoped(
     if independence_required and not independence.independent:
         reasons.append(AcceptReason.INDEPENDENT_REVIEW_MISSING)
 
-    reasons.extend(
-        _witness_reasons(witness, now_ms=now_ms, current_scope_epoch=current_scope_epoch)
-    )
+    if witness is not None:
+        reasons.extend(
+            _witness_reasons(witness, now_ms=now_ms, current_scope_epoch=current_scope_epoch)
+        )
+    else:
+        reasons.extend(assured.licence_reasons)
     if subject.posture.unowned_critical_operation_ids:
         reasons.append(AcceptReason.CRITICAL_OPERATION_UNOWNED)
     if subject.posture.cancellation_requested:
@@ -168,27 +305,32 @@ def _acceptable_scoped(
 
 def acceptable_scoped_task_content(
     subject: AcceptanceSubject, *, projected_criteria: tuple[Criterion, ...],
-    projected_expression: SuccessExpression, now_ms: int, witness: ValidityWitness,
-    current_scope_epoch: int,
+    projected_expression: SuccessExpression, now_ms: int, witness: ValidityWitness | None,
+    current_scope_epoch: int, assured: AssuredAcceptance | None = None,
 ) -> AcceptDecision:
     return _acceptable_scoped(
         subject, projected_criteria=projected_criteria, projected_expression=projected_expression,
         now_ms=now_ms, witness=witness, current_scope_epoch=current_scope_epoch,
         purpose=ReviewPurpose.TASK_CONTENT, subject_kinds=frozenset({TypedRefKind.TASK}),
+        assured=assured,
     )
 
 
 def acceptable_scoped_operation_outcome(
     subject: AcceptanceSubject, *, projected_criteria: tuple[Criterion, ...],
-    projected_expression: SuccessExpression, now_ms: int, witness: ValidityWitness,
-    current_scope_epoch: int,
+    projected_expression: SuccessExpression, now_ms: int, witness: ValidityWitness | None,
+    current_scope_epoch: int, assured: AssuredAcceptance | None = None,
 ) -> AcceptDecision:
     return _acceptable_scoped(
         subject, projected_criteria=projected_criteria, projected_expression=projected_expression,
-        now_ms=now_ms, witness=witness, current_scope_epoch=current_scope_epoch,
+        now_ms=now_ms, witness=witness, current_scope_epoch=current_scope_epoch, assured=assured,
         purpose=ReviewPurpose.OPERATION_OUTCOME,
         subject_kinds=frozenset({TypedRefKind.OPERATION, TypedRefKind.TOOL_RECEIPT}),
     )
 
 
-__all__ = ("acceptable_scoped_task_content", "acceptable_scoped_operation_outcome")
+__all__ = (
+    "AssuredAcceptance",
+    "acceptable_scoped_task_content",
+    "acceptable_scoped_operation_outcome",
+)

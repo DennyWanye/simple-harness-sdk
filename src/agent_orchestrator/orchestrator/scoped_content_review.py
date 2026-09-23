@@ -409,6 +409,28 @@ def validate_scoped_command(store: Store, command: object) -> ScopedTaskContent:
         raise ResolutionCommitRejected(
             "OP_CONTENT_REVIEW_UNAVAILABLE", "review outputs differ from durable result claims"
         )
+    from ..storage.assurance_store import AssuranceStore
+
+    if AssuranceStore(store).lane(command.mission_id) == "ASSURANCE_1_1":
+        # Assurance 1.1: the review is the official record the authenticated
+        # importer stored for this package, never a projection of local layers
+        # (its V1 criteria deliberately hide SEMANTIC grades). The critic layer,
+        # when it was recorded, must name that same official record.
+        official = semantics.official_review_record(str(command.package.package_id))
+        if official is None or official.to_json() != command.record.to_json():
+            raise ResolutionCommitRejected(
+                "OP_CONTENT_REVIEW_UNAVAILABLE", "review is not the official Assurance record"
+            )
+        for row in store.list_verifications(result_id):
+            if row["layer"] != "critic_review" or row["status"] not in {"PASS", "FAIL"}:
+                continue
+            named = dict(row.get("detail") or {}).get("official_review_record_id")
+            if named is not None and str(named) != str(command.record.record_id):
+                raise ResolutionCommitRejected(
+                    "OP_CONTENT_REVIEW_UNAVAILABLE",
+                    "recorded critic layer names a different official record",
+                )
+        return projection
     expected_outcomes = outcomes_for(
         projection.criteria,
         layer_outcomes(store.list_verifications(result_id)),

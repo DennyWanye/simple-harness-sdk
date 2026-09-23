@@ -407,3 +407,124 @@ receipt importer；readonly evidence tools/真实追加曝光；pin BOUND/releas
 
 后继集中阶段必须验证未知费用/迟到 turn、源变化重核、pin release/reacquire 的完整反例。
 不能将上述脚本 Provider 的局部 PASS 当成 BODY_WIRED 或功能交付完成。
+
+## 检查点 2026-09-23（第二段）：current Validity/UseCertificate 与 assured scoped acceptance（handoff §4 第 1、2 项）
+
+基线 HEAD `4a4e07fd`（私有仓库 main）。本段全部由主代理编写，没有 plan-task，没有批量回归；
+只跑了两个单点接缝脚本（见下）。以下路径相对 `src/agent_orchestrator/`。
+
+### 新增
+
+- `knowledge/assurance_sources.py`（纯函数，无 Store）：Assurance 系统谓词
+  `assurance.review-accepted(mission_id, record_id)`、`assurance.check-passed(mission_id, check_binding_id)`、
+  `assurance.content-acceptable(mission_id, scope_id, subject_hash)`，观察者 `assurance-validity-v1`。
+  `evaluate_acceptance_support(...)` 把 official review binding（权威锚，极性=可接受）、每条被消费
+  CheckUse 的当前 grade（PASS→正锚；FAIL→权威负锚；UNKNOWN→无锚）、快照中的 observations
+  （谓词必须来自部署注册表 `resolve_signature`，未注册即被 selector 拒绝）以及 justification_sets
+  （rule_ref 必须在部署显式 `AdmittedRule` 白名单内且 subject_kind 匹配，否则拒绝）交给原
+  `AnchorSelector` → `SupportGraph` → `compute_grounded_support`（bounded supported + clean closure）。
+  固定系统规则 `content_acceptable ← review_accepted ∧ ∀consumed check_passed`。输出三值 truth、
+  usable、clean_support_refs、被拒锚/规则、最早到期。没有硬编码 True，没有读 cached VERIFIED。
+- `orchestrator/assurance_validity.py`：`AssuranceValidity` 绑定到 `CommitService._assurance_validity`
+  （重复绑定拒绝）。`prepare_accept_use(record)` 只读、必须在事务外：root gate、lane、
+  `read_official_review_binding_locked` + side binding 的 consumed_check_refs、imported review、
+  仅 TASK_CONTENT（其他目的 `USE_PURPOSE_UNSUPPORTED`）、UseIdentity(ACCEPTANCE, acceptance_id, scope,
+  principal, ACCEPT, root)、现有 PREPARING/BOUND pin（缺失 `LIVE_BLOB_PIN_REQUIRED`）、
+  `prepare_local_check_use` 逐条消费当前 check grade、第二次 read_view 里读 epochs/exact metadata
+  （review、import receipt、classification、turn、manifest、package、requirements、completion_scope、
+  check_policy、task、target result、consumed bindings）与 current ACL、用当前 grades 重新
+  `decide_review`（与 manifest 记录不同则 reason `effective_grades:CHANGED_SINCE_IMPORT`）、
+  `read_complete_evidence_snapshot` 完整 queryset、policy_hash、`evaluate_acceptance_support`；
+  决定 USABLE / BLOCKED / NEEDS_REVIEW；写出 v2 `UseCertificate`（OBJECT/QUERY_SET/ACCESS/POLICY
+  四通道 read_set，not_after = 各 deadline 最小值），certificate_id 由 identity+record+issued_at+
+  read_set_hash 指纹得出；最后在 read_view 内 `require_current_locked` 自检，进程内有界缓存（256）。
+  `require_current_locked`：root/lane/epochs/exact metadata/ACL/check grade 相等/`check_certificate_binding`。
+  `lock_use_locked`：在消费者自己的写事务开头（BEGIN IMMEDIATE 之后、自身写入之前）做最终锁，
+  记录 Store 的 `transaction_generation`；`commit_use_locked` 在同一 generation 内信任该锁，
+  否则重新锁；非 USABLE 一律 `CERTIFICATE_NOT_USABLE`；幂等 receipt
+  `assurance-use-certified:<certificate_id>`、`assurance_use_certificates` 行、
+  `AssuranceUseCertified` 事件。
+- `assurance/schemas/use-certificate-v2.schema.json`：从规格包原样复制（common.schema.json 与 SDK 内已一致）。
+- `scripts/assurance_seams/validity-accept-seam.py`：见下。
+
+### 修改
+
+- `storage/store.py`：新增 `transaction_generation`（最外层写事务计数），供同事务锁证明使用。
+- `verification/acceptance_rules.py`：`USE_CERTIFICATE_MISSING`、`USE_CERTIFICATE_NOT_USABLE`。
+- `verification/scoped_acceptance.py`：`AssuredAcceptance(effective_grades, gate_reasons, licence_reasons)`；
+  `_acceptable_scoped` 二选一接受旧 witness 或 assured；assured 路径用不可变 manifest 的
+  effective grade 与 check gate 替代旧 CriterionOutcome 投影（V1 中的 UNKNOWN/NOT_RUN 不再被当成失败），
+  硬门、表达式、完备性都按 effective grade 计算。
+- `orchestrator/leaf_acceptance.py`：ASSURANCE_1_1 lane 下 `_record` 只返回已存 official record
+  （没有则 `REVIEW_NOT_OFFICIAL`），不再本地拼第二份 record；不铸造旧 `_witness`；`witness_id`
+  取已准备候选证书 id（缺失 `USE_CERTIFICATE_REQUIRED`），已接受的精确重放取已提交证书 id。
+- `orchestrator/resolution_commits.py`：`accept_review` 在 assured lane 走 `_require_assured_use`
+  （候选存在、record/purpose/consumer/certificate_id 全部匹配否则 `USE_CERTIFICATE_IDENTITY`，
+  在同一 UoW 内 `commit_use_locked`，失败以其 code 拒绝），checker 传 `assured=`；
+  assured 必须走 completion protocol。
+- `orchestrator/scoped_content_review.py`：`validate_scoped_command` 在 assured lane 校验
+  command.record 等于该 package 的 official record，且已记录的 critic 层命名同一 official record；
+  不再用本地 layers 反推 criteria（那是旧 V1 一致性检查）。
+- `orchestrator/commit_service.py`：`_assurance_validity` 槽位；`_accept_result` 在 completion
+  protocol 下、自身任何写入之前调用 `_lock_assured_acceptance`（assured lane 且已有候选时提前锁；
+  没有候选不放行，交由 `accept_review` 拒绝）。原因：接受事务自己会改 results/artifacts/acceptances
+  这些清单表并推进 mission epoch，若在写入之后再锁会把自身效果误判成外部变更。
+- `orchestrator/assurance_review_runtime.py`：`_verdict` 自带 read_view；PASS 后 `_licensed`
+  调用 `prepare_accept_use`，未绑定 validity 直接 `ASSURANCE_VALIDITY_UNBOUND`（不静默给出无许可的 PASS）。
+- `scripts/assurance_seams/critic-format-repair-seam.py`：fixture 里绑定 `AssuranceValidity`（同上要求）。
+
+### 单点接缝证据（本机，ignored 目录）
+
+`validity-accept-seam-20260923T074836047280.json`
+（sha256 `729221259ba3d7c2ef46364f998269db5998a71588277410692baa9a786831a2`）：
+
+- 原 `_run_critic` → 原 runner/dispatcher/AgentRuntime/ScriptedProvider（ACCEPT 回复）→ collector →
+  REVIEW WorkStore → official record → PASS；旧 V1 投影确认 `criterion-report` 为
+  UNKNOWN + `ASSURANCE_SEMANTIC_GRADE_IN_BOUND_MANIFEST`，候选证书 effective grade 为 PASS。
+- 候选证书 USABLE/TRUE/ACCEPT，四个 read 通道齐全，clean_support 非空；再次准备不产生任何写入且 read_set 一致；
+  证书 JSON 通过 `use-certificate-v2.schema.json`。
+- 反例：identity 换名 → `CERTIFICATE_USE_IDENTITY`；`now = not_after` → `CHECK_USE_EXPIRED`；
+  当前 ACL 变化 → `RECHECK_REQUIRED`；插入一条未注册谓词的 observation（同事务 barrier 推进 epoch）→
+  旧候选 `RECHECK_REQUIRED`，重新准备后仍 USABLE 且该 observation 被记为 `UNREGISTERED_PREDICATE` 拒绝；
+  没有候选时走生产 `accept_result` → `USE_CERTIFICATE_REQUIRED`，certificates/acceptances 均为 0 行。
+- 正路：生产 `CommitService.accept_result` 一次事务内落 Acceptance、scoped contribution、
+  1 行 USABLE 证书（consumer_id = acceptance_id）、1 条 `AssuranceUseCertified` receipt 与事件，
+  `AcceptanceCommitted` payload 的 witness_id = certificate_id，`validity_witnesses` 无新 ACCEPT 行，
+  已消费候选被遗忘；精确重放 `replayed=True`，证书仍 1 行。
+- 第二世界（REJECTED 回复）：verdict 不通过、不自动准备；手动准备得 NEEDS_REVIEW/UNKNOWN，
+  `commit_use_locked` 与 `accept_result` 都以 `CERTIFICATE_NOT_USABLE` 拒绝，0 证书 0 接受。
+
+`critic-format-repair-seam-20260923T074846686503.json`
+（sha256 `345252baefa7ef3b46ba6720001cafcffb64e984c6e6c006929049847a738529`）：绑定 validity 后重跑仍 PASS。
+
+### 明确没有证明 / fixture 边界
+
+- fixture Worker 没有真的在 AgentRuntime 里跑，assured settlement reader 无法关闭其 executor；
+  接缝按生产的"价格未知 → 结算延后到 usage import"分支（`imported_usage.unknown=1`）走，
+  **Worker 结算门未在此覆盖**（review executor 的结算门在 format-repair seam 覆盖）。
+- 没有被消费的 executor/local check（`check_uses` 为空，PASS 仅由 official record 锚支持）；
+  没有部署级 `AdmittedRule`/注册谓词的正例；没有 justification_sets 正例。
+- routing/ACL/lease、单 consumer pump 仍是 fixture；不是真实模型、四 consumer 部署、其余五种目的、Host/UI。
+- 没有跑 48 组 SDK 验收、OCC12、mutation、真实模型；Ruff 对改动文件的 F/E9/I 与基线一致（仅历史 E501）。
+- 全局 BODY_WIRED 仍 OPEN；没有默认 ON、没有 ARCHITECTURE 完成态回写。
+
+### 改动文件 sha256（候选，提交前）
+
+```
+f4d1d61f276e7de5e2e85963b27299b36deb91002024de8be64e1244e9bc5220  knowledge/assurance_sources.py
+f83a3fa5c8a4950e608fa1f04b454b032bef183733679babee3abeadf1a1bf57  orchestrator/assurance_validity.py
+5bac3146008fc7804dd65a2e55cf1a0fe0947e08db25d16e68df3789f8e21a4b  orchestrator/resolution_commits.py
+5ce3f6ac9f207dc0e321134200b4bf211164cbb66059a434e135304521dbb4c9  orchestrator/leaf_acceptance.py
+d2cdb268a334938380023cbc3d64d47b2d5a9abdd5cd0d1a400dd5468bbdf3db  orchestrator/assurance_review_runtime.py
+b35cc9664f58cd615448aec76e64fb2ee3c49364a49656d5b0cf7296a2d7980e  orchestrator/commit_service.py
+bb5ab3a4116e9bef514b3e41d027339c7a560a0a0396078d154eaf5efcc36f01  orchestrator/scoped_content_review.py
+5bfffc424c229522c260fe6eea073c41dd56d4b1bcdc5e3db5f51bde661a001d  verification/scoped_acceptance.py
+423cee9a181e5f8b8038f35c534dc367a1e4d59cbae386f5861b992459c3240a  verification/acceptance_rules.py
+734f3a41fe1e6d14f845e2c453f612dc5b6193b520422ca0ed9245a24b3fa960  storage/store.py
+b4a5e7d7738c5ccbceacd94310a1b37216a404a3b7359d01edbcaf6c5620cce7  assurance/schemas/use-certificate-v2.schema.json
+cde4cdd5c6aa5a75e58aef762d94b8a9e22f56548db9ed4b7b02f13342938c4c  scripts/assurance_seams/validity-accept-seam.py
+462abf26d2c277bbbe89277a942c7566652a716dbf39bed1e87a63ce79f9c526  scripts/assurance_seams/critic-format-repair-seam.py
+```
+
+下一段：handoff §4 第 3 项起（其余五 builder → executor check receipt importer → 只读证据工具 →
+四 consumer 装配 → use/终态写口 → 恢复/pin），第 9、10 项前停下汇报。
