@@ -24,6 +24,7 @@ from ..storage.assurance_store import AssuranceStore
 from ..storage.assurance_work import WorkClaim, WorkTarget, atomic
 from ..storage.htn_store import HtnStore
 from ..storage.store import _event_from_row
+from .assurance_final_writer import recorded_judgment
 from .assurance_tick import AssuranceWait, PreparedAssuranceWork
 
 NOTIFICATION_EVENT = "AssuranceStatusNotificationRequested"
@@ -49,6 +50,10 @@ CLOSEOUT_SOURCE_EVENTS = frozenset(
         "AssuranceExecutorCheckImported",
         "MissionCriteriaJudged",
         "MissionSuccessJudged",
+        "AssuranceCloseoutRequested",
+        "MissionCompleted",
+        "MissionFailed",
+        "MissionCancelled",
         "ActionFailed",
         "ActionCancelled",
         "AttemptCancelled",
@@ -339,9 +344,11 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
     NOT_READY (no adopted root resolution / current evidence invalid / root
     Scope unmet), BLOCKED_UNKNOWN (an approved effect is in
     RECONCILIATION_REQUIRED), DRAINING (open intents, unsettled reservations,
-    unknown usage), READY (all converged). READY→FINALIZED belongs to the unique
-    final writer: ``finalizer(mission_id, check)`` (item 7) is called inside the
-    same transaction when the re-evaluation lands READY.
+    unknown usage), READY (all converged: also the Mission judge's recorded
+    success judgment on an ACTIVE Mission). READY→FINALIZED belongs to the unique
+    final writer ``assurance_final_writer.finalize_assured_mission`` (item 7),
+    installed as ``finalizer(mission_id, check)`` and called inside the same
+    transaction when the re-evaluation lands READY.
     """
 
     VOLATILE = frozenset({"evaluated_at_ms", "epochs"})
@@ -373,9 +380,21 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
         )
 
     # -------------------------------------------------------------- readers
-    def _root_resolution(self, mission: Any) -> tuple[Any | None, list[str], list[str]]:
-        """Adopted root GoalResolution for every required root duty, or what is missing."""
-        network = self.commit._judgment_network(mission)
+    def _root_resolution(
+        self, mission: Any
+    ) -> tuple[Any | None, list[str], list[str], str | None]:
+        """Adopted root GoalResolution for every required root duty, or what is missing.
+
+        A Mission whose plan does not read back (no root binding yet, or a damaged
+        plan the original judge refuses) has no root to resolve: reported as
+        ``ROOT_NETWORK_UNAVAILABLE`` and NOT_READY, never repaired here.
+        """
+        from .commit_service import CommitRejected
+
+        try:
+            network = self.commit._judgment_network(mission)
+        except CommitRejected as error:
+            return None, [], [], "ROOT_NETWORK_UNAVAILABLE: " + str(error)[:200]
         if network is None:
             raise AssuranceError("CLOSEOUT_ROOT_NETWORK_UNAVAILABLE")
         semantics = HtnStore(self.store)
@@ -388,8 +407,8 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
                 resolutions.append(adopted)
         roots = [str(root) for root in network.root_occurrence_ids]
         if missing or not resolutions:
-            return None, missing, roots
-        return resolutions[0], missing, roots
+            return None, missing, roots, None
+        return resolutions[0], missing, roots, None
 
     def _evaluate_locked(self, mission: Any, *, now_ms: int) -> dict:
         integer(now_ms)
@@ -404,14 +423,26 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
             "root_incarnation_id": self._root(),
             "epochs": read_epochs_locked(self.store.connection, mission.id).to_json(),
         }
-        resolution, missing, roots = self._root_resolution(mission)
+        reasons: list[str] = []
+        if str(mission.status) != "ACTIVE":
+            reasons.append("MISSION_NOT_ACTIVE")
+        resolution, missing, roots, unavailable = self._root_resolution(mission)
         body["root_occurrences"] = roots
         body["missing_root_duties"] = missing
+        body["root_network"] = unavailable
         if resolution is None:
-            body.update(state="NOT_READY", resolution_id=None, reasons=["ROOT_RESOLUTION_MISSING"])
+            reasons.append(
+                "ROOT_RESOLUTION_MISSING" if unavailable is None else "ROOT_NETWORK_UNAVAILABLE"
+            )
+            body.update(state="NOT_READY", resolution_id=None, reasons=reasons)
             return body
         body["resolution_id"] = str(resolution.resolution_id)
-        reasons: list[str] = []
+        # The Mission judge's own verdict on ``Mission.success_criteria`` is part of
+        # the root business requirement; the unique final writer completes from it.
+        judgment = recorded_judgment(mission)
+        body["success_judgment"] = None if judgment is None else dict(judgment)
+        if judgment is None:
+            reasons.append("MISSION_JUDGMENT_MISSING")
         if str(resolution.verdict) != "ACCEPT":
             reasons.append("ROOT_RESOLUTION_NOT_ACCEPT")
         if str(resolution.validity) != "CURRENT":

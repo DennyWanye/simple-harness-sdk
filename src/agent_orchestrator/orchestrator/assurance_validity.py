@@ -78,7 +78,11 @@ from .assurance_review_import import (
 
 USE_CERTIFIED_KIND = "AssuranceUseCertified"
 ACCEPTANCE_CONSUMER = "ACCEPTANCE"
+ROOT_RESOLUTION_CONSUMER = "ROOT_RESOLUTION"
 MAXIMUM_CANDIDATES = 256
+#: Official record purposes a use certificate can be prepared from, with the
+#: kind of the review subject's target (approved contract SUBJECT_TARGET_KINDS).
+USE_TARGET_KINDS = {"TASK_CONTENT": "result", "MISSION_FINAL": "task"}
 
 
 def acceptance_id_for(task_id: str, result_id: str) -> str:
@@ -224,7 +228,44 @@ class AssuranceValidity:
         return self.prepare_accept_use(self.official_record_for_result(mission_id, result_id))
 
     def prepare_accept_use(self, record: ReviewRecord) -> CandidateUseCertificate:
-        """Bounded read/compute outside the write lock; nothing is written."""
+        """Bounded read/compute outside the write lock; nothing is written.
+
+        The leaf ACCEPT use of an official ``TASK_CONTENT`` record: consumer is the
+        original acceptance identity of the owner task and the reviewed Result.
+        """
+
+        def consumer(purpose: str, owner_task: str, target: AssuranceRef) -> tuple[str, str]:
+            if purpose != "TASK_CONTENT":
+                raise AssuranceError("USE_PURPOSE_UNSUPPORTED", purpose)
+            return ACCEPTANCE_CONSUMER, acceptance_id_for(owner_task, target.pin.id)
+
+        return self._prepare_use(record, consumer)
+
+    def prepare_root_use(
+        self, record: ReviewRecord, *, resolution_id: str
+    ) -> CandidateUseCertificate:
+        """The ACCEPT use of an official ``MISSION_FINAL`` record for one root resolution.
+
+        Handoff item 7: the assured root ``GoalResolution`` is licensed by the
+        current re-decision of the bound review manifest, never by the legacy
+        self-issued witness or by the public ``CriterionOutcome`` projection (which
+        shows a SEMANTIC PASS as UNKNOWN). The consumer is the resolution the
+        trigger proposes; ``commit_goal_resolution`` checks that identity again.
+        """
+        resolution = text(resolution_id)
+
+        def consumer(purpose: str, owner_task: str, target: AssuranceRef) -> tuple[str, str]:
+            if purpose != "MISSION_FINAL":
+                raise AssuranceError("USE_PURPOSE_UNSUPPORTED", purpose)
+            return ROOT_RESOLUTION_CONSUMER, resolution
+
+        return self._prepare_use(record, consumer)
+
+    def _prepare_use(
+        self,
+        record: ReviewRecord,
+        consumer: Callable[[str, str, AssuranceRef], tuple[str, str]],
+    ) -> CandidateUseCertificate:
         store = self.store
         if store.connection.in_transaction:
             raise AssuranceError("USE_PREPARATION_INSIDE_TRANSACTION")
@@ -256,14 +297,18 @@ class AssuranceValidity:
             imported = read_imported_review_locked(self.commit, reader, classification_ref)
             body = imported.binding.to_json()
             scope = body["subject"]["completion_scope_ref"]
-            if body["subject"]["purpose"] != "TASK_CONTENT" or scope is None:
-                raise AssuranceError("USE_PURPOSE_UNSUPPORTED", body["subject"]["purpose"])
-            target = AssuranceRef.from_json(body["subject"]["target"], kinds={"result"})
+            purpose = body["subject"]["purpose"]
+            if purpose not in USE_TARGET_KINDS or scope is None:
+                raise AssuranceError("USE_PURPOSE_UNSUPPORTED", purpose)
+            target = AssuranceRef.from_json(
+                body["subject"]["target"], kinds={USE_TARGET_KINDS[purpose]}
+            )
             owner_task = body["subject"]["owner_task_ref"]["id"]
+            consumer_kind, consumer_id = consumer(purpose, owner_task, target)
             identity = UseIdentity(
                 mission_id,
-                ACCEPTANCE_CONSUMER,
-                acceptance_id_for(owner_task, target.pin.id),
+                consumer_kind,
+                consumer_id,
                 scope["id"],
                 self.principal_id,
                 "ACCEPT",
@@ -300,9 +345,14 @@ class AssuranceValidity:
         # Prepared checks read pinned CAS outside the lock (their own read views).
         check_uses = []
         for ref, check in sorted(consumed_bindings.items(), key=lambda item: item[0].key):
-            if check.execution_ref.kind != "local_check_receipt" or self.check_adapter is None:
-                # An executor source has no current importer yet: it stays UNKNOWN
-                # rather than being replayed from its historical PASS.
+            if (
+                check.execution_ref.kind != "local_check_receipt"
+                or self.check_adapter is None
+                or target.kind != "result"
+            ):
+                # An executor source has no current importer yet, and a local check
+                # is bound to a Result (a MISSION_FINAL target is the root Task): both
+                # stay UNKNOWN rather than being replayed from their historical PASS.
                 continue
             check_uses.append(
                 prepare_local_check_use(

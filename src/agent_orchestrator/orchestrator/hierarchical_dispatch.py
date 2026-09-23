@@ -677,6 +677,8 @@ class RootResolutionInputs:
     record: ReviewRecord | None = None
     witness_id: str = ""
     contributions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: ``primitive`` / ``compound`` form of the root occurrence (read, never assumed).
+    root_form: str = ""
 
     @property
     def complete(self) -> bool:
@@ -2404,7 +2406,13 @@ class HierarchicalDispatch:
             ),
             None,
         )
-        if witness is None:
+        from ..storage.assurance_store import AssuranceStore
+
+        assured_lane = AssuranceStore(self.store).lane(mission_id) == "ASSURANCE_1_1"
+        if witness is None and not assured_lane:
+            # Handoff item 7: an assured Mission's root is licensed by the current
+            # UseCertificate ``attempt_root_resolution`` prepares, not by the
+            # legacy self-issued witness; its absence refuses nothing there.
             return RootResolutionInputs(
                 reason="ROOT_WITNESS_MISSING",
                 detail=(
@@ -2454,8 +2462,9 @@ class HierarchicalDispatch:
             requirements=requirements,
             package=package,
             record=record,
-            witness_id=str(witness.witness_id),
+            witness_id="" if witness is None else str(witness.witness_id),
             contributions=contributions,
+            root_form=str(spec.form),
         )
 
     def superseded_review_packages(self, mission_id: str) -> frozenset[str]:
@@ -2564,8 +2573,33 @@ class HierarchicalDispatch:
         manifest_hash = input_manifest_hash or inputs.package.binding.input_manifest_hash
         from .scoped_content_review import uses_completion_protocol
         completion_protocol = uses_completion_protocol(self.store, mission_id)
+        resolution_id = resolution_id or f"res-{inputs.occurrence_id}"
+        # Handoff item 7: on the assured lane the licence is the current
+        # UseCertificate over the bound MISSION_FINAL manifest, prepared here outside
+        # the write lock and committed by ``commit_goal_resolution`` under it. The
+        # resolution then restates the manifest's current effective grades.
+        from ..storage.assurance_store import AssuranceStore
+
+        candidate = None
+        witness_id = inputs.witness_id
+        effective_grades: Mapping[str, str] | None = None
+        if AssuranceStore(self.store).lane(mission_id) == "ASSURANCE_1_1":
+            from ..assurance.codec import AssuranceError
+
+            validity = getattr(self.commit, "_assurance_validity", None)
+            try:
+                if validity is None:
+                    raise AssuranceError("USE_CERTIFICATE_REQUIRED")
+                candidate = validity.prepare_root_use(inputs.record, resolution_id=resolution_id)
+            except AssuranceError as error:
+                return self._refuse_root_resolution(
+                    mission_id, inputs, command_id=command_id, reason=error.code,
+                    detail="the current use certificate could not be prepared: " + str(error),
+                )
+            witness_id = candidate.certificate_id
+            effective_grades = candidate.effective_grades
         resolution = GoalResolution(
-            resolution_id=GoalResolutionId(resolution_id or f"res-{inputs.occurrence_id}"),
+            resolution_id=GoalResolutionId(resolution_id),
             mission_id=mission_id,
             obligation_id=inputs.obligation_id,
             goal_task_id=inputs.task_id,
@@ -2589,7 +2623,10 @@ class HierarchicalDispatch:
             # extend it.  A required criterion the record left unjudged now shows up as
             # UNKNOWN and the AER §6.2 formula answers for it, instead of the trigger
             # answering on the reviewer's behalf.
-            criteria=_root_criteria(requirements, inputs.record, include_evidence=completion_protocol),
+            criteria=_root_criteria(
+                requirements, inputs.record, include_evidence=completion_protocol,
+                effective_grades=effective_grades,
+            ),
             review_receipt_id=str(inputs.record.record_id),
             verdict=ReviewVerdict.ACCEPT,
             validity=Validity.CURRENT,
@@ -2601,7 +2638,7 @@ class HierarchicalDispatch:
             package=inputs.package,
             record=inputs.record,
             requirements=requirements,
-            witness_id=inputs.witness_id,
+            witness_id=witness_id,
             # No defaults anywhere, and nothing asserted: the facts are **read off
             # the package**, which is the frozen anchor that recorded who produced
             # the candidate at the time it was cut (AER §5.3).  Part 3a's review
@@ -2631,10 +2668,19 @@ class HierarchicalDispatch:
             # taken from the command either: ``commit_goal_resolution`` re-derives them
             # from the store and refuses a mismatch with
             # ``COMPOUND_FACTS_CONTRADICT_STORE``.)
-            compound=CompoundFacts(
-                selected_method_legal=inputs.method_instance_id is not None,
-                contributing_occurrence_ids=tuple(sorted(inputs.contributions)),
-                composition_obligation_passed=inputs.record.verdict is ReviewVerdict.ACCEPT,
+            # A root that *is* one primitive occurrence (no adopted method and read
+            # as ``primitive`` off the network) has no compound facts to state: the
+            # accept side would otherwise refuse the statement itself
+            # (``METHOD_INSTANCE_NOT_ADOPTED``) before any rule ran.  A compound root
+            # without an adopted method still states them and is still refused.
+            compound=(
+                None
+                if inputs.method_instance_id is None and inputs.root_form == str(TaskForm.PRIMITIVE)
+                else CompoundFacts(
+                    selected_method_legal=inputs.method_instance_id is not None,
+                    contributing_occurrence_ids=tuple(sorted(inputs.contributions)),
+                    composition_obligation_passed=inputs.record.verdict is ReviewVerdict.ACCEPT,
+                )
             ),
             is_mission_root=True,
             required_delivery_stage=required_delivery_stage,
@@ -2655,26 +2701,39 @@ class HierarchicalDispatch:
         try:
             receipt = self.commit.commit_goal_resolution(command, accepting)
         except ResolutionCommitRejected as error:
-            self._append(
-                ROOT_RESOLUTION_REFUSED,
-                mission_id,
-                key=f"{mission_id}:{command_id}:{error.reason}",
-                task_id=inputs.task_id,
-                payload={
-                    "reason": error.reason,
-                    "detail": error.detail,
-                    "command_id": command_id,
-                    "occurrence_id": inputs.occurrence_id,
-                    "obligation_id": inputs.obligation_id,
-                },
+            return self._refuse_root_resolution(
+                mission_id, inputs, command_id=command_id, reason=error.reason, detail=error.detail
             )
-            return RootResolutionOutcome(committed=False, reason=error.reason, detail=error.detail)
+        finally:
+            if candidate is not None:
+                # Committed or refused, the candidate is history; the next attempt
+                # re-prepares from the current sources (never a licence by retry).
+                self.commit._assurance_validity.forget(mission_id, str(inputs.record.record_id))
         return RootResolutionOutcome(
             committed=True,
             reason="",
             resolution_id=str(receipt.resolution_id),
             detail="",
         )
+
+    def _refuse_root_resolution(
+        self, mission_id: str, inputs: RootResolutionInputs, *, command_id: str, reason: str,
+        detail: str,
+    ) -> RootResolutionOutcome:
+        self._append(
+            ROOT_RESOLUTION_REFUSED,
+            mission_id,
+            key=f"{mission_id}:{command_id}:{reason}",
+            task_id=inputs.task_id,
+            payload={
+                "reason": reason,
+                "detail": detail,
+                "command_id": command_id,
+                "occurrence_id": inputs.occurrence_id,
+                "obligation_id": inputs.obligation_id,
+            },
+        )
+        return RootResolutionOutcome(committed=False, reason=reason, detail=detail)
 
     def read_set_for_root(self, mission_id: str, inputs: RootResolutionInputs) -> SemanticReadSet:
         """The semantic read-set the root commit is checked against.
@@ -5015,18 +5074,34 @@ def _refined_occurrence(
     )
 
 
-def _root_criteria(requirements: Any, record: Any, *, include_evidence: bool = False) -> tuple[ResolutionCriterion, ...]:
+def _root_criteria(
+    requirements: Any,
+    record: Any,
+    *,
+    include_evidence: bool = False,
+    effective_grades: Mapping[str, str] | None = None,
+) -> tuple[ResolutionCriterion, ...]:
     """The root resolution's criteria, restated from the review record (review F4).
 
     The *set* of criteria is the requirements revision's — that is what the goal owes
     — and each verdict is the record's own.  ``UNKNOWN`` where the reviewer said
     nothing: it is the enum's word for "not judged", and it is the only honest thing a
     trigger that decides nothing can write.
+
+    ``effective_grades`` (assured lane, handoff item 7) are the current re-decision
+    of the bound review manifest that the prepared UseCertificate carries; the
+    public ``CriterionOutcome`` projection of an assured record shows a SEMANTIC
+    PASS as UNKNOWN, and the resolution restates the manifest, not the projection.
     """
 
     from ..contracts.semantic_base import EvidenceRef, EvidenceRefKind
 
     reviewed = {str(item.criterion_id): item.verdict for item in record.criteria}
+    if effective_grades is not None:
+        reviewed = {
+            **reviewed,
+            **{str(name): CriterionVerdict(value) for name, value in effective_grades.items()},
+        }
     return tuple(
         ResolutionCriterion(
             criterion_id=item.criterion_id,

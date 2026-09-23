@@ -7,7 +7,8 @@ single-consumer pump with the real ``AssuranceTick`` over REVIEW / VALIDITY /
 CLOSEOUT / NOTIFY on the assured fixture Mission: leaf accept -> closeout
 NOT_READY -> MISSION_FINAL -> root GoalResolution -> closeout re-evaluation ->
 pre-Scope METHOD_PLAN official record -> certificate expiry -> NOTIFY.
-Fixture routing/ACL/lease; not a real model, Host or UI; no final writer (item 7).
+Fixture routing/ACL/lease; not a real model, Host or UI; the final writer chain is
+final-writer-seam (item 7).
 """
 from _assured_fixture import (EVIDENCE, SDK, AssuredRuntime, count, refused, requirements_ref,  # noqa: F401
                               source_sha256, PRINCIPAL, TENANT)
@@ -33,11 +34,6 @@ from agent_orchestrator.orchestrator.assurance_consumers import (
     CLOSEOUT_EVENT, NOTIFICATION_EVENT, NOTIFIED_EVENT, VALIDITY_CHECKED_EVENT,
     AssuranceCloseoutConsumer, AssuranceNotifyConsumer, AssuranceValidityConsumer)
 from agent_orchestrator.orchestrator.assurance_tick import AssuranceTick
-from agent_orchestrator.contracts.resolution import GoalResolution, GoalResolutionId, ReviewPurpose, Validity, WorkspaceAccess
-from agent_orchestrator.orchestrator.hierarchical_dispatch import _root_criteria
-from agent_orchestrator.orchestrator.resolution_commits import CommitGoalResolutionCommand, ResolutionPrincipal
-from agent_orchestrator.orchestrator.scoped_content_review import uses_completion_protocol
-from agent_orchestrator.verification.acceptance_rules import ExecutionPosture, IndependenceFacts
 from agent_orchestrator.orchestrator.commit_service import MissionSpec
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 from agent_orchestrator.orchestrator.hierarchical_dispatch import HierarchicalDispatch
@@ -246,38 +242,6 @@ async def method_plan_pre_scope(rt, report):
                                        'evidence_tool_calls_bound_to_review': len(gateway_binding)}
 
 
-def form_primitive_root_resolution(dispatch, commit, mission_id, principal_id):
-    """The fixture root is one primitive occurrence. ``attempt_root_resolution``
-    states compound facts for every root and the original accept side refuses a
-    compound statement without a method instance, so the same command is built
-    here from the same read inputs with ``compound=None``. Every rule still runs
-    inside ``commit_goal_resolution``; nothing is decided in this helper. On the
-    assured lane the legacy formula reads the public CriterionOutcome projection
-    (SEMANTIC PASS shown as UNKNOWN), so it refuses until the assured bundle is
-    wired into the root resolution (handoff item 7)."""
-    inputs = dispatch.root_resolution_inputs(mission_id)
-    assert not inputs.reason, inputs
-    store = commit.store
-    resolution = GoalResolution(
-        resolution_id=GoalResolutionId(f'res-{inputs.occurrence_id}'), mission_id=mission_id,
-        obligation_id=inputs.obligation_id, goal_task_id=inputs.task_id,
-        requirements_version=int(inputs.requirements.revision), contract_revision=int(inputs.contract_revision),
-        method_instance_id=None, input_manifest_hash=inputs.package.binding.input_manifest_hash, artifact_refs=(),
-        child_resolution_ids=(), criteria=_root_criteria(inputs.requirements, inputs.record,
-                                                         include_evidence=uses_completion_protocol(store, mission_id)),
-        review_receipt_id=str(inputs.record.record_id), verdict=ReviewVerdict.ACCEPT, validity=Validity.CURRENT)
-    command = CommitGoalResolutionCommand(
-        command_id='fixture-root-resolution', mission_id=mission_id, resolution=resolution, package=inputs.package,
-        record=inputs.record, requirements=inputs.requirements, witness_id=inputs.witness_id,
-        independence=IndependenceFacts(producer_agent_ids=tuple(inputs.package.producer_agent_ids),
-                                       reviewer_can_write_candidate=inputs.package.reviewer_workspace_access is WorkspaceAccess.WRITE),
-        posture=ExecutionPosture(), read_set=dispatch.read_set_for_root(mission_id, inputs),
-        decided_at_ms=int(store.now * 1000), purpose=ReviewPurpose.MISSION_FINAL, compound=None, is_mission_root=True,
-        issued_by=principal_id, scope_id='mission', source={'trigger': 'seam', 'orchestrator': 'runner-fixture'})
-    receipt = commit.commit_goal_resolution(command, ResolutionPrincipal(principal_id=principal_id, scope_id='mission'))
-    return str(receipt.resolution_id)
-
-
 async def four_consumers(root, report):
     async with AssuredRuntime(root, [CONTENT_REPLY], content_only=True) as rt:
         store, commit, mission = rt.store, rt.commit, rt.mission
@@ -325,25 +289,26 @@ async def four_consumers(root, report):
         review_key = keys[0]
         await rt.drive_review(review_key)
         assert coordinator.state(mission.id).status is RootReviewStatus.READY, coordinator.state(mission.id)
+        # Item 7: the production trigger forms the assured root resolution under the current
+        # MISSION_FINAL UseCertificate (final-writer-seam covers judge -> closeout -> final writer).
         outcome = dispatch.attempt_root_resolution(mission.id, principal=PlanPrincipal('fixture-authenticated-user'),
                                                    command_id='fixture-root-resolution')
-        assert not outcome.committed and outcome.reason == 'METHOD_INSTANCE_NOT_ADOPTED', outcome
-        legacy_formula = refused(lambda: form_primitive_root_resolution(dispatch, commit, mission.id, 'fixture-authenticated-user'),
-                                 {'NOT_ACCEPTABLE'})
+        assert outcome.committed, outcome
         await drain(tick)
         closeouts = [e.payload for e in events_of(store, mission.id, CLOSEOUT_EVENT)]
-        assert closeouts[-1]['state'] == 'NOT_READY' and closeouts[-1]['reasons'] == ['ROOT_RESOLUTION_MISSING'], closeouts[-1]
-        assert closeout_row(store, mission.id) is None
+        assert closeouts[-1]['state'] == 'NOT_READY' and closeouts[-1]['reasons'] == ['MISSION_JUDGMENT_MISSING'], closeouts[-1]
+        row = closeout_row(store, mission.id)
+        assert row and row['state'] == 'NOT_READY' and row['row_version'] == 1, row
         with store.read_view():
             final_record = HtnStore(store).official_review_record(str(package.package_id))
+        resolution = HtnStore(store).get_goal_resolution(outcome.resolution_id)
         report['after_mission_final'] = {
             'root_review_state': str(coordinator.state(mission.id).status), 'official_record': str(final_record.record_id),
             'record_verdict': str(final_record.verdict),
             'record_criteria_projection': {str(c.criterion_id): str(c.verdict) for c in final_record.criteria},
-            'root_resolution': {'production_trigger': outcome.reason,
-                                'legacy_formula_with_compound_none': legacy_formula,
-                                'note': 'assured root resolution needs the bound-manifest grades (item 7); closeout stays NOT_READY'},
-            'closeout_states': [c['state'] for c in closeouts], 'closeout_row': None}
+            'root_resolution': {'production_trigger': 'committed', 'resolution_id': outcome.resolution_id,
+                                'criteria': {str(c.criterion_id): str(c.verdict) for c in resolution.criteria}},
+            'closeout_states': [c['state'] for c in closeouts], 'closeout_row': row}
         # 3. Pre-Scope METHOD_PLAN consumed on the same tick (item 6 scope).
         await method_plan_pre_scope(rt, report)
         # 4. Expiry: the VALIDITY worker is the timing owner; the tick emits the due
@@ -384,7 +349,7 @@ async def main():
                        'authority, factory selector -> ASSURANCE_1_1 / COMPLETION_V1 / LEGACY lanes, honest activation '
                        'inventory, startup cursor rebuild, NOTIFY at-least-once); real AssuranceTick with REVIEW + VALIDITY + '
                        'CLOSEOUT + NOTIFY on the assured fixture: leaf accept -> closeout NOT_READY -> MISSION_FINAL official ACCEPT -> '
-                       'root resolution refused by the legacy formula (assured bundle is item 7; closeout row writer not reached) '
+                       'root resolution formed by the production trigger under the current MISSION_FINAL use (item 7) '
                        '-> pre-Scope METHOD_PLAN official record (scope "mission") '
                        '-> certificate expiry observed by VALIDITY -> NOTIFY. Fixture routing/ACL/lease; not a real model, '
                        'Host or UI; no final writer (item 7), no recovery/pin reconciliation (item 8).'}

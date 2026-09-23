@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from ..assurance.certificates import PURPOSES, UseIdentity
@@ -47,6 +48,7 @@ from .assurance_consumers import (
     AssuranceValidityConsumer,
 )
 from .assurance_factory import AssuranceMissionFactory, default_assurance_profile_for_new_mission
+from .assurance_final_writer import finalize_assured_mission
 from .assurance_local_checks import AssuranceLocalChecks
 from .assurance_review_consumer import AssuranceReviewConsumer
 from .assurance_review_runtime import AssuranceReviewRuntime
@@ -309,7 +311,8 @@ class AssuranceDeploymentPorts:
     select_profile: Callable[[Any], AssurancePolicy | None] | None = None
     # Host push for NOTIFY ``{mission_id, event_id, state_version}``.
     notify_transport: Callable[[Mapping[str, Any]], None] | None = None
-    # Unique final writer hook for a READY closeout (handoff item 7).
+    # Unique final writer for a READY closeout (handoff item 7); None installs
+    # ``assurance_final_writer.finalize_assured_mission`` bound to this commit.
     finalizer: Callable[[str, Mapping[str, Any]], AssuranceRef | None] | None = None
     resolve_signature: Any | None = None
     admitted_rules: Mapping[str, Any] | None = None
@@ -389,7 +392,9 @@ def install_assurance(orchestrator: Any, ports: AssuranceDeploymentPorts) -> Ins
         "REVIEW": review,
         "VALIDITY": AssuranceValidityConsumer(commit, tenant_id=tenant_id),
         "CLOSEOUT": AssuranceCloseoutConsumer(
-            commit, tenant_id=tenant_id, finalizer=ports.finalizer
+            commit,
+            tenant_id=tenant_id,
+            finalizer=ports.finalizer or partial(finalize_assured_mission, commit),
         ),
         "NOTIFY": AssuranceNotifyConsumer(
             commit, tenant_id=tenant_id, transport=ports.notify_transport

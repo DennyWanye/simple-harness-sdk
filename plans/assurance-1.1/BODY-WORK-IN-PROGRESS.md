@@ -947,3 +947,89 @@ bfa05052b0f74a45611e3d00f90a19cc2d7c03e67de1f9f9019f037da6027c06  orchestrator/a
 
 下一段：handoff §4 第 7 项（全部 use/终态写口：assured 根决议消费绑定 manifest 等级 → judge_mission → closeout → 唯一 final writer
 + `AssuranceStatusNotificationRequested`）起。
+
+## 2026-09-23 第七段：全部 use/终态写口（handoff §4 第 7 项）
+
+**做了什么（代码存在，单点接缝验证）**
+- `orchestrator/assurance_validity.py`：`prepare_accept_use` 抽成 `_prepare_use`，新增 `prepare_root_use(record, resolution_id=)`：
+  official **MISSION_FINAL** 记录的 current ACCEPT 用途证书，consumer 为 `ROOT_RESOLUTION`/决议 id；target 按批准合同
+  取 `task`。绑定到 Result 的本地 check 在根用途下不重放（保持 UNKNOWN，与 executor 来源同口径）。
+- `verification/scoped_acceptance.py`：新增 `acceptable_assured_root`——与旧 `acceptable` 同一串合取（身份/根覆盖/硬门/
+  成功表达式/完整性/独立性/姿态/compound facts），但等级全部来自绑定 manifest 的当前重判（`AssuredAcceptance`），许可来自
+  已提交证书，不读公开 UNKNOWN 投影、不读自签 witness。
+- `orchestrator/resolution_commits.py`：`commit_goal_resolution` 在 assured lane 且 `is_mission_root` 时走
+  `_require_assured_root_use`（候选证书必须命名本决议与本记录，`commit_use_locked` 在同一事务落证书），公式用
+  `acceptable_assured_root`；`_check_resolution_identity` 用 manifest 等级做"决议不得与审阅矛盾"的对照；receipt 的
+  `witness_id` 记证书 id。非根（COMPOSITION）决议仍走旧 witness（本段未动）。
+- `orchestrator/hierarchical_dispatch.py`：`attempt_root_resolution` 在 assured lane 先在写锁外
+  `prepare_root_use`，命名证书为许可，决议 criteria 复述 manifest 当前等级（`_root_criteria(effective_grades=)`）；
+  提交或拒绝后都 `forget` 候选（不靠重试拿许可）；准备失败按 code 记 `RootGoalResolutionRefused`。
+  `root_resolution_inputs` 在 assured lane 不再要求旧 ACCEPT witness；新增 `root_form`。**原语单根**（无 adopted
+  method 且网络读出 `primitive`）不再陈述 CompoundFacts（旧行为对每个根都陈述 → `METHOD_INSTANCE_NOT_ADOPTED`）；
+  复合根缺 method 仍照旧陈述并被拒绝。
+- `orchestrator/assurance_final_writer.py`（新）：唯一终态写口。`request_assured_closeout`（judge 成功尾：把报告与
+  `assurance_judgment` 写回 Mission 行、发 `AssuranceCloseoutRequested`、Mission 保持 ACTIVE）；
+  `finalize_assured_mission`（只在 CLOSEOUT 消费者提交事务内、只对 READY 行：重读行/决议/Mission 版本/判决 →
+  COMPLETED(verification_passed) + 释放终态 pool + `MissionCompleted` + `assurance-finalized:<mission>` 回执 +
+  行 READY→FINALIZED(row_version+1) + `AssuranceMissionFinalized` + `AssuranceStatusNotificationRequested`）；
+  `request_assured_notification`（assured lane 每个终态事件一条通知请求，按事件 key 幂等）；`assured_closeout_pending`。
+- `orchestrator/commit_service.py`：`judge_mission` 在 assured lane 且 met 时改为请求 closeout（不再直接 COMPLETED）；
+  六个终态写口（judge FAILED、`fail_mission`、`cancel_mission`、`fail_planning`、`_stop_insufficient_mission`、
+  `fail_task` 的 MissionFailed）都在 emit 后调 `_assured_terminal_notice`；新增 `assured_closeout_pending`、
+  `finalize_assured_mission` 方法。
+- `orchestrator/assurance_consumers.py`：CLOSEOUT 评估加入 `MISSION_NOT_ACTIVE`、`MISSION_JUDGMENT_MISSING`
+  （NOT_READY 类）与 `ROOT_NETWORK_UNAVAILABLE`（计划读不回来时不再抛 CommitRejected 炸 tick）；来源事件加
+  `AssuranceCloseoutRequested`/`MissionCompleted`/`MissionFailed`/`MissionCancelled`。
+- `orchestrator/assurance_assembly.py`：`install_assurance` 默认把 `finalize_assured_mission` 装为 CLOSEOUT finalizer。
+- `orchestrator/event_handler.py`：`_decide` 在判决已记录、closeout 未收敛的 assured Mission 上返回 False（不重判、
+  不重派）；`_confirm_and_stop_stalled` 跳过这类 Mission（禁止 NO_DISPATCHABLE_WORK 假失败）。
+
+**证据（本机 ignored，不入库）**
+- `final-writer-seam-20260923T110942365620.json`（`8550e084fc19…`）：A 段真实 `Orchestrator` + `install_assurance`
+  （finalizer 即 `finalize_assured_mission`）→ `cancel_mission` → 通知请求（MissionCancelled）→ NOTIFY 送达一次，
+  legacy Mission 无请求，被取消 Mission 无 closeout 行。B 段夹具 Mission：叶子 official → accept → MISSION_FINAL
+  official（公开投影 `criterion-report: UNKNOWN`）→ **生产触发器** `attempt_root_resolution` 提交（证书
+  consumer=ROOT_RESOLUTION、consumer_id=决议 id、receipt witness_id=证书 id，决议 criteria `PASS`，无拒绝事件，
+  候选已忘，二次触发 ALREADY_RESOLVED）→ closeout NOT_READY(MISSION_JUDGMENT_MISSING) 行 v1 → 终态写口对非 READY
+  行拒绝 CLOSEOUT_NOT_READY → `judge_mission`（判决由接缝给定）→ Mission 仍 ACTIVE、`assurance_judgment` 落行、
+  `AssuranceCloseoutRequested` → closeout DRAINING(OPEN_INTENTS/OPEN_RESERVATIONS/USAGE_UNKNOWN) 行 v2 →
+  known usage 覆盖 UNKNOWN + `record_delivery_receipt` → DRAINING(OPEN_INTENTS/OPEN_RESERVATIONS) 行 v3，Mission 仍
+  ACTIVE、`settle_subject` 被结算读器拒绝（reservation held）→ **终态写口合同测试**（接缝手工把行置 READY，非消费者
+  推导）：版本/决议不符先拒 RECHECK_REQUIRED；写口执行 → COMPLETED、行 FINALIZED v5、`MissionCompleted` 一条、
+  finalized 回执、通知请求 → NOTIFY 送达一次；`MissionCompleted` 触发的再评估只出回执（ALREADY_FINALIZED）；
+  FINALIZED 后再调写口拒绝。
+- `four-consumer-seam-20260923T110853838707.json`（`867bd7fd479e…`）：改为断言生产触发器提交、closeout
+  NOT_READY(MISSION_JUDGMENT_MISSING) 行 v1；其余（pre-Scope METHOD_PLAN、到期、NOTIFY）不变，PASS。
+- 金丝雀重跑 PASS：purpose-builders、validity-accept、review-runtime、tick-factory、check-use、evidence-tools、
+  executor-check。定向既有测试：`test_resolution_commits.py` + `test_root_review_coordinator.py` +
+  `test_root_review_evidence.py` + `operation_completion/` 370 passed；`test_htn_end_to_end.py` +
+  `test_hierarchical_judgment_tree.py` 207 passed、1 failed（`test_migration_seventeen…` 断言 SCHEMA_VERSION==24，
+  基线 HEAD 同样失败，非本段引入）。ruff：新模块 0 告警，改动文件告警数不高于基线。
+
+**明确没有证明 / 边界**
+- **消费者推导的 READY → FINALIZED 未跑到**：夹具 Worker 从未在 AgentRuntime 跑，其 attempt intent(SUBMITTED)/
+  RESERVED 预留/UNKNOWN usage 无法通过 assured 结算读器（它按设计交叉核对 runtime 的 agent 绑定/turn/invocation/grant），
+  closeout 诚实停在 DRAINING、Mission 保持 ACTIVE。终态写口只以"手工置 READY 行"的合同测试证明；真正闭环需要真实
+  执行器跑完的 Mission（与 handoff 第 2 项"Worker 结算门正例未覆盖"是同一个缺口，归第 10 项集中验收）。
+- Mission judge 的判决内容由接缝给定（`_evaluate_criteria` 未在接缝里跑）；`_decide`/stall 守卫只以
+  `assured_closeout_pending` 单元断言，未在真实 loop 上跑。
+- 非根 COMPOSITION 决议在 assured lane 仍用旧 witness；MAINTAIN 连续监测仍不存在；真实模型未跑；Host 未接（第 9 项）；
+  `default_assurance_profile_for_new_mission()` 仍 None；启动重绑/恢复（第 8 项）未做。
+
+**改动文件 sha256（前 12 位）**
+```
+524f199265b3  orchestrator/assurance_final_writer.py（新）
+607a1843e104  orchestrator/assurance_consumers.py
+4bd7cb226a65  orchestrator/assurance_assembly.py
+ced5ceb56ea3  orchestrator/assurance_validity.py
+b59bad55a74c  orchestrator/resolution_commits.py
+b12e0fca0a02  orchestrator/hierarchical_dispatch.py
+fbb14565c303  orchestrator/commit_service.py
+0a8d2f3f60ca  orchestrator/event_handler.py
+438f1ce9236e  verification/scoped_acceptance.py
+473ea0e8c279  scripts/assurance_seams/final-writer-seam.py（新）
+6f8c4ea46fca  scripts/assurance_seams/four-consumer-seam.py
+```
+
+下一段：handoff §4 第 8 项（恢复/pin：startup orphan PREPARING 对账、owner retention、lease recovery、无事件 expiry/
+clock rollback、restore 新 quarantine root）起；第 9、10 项前停下汇报。

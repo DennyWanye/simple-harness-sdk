@@ -2579,6 +2579,12 @@ class Orchestrator:
         for mission in self._active_missions():
             if mission.status is not MissionStatus.ACTIVE:
                 continue
+            if self.commit.assured_closeout_pending(mission.id):
+                # Handoff item 7: a judged assured Mission waiting for its closeout
+                # to converge is not stalled work; NO_DISPATCHABLE_WORK would be the
+                # no-progress pseudo failure the spec forbids.
+                self._stalled_at.pop(mission.id, None)
+                continue
             if self._has_pending_planning_waits(mission.id) or (
                 self._taskgraph_notifications is not None
                 and self._taskgraph_notifications.awaiting_sources(mission.id)
@@ -11684,6 +11690,12 @@ class Orchestrator:
                 # finished.  ``False`` and not ``True``: nothing moved, so the loop goes
                 # idle instead of re-offering a resolution that is refused for the same
                 # reason forever.
+                return False
+            if new_mode is not None and self.commit.assured_closeout_pending(current.id):
+                # Handoff item 7: the assured Mission's success is judged and its
+                # closeout is the CLOSEOUT consumer's to converge (DRAINING /
+                # BLOCKED_UNKNOWN keep it ACTIVE); the unique final writer completes
+                # it.  Nothing to re-judge and nothing to dispatch: idle, not stalled.
                 return False
             try:
                 if any(c.startswith(ACTION_PREFIX) for c in current.success_criteria):

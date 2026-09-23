@@ -2974,7 +2974,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 final_report=report,
             )
             self._store.update_mission(updated, expected_version=mission.version)
-            self._emit(
+            final = self._emit(
                 "MissionFailed",
                 mission_id,
                 key=mission_id,
@@ -2984,6 +2984,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     "detail": dict(detail),
                 },
             )
+            self._assured_terminal_notice(mission_id, final, updated.version)
             return updated
 
     def cancel_mission(self, mission_id: str) -> Mission:
@@ -3004,7 +3005,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             )
             self._store.update_mission(updated, expected_version=mission.version)
             self._cascade_stop(mission_id, skip_task=None)
-            self._emit("MissionCancelled", mission_id, key=mission_id, payload={})
+            final = self._emit("MissionCancelled", mission_id, key=mission_id, payload={})
+            self._assured_terminal_notice(mission_id, final, updated.version)
             return updated
 
     def fail_mission(
@@ -3032,12 +3034,13 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             )
             self._store.update_mission(failed, expected_version=mission.version)
             self._cascade_stop(mission_id, skip_task=None)
-            self._emit(
+            final = self._emit(
                 "MissionFailed",
                 mission_id,
                 key=mission_id,
                 payload={"stop_reason": str(stop_reason), "final_report": report},
             )
+            self._assured_terminal_notice(mission_id, final, failed.version)
             return failed
 
     def _cascade_stop(self, mission_id: str, *, skip_task: str | None) -> list[str]:
@@ -5396,12 +5399,13 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         )
         self._store.update_mission(failed, expected_version=mission.version)
         self._cascade_stop(mission.id, skip_task=None)
-        self._emit(
+        final = self._emit(
             "MissionFailed",
             mission.id,
             key=mission.id,
             payload={"stop_reason": failed.stop_reason, "final_report": report},
         )
+        self._assured_terminal_notice(mission.id, final, failed.version)
         return failed
 
     def judge_mission(
@@ -5542,17 +5546,23 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 ],
                 "lineage": lineage(self._store, mission_id),  # D4-14 / 30-27
             }
-            self._emit(
+            judged = self._emit(
                 "MissionSuccessJudged",
                 mission_id,
                 key=f"{mission_id}:{mission.version}",
                 payload={"met": met, "judgments": [dict(item) for item in judgments]},
             )
             if met:
+                from .assurance_final_writer import is_assured, request_assured_closeout
                 from .hierarchical_dispatch import is_hierarchical
 
                 if is_hierarchical(mission):
                     report.update(self._ledger.usage_flags(mission_id))
+                if is_assured(self._store, mission_id):
+                    # Handoff item 7: an assured Mission is completed only by the
+                    # unique final writer out of a READY closeout (spec §7.1); the
+                    # judge records that the criteria are met and requests it.
+                    return request_assured_closeout(self, mission, report=report, judged=judged)
                 done = next_mission(
                     mission,
                     MissionStatus.COMPLETED,
@@ -5577,12 +5587,13 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             self._store.update_mission(failed, expected_version=mission.version)
             self._cancel_open_actions(mission_id, reason="mission_criteria_unmet")
             self._release_terminal_mission_pools(mission_id)
-            self._emit(
+            final = self._emit(
                 "MissionFailed",
                 mission_id,
                 key=mission_id,
                 payload={"stop_reason": failed.stop_reason, "final_report": report},
             )
+            self._assured_terminal_notice(mission_id, final, failed.version)
             return failed
 
     def _judgment_network(self, mission: Mission) -> Any:
@@ -5684,6 +5695,32 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 f"{contradicted} carry a current Acceptance on a FAILED row (§21.5 'wrongly "
                 "declared complete = 0': the disagreement is repaired, not judged)"
             )
+
+    # ------------------------------------------------ Assurance 1.1 final writer (item 7)
+    def _assured_terminal_notice(self, mission_id: str, final: Event, state_version: int) -> None:
+        """Every terminal write on the assured lane requests the NOTIFY transport."""
+
+        from .assurance_final_writer import request_assured_notification
+
+        request_assured_notification(self, mission_id, final, state_version=state_version)
+
+    def assured_closeout_pending(self, mission_id: str) -> bool:
+        """An ACTIVE assured Mission judged successful and waiting for its closeout."""
+
+        from .assurance_final_writer import assured_closeout_pending
+
+        return assured_closeout_pending(self._store, self._store.get_mission(mission_id))
+
+    def finalize_assured_mission(self, mission_id: str, evaluation: Mapping[str, Any]) -> Any:
+        """The unique final writer: READY closeout → COMPLETED (spec §7.1, item 7).
+
+        Called by the CLOSEOUT consumer inside its own commit transaction; see
+        :func:`assurance_final_writer.finalize_assured_mission`.
+        """
+
+        from .assurance_final_writer import finalize_assured_mission
+
+        return finalize_assured_mission(self, mission_id, evaluation)
 
     def _require_root_resolution(self, mission_id: str) -> None:
         """A hierarchical Mission is completed out of its root resolution (review F6).
@@ -5976,12 +6013,13 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 task_id=task_id,
                 payload={"stop_reason": str(stop_reason), "detail": dict(detail)},
             )
-            self._emit(
+            final = self._emit(
                 "MissionFailed",
                 mission.id,
                 key=mission.id,
                 payload={"stop_reason": str(stop_reason), "final_report": report},
             )
+            self._assured_terminal_notice(mission.id, final, done.version)
             return failed
 
     def _task_reports(self, mission_id: str) -> list[dict[str, Any]]:

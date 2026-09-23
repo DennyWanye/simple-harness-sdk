@@ -303,6 +303,113 @@ def _acceptable_scoped(
     )
 
 
+def acceptable_assured_root(
+    subject: AcceptanceSubject,
+    *,
+    now_ms: int,
+    purpose: ReviewPurpose,
+    assured: AssuredAcceptance,
+) -> AcceptDecision:
+    """AER §6.2 for an assured Mission-root ``GoalResolution`` (handoff item 7).
+
+    The same conjunction as ``acceptance_rules.acceptable`` — identity, root
+    coverage, hard gate, success expression, completeness, independence, posture,
+    compound facts — with one difference: every grade comes from the *current*
+    re-decision of the bound review manifest (``assured.effective_grades``) and the
+    licence is the committed UseCertificate (``assured.licence_reasons``), never the
+    legacy ``CriterionOutcome`` projection or a self-issued witness.
+    """
+
+    if not isinstance(assured, AssuredAcceptance):
+        raise ValueError("an assured root decision needs the current certificate facts")
+    revision = subject.revision
+    package = subject.package
+    record = subject.record
+    reasons: list[AcceptReason] = []
+
+    if record.package_id != package.package_id or record.binding != package.binding:
+        reasons.append(AcceptReason.IDENTITY_MISMATCH)
+    if record.purpose is not package.purpose or record.purpose is not purpose:
+        reasons.append(AcceptReason.PURPOSE_MISMATCH)
+    if (
+        package.binding.requirements_revision != revision.revision
+        or package.binding.mission_id != revision.mission_id
+    ):
+        reasons.append(AcceptReason.REQUIREMENTS_REVISION_MISMATCH)
+    if package.requirements_content_hash is not None:
+        if package.requirements_content_hash != revision.content_hash():
+            reasons.append(AcceptReason.REQUIREMENTS_CONTENT_MISMATCH)
+    elif success_expression_digest(package.success_expression) != success_expression_digest(
+        revision.success_expression
+    ):
+        reasons.append(AcceptReason.SUCCESS_EXPRESSION_MISMATCH)
+    structure_violations = package.hard_constraint_violations()
+    if structure_violations:
+        reasons.append(AcceptReason.HARD_CONSTRAINT_STRUCTURE)
+    catalogue = set(package.criterion_catalogue())
+    missing_root = tuple(
+        criterion_id
+        for criterion_id in revision.required_criterion_ids()
+        if criterion_id not in catalogue
+    )
+    if missing_root:
+        reasons.append(AcceptReason.ROOT_CRITERION_MISSING)
+
+    gate = _assured_hard_gate(revision.criteria, assured)
+    if gate.failed_ids:
+        reasons.append(AcceptReason.HARD_CONSTRAINT_FAILED)
+    if gate.unknown_ids or gate.missing_ids:
+        reasons.append(AcceptReason.HARD_CONSTRAINT_UNKNOWN)
+    expression = _assured_expression(revision.criteria, revision.success_expression, assured)
+    if not expression.passed:
+        reasons.append(AcceptReason.SUCCESS_EXPRESSION_NOT_PASS)
+    completeness = _assured_completeness(subject, assured)
+    if not completeness.match.matched:
+        reasons.append(AcceptReason.CRITERIA_NOT_MATCHED)
+    if not completeness.complete:
+        reasons.append(AcceptReason.REQUIRED_CHECKS_INCOMPLETE)
+
+    if record.verdict is not ReviewVerdict.ACCEPT:
+        reasons.append(AcceptReason.REVIEW_VERDICT_NOT_ACCEPT)
+    independence = independence_ok(package, record, facts=subject.independence)
+    independence_required = subject.semantic_review_required or bool(
+        completeness.independence_required_ids
+    )
+    if independence_required and not independence.independent:
+        reasons.append(AcceptReason.INDEPENDENT_REVIEW_MISSING)
+    reasons.extend(assured.licence_reasons)
+
+    posture = subject.posture
+    if posture.unowned_critical_operation_ids:
+        reasons.append(AcceptReason.CRITICAL_OPERATION_UNOWNED)
+    if posture.cancellation_requested:
+        reasons.append(AcceptReason.CANCELLATION_PENDING)
+    if not posture.method_adoption_current:
+        reasons.append(AcceptReason.METHOD_ADOPTION_STALE)
+
+    missing_occurrences: tuple[str, ...] = ()
+    compound = subject.compound
+    if compound is not None:
+        if not compound.selected_method_legal:
+            reasons.append(AcceptReason.COMPOUND_METHOD_ILLEGAL)
+        missing_occurrences = compound.missing_required_occurrences()
+        if missing_occurrences:
+            reasons.append(AcceptReason.REQUIRED_OCCURRENCE_MISSING)
+        if not compound.composition_obligation_passed:
+            reasons.append(AcceptReason.COMPOSITION_OBLIGATION_FAILED)
+
+    return AcceptDecision(
+        reasons=tuple(reasons),
+        expression=expression,
+        gate=gate,
+        completeness=completeness,
+        independence=independence,
+        missing_root_ids=missing_root,
+        missing_occurrence_ids=missing_occurrences,
+        hard_constraint_structure_ids=structure_violations,
+    )
+
+
 def acceptable_scoped_task_content(
     subject: AcceptanceSubject, *, projected_criteria: tuple[Criterion, ...],
     projected_expression: SuccessExpression, now_ms: int, witness: ValidityWitness | None,
@@ -331,6 +438,7 @@ def acceptable_scoped_operation_outcome(
 
 __all__ = (
     "AssuredAcceptance",
+    "acceptable_assured_root",
     "acceptable_scoped_task_content",
     "acceptable_scoped_operation_outcome",
 )
