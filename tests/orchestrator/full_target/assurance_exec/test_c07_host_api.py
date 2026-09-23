@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from agent_orchestrator.api.assurance import AssuranceReadError, ITEM_KINDS
+from agent_orchestrator.api.assurance import ITEM_KINDS, AssuranceReadError
 from agent_orchestrator.api.facade import FacadeError, MissionControlV1
 from agent_orchestrator.assurance.contracts import ContractViolation, validate
 from agent_orchestrator.assurance.policy import AssurancePolicy
