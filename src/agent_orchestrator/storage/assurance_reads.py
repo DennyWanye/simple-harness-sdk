@@ -199,7 +199,11 @@ class AssuranceReader:
                 body = body["envelope"]  # exclude the mutable verification wrapper
             if fingerprint(body) != ref.pin.content_hash:
                 raise AssuranceError("REF_BODY_CONFLICT", ref.pin.id)
-            return ExactMetadata(ref, canonical(body), canonical(row))
+            # The lifecycle part is the row's own columns without the body column: the
+            # body is carried (and hash-checked) once, not again as an escaped string that
+            # pushed a 230 KB reviewer manifest past the 256 KB limit (2026-09-25 desktop run).
+            lifecycle = {key: value for key, value in row.items() if key != body_column}
+            return ExactMetadata(ref, canonical(body), canonical(lifecycle))
 
     def _event_metadata(self, ref: AssuranceRef) -> ExactMetadata:
         if ref.pin.revision != 0:

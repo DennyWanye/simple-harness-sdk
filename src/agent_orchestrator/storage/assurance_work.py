@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import sqlite3
 import uuid
 from collections.abc import Callable, Iterator, Sequence
@@ -370,6 +372,13 @@ class AssuranceWorkStore:
                 started = now_ms
             attempts = row["rechecks"] + 1
             exhausted = attempts >= 32 or now_ms - started >= 300_000
+            if exhausted:
+                # The concrete code is overwritten below; keep it diagnosable (2026-09-25
+                # desktop run: a JSON_BYTES_LIMIT import failure surfaced only as MANUAL_REQUIRED).
+                logging.getLogger(__name__).warning(
+                    "assurance work needs manual resolution mission=%s consumer=%s work=%s "
+                    "rechecks=%s last_reason=%s", claim.mission_id, claim.consumer,
+                    claim.work_key, attempts, reason)
             reason = "MANUAL_REQUIRED" if exhausted else reason
             delay = 0 if attempts <= 3 else (500, 1000, 2000)[min(attempts - 4, 2)]
             due = integer(now_ms + delay)
