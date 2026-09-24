@@ -20,7 +20,12 @@ from simple_harness.contracts.json import JsonValue, validate_json_value
 from simple_harness.contracts.messages import Message, MessageRole
 
 from .base import (
+    PROVIDER_REASONING_KEY,
+    REASONING_EFFORTS,
+    THINKING_MODES,
     CancelToken,
+    ProviderContinuationCapability,
+    ProviderContinuationMode,
     ProviderRequest,
     ProviderResponse,
     ProviderTarget,
@@ -63,18 +68,31 @@ def _plain_mapping(value: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
 
 
 def openai_chat_request_payload(
-    request: ProviderRequest, *, model: str, tool_schema_mode: str = LEGACY_TOOL_SCHEMA_MODE
+    request: ProviderRequest,
+    *,
+    model: str,
+    tool_schema_mode: str = LEGACY_TOOL_SCHEMA_MODE,
+    thinking: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     """The exact credential-free body used by the chat adapter, also for admission.
 
-    Callers must first restore durable assistant tool calls. This function neither
-    consults a client nor sends a request; the HTTP adapter uses the same serializer.
+    Callers must first restore durable assistant tool calls (and, in thinking mode, the
+    replayed reasoning). This function neither consults a client nor sends a request;
+    the HTTP adapter uses the same serializer, so a counter given the same ``thinking``
+    renders exactly what goes on the wire.
     """
-    return OpenAICompatibleProvider._payload_for_model(
+    payload = OpenAICompatibleProvider._payload_for_model(
         request, model, tool_schema_mode=tool_schema_mode
     )
+    if thinking is not None:
+        payload["thinking"] = {"type": thinking}
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
+    return payload
 
 
+_THINKING_FIELDS = frozenset({"thinking", "reasoning_effort"})
 _REQUEST_BODY_FIELDS = frozenset(
     {"model", "messages", "tools", "tool_choice", "max_tokens", "temperature", "stream", "stream_options"}
 )
@@ -139,6 +157,8 @@ class OpenAICompatibleProvider:
     __slots__ = (
         "_extra_body",
         "_response_model_aliases",
+        "_thinking",
+        "_reasoning_effort",
         "_client",
         "_endpoint",
         "_redactor",
@@ -164,6 +184,8 @@ class OpenAICompatibleProvider:
         stream: bool = False,
         extra_body: Mapping[str, Any] | None = None,
         response_model_aliases: Sequence[str] = (),
+        thinking: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         if not isinstance(client, httpx.AsyncClient):
             raise TypeError("client must be an httpx.AsyncClient")
@@ -189,7 +211,7 @@ class OpenAICompatibleProvider:
                 type(key) is not str or not key for key in extra_body
             ):
                 raise TypeError("extra_body must be a mapping with non-empty string keys")
-            clash = sorted(set(extra_body) & _REQUEST_BODY_FIELDS)
+            clash = sorted(set(extra_body) & (_REQUEST_BODY_FIELDS | _THINKING_FIELDS))
             if clash:
                 raise ValueError(f"extra_body must not override request fields: {clash}")
             validate_json_value(_plain_mapping(extra_body))
@@ -202,6 +224,16 @@ class OpenAICompatibleProvider:
         ):
             raise TypeError("response_model_aliases must be a sequence of non-empty strings")
         self._response_model_aliases = frozenset(response_model_aliases)
+        # Thinking mode (DeepSeek-style).  None keeps the legacy request (field not sent,
+        # the endpoint's own default applies).  "enabled" replays each returned reasoning
+        # on later requests of the run (REASONING_REPLAY continuation); "disabled" asks the
+        # model not to think.  The mode is part of the target identity.
+        if thinking is not None and thinking not in THINKING_MODES:
+            raise ValueError(f"thinking must be one of {THINKING_MODES} or None")
+        if reasoning_effort is not None and (thinking != "enabled" or reasoning_effort not in REASONING_EFFORTS):
+            raise ValueError("reasoning_effort needs thinking='enabled' and one of " + str(REASONING_EFFORTS))
+        self._thinking = thinking
+        self._reasoning_effort = reasoning_effort
         private_http = False
         if allow_private_http and hostname is not None:
             try:
@@ -265,12 +297,29 @@ class OpenAICompatibleProvider:
                     else "openai-compatible.chat-completions.v1"
                 )
                 + (".sse-v1" if stream else "")
+                + ("" if thinking is None else f".thinking-{thinking}-v1")
+                + ("" if reasoning_effort is None else f".effort-{reasoning_effort}")
             ),
         )
 
     @property
     def target(self) -> ProviderTarget:
         return self._target
+
+    @property
+    def thinking(self) -> str | None:
+        return self._thinking
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        return self._reasoning_effort
+
+    @property
+    def continuation_capability(self) -> ProviderContinuationCapability:
+        """Thinking enabled replays private reasoning; every other mode keeps none."""
+        if self._thinking == "enabled":
+            return ProviderContinuationCapability(ProviderContinuationMode.REASONING_REPLAY)
+        return ProviderContinuationCapability()
 
     async def invoke(self, request: ProviderRequest, *, cancel: CancelToken) -> ProviderResponse:
         if cancel.is_cancelled:
@@ -408,7 +457,11 @@ class OpenAICompatibleProvider:
 
     def _request_payload(self, request: ProviderRequest) -> dict[str, Any]:
         payload = openai_chat_request_payload(
-            request, model=self._target.model, tool_schema_mode=self._tool_schema_mode
+            request,
+            model=self._target.model,
+            tool_schema_mode=self._tool_schema_mode,
+            thinking=self._thinking,
+            reasoning_effort=self._reasoning_effort,
         )
         if self._extra_body:
             payload.update(self._extra_body)
@@ -496,6 +549,11 @@ class OpenAICompatibleProvider:
             ]
             if tool_calls:  # never emit an empty array (some endpoints reject it)
                 payload["tool_calls"] = tool_calls
+        # Thinking mode: the wire restores the assistant's own earlier reasoning on a
+        # request copy; it is replayed verbatim (the provider rejects a tool loop without it).
+        reasoning = message.metadata.get(PROVIDER_REASONING_KEY) if role == "assistant" else None
+        if isinstance(reasoning, str):
+            payload["reasoning_content"] = reasoning
         return payload
 
     @staticmethod
@@ -581,6 +639,9 @@ class OpenAICompatibleProvider:
             raise ProviderProtocolError()
 
         tool_calls = self._parse_tool_calls(raw_message.get("tool_calls", []))
+        reasoning = raw_message.get("reasoning_content")
+        if reasoning is not None and not isinstance(reasoning, str):
+            raise ProviderProtocolError()
         usage = self._parse_usage(payload.get("usage"))
         model = payload.get("model")
         if model is None or model in self._response_model_aliases:
@@ -598,6 +659,9 @@ class OpenAICompatibleProvider:
             model=model,
             finish_reason=finish_reason,
             provider_request_id=provider_request_id,
+            # Kept only when this provider replays reasoning; otherwise it is dropped here,
+            # exactly as before (never public, never durable).
+            reasoning_content=(reasoning if self._thinking == "enabled" else None),
         )
 
     @staticmethod

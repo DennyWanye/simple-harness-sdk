@@ -45,10 +45,18 @@ class DeepSeekV41TokenEstimator:
 
     def __init__(
         self, tokenizer_path: Path, *, model: str = "deepseek-flash",
-        tool_schema_mode: str = "legacy",
+        tool_schema_mode: str = "legacy", thinking: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         if tool_schema_mode not in {"legacy", "deepseek-strict-v1"}:
             raise ValueError("unsupported DeepSeek tool schema mode")
+        # The thinking mode changes the rendered prompt (thinking-mode framing and replayed
+        # reasoning), so the counter is bound to the same mode the adapter sends; None is
+        # the endpoint default (thinking on), exactly as the legacy request.
+        if thinking not in (None, "enabled", "disabled"):
+            raise ValueError("unsupported DeepSeek thinking mode")
+        if reasoning_effort is not None and thinking != "enabled":
+            raise ValueError("reasoning_effort needs thinking='enabled'")
         if model not in {"deepseek-flash", "deepseek-v4.1-flash"}:
             raise ValueError("unsupported model for the pinned DeepSeek V4.1 counter")
         if version("deepseek-recipe") != RECIPE_VERSION:
@@ -61,6 +69,8 @@ class DeepSeekV41TokenEstimator:
 
         self._model = model
         self._tool_schema_mode = tool_schema_mode
+        self._thinking = thinking
+        self._reasoning_effort = reasoning_effort
         self._tokenizer = Tokenizer.from_str(raw.decode("utf-8"))
         self._encoding = DeepseekV41Encoding().with_tokenizer(self._tokenizer)
         self.fingerprint = (
@@ -74,6 +84,8 @@ class DeepSeekV41TokenEstimator:
                         "model": model,
                         "bound_protocol": self.bound_protocol,
                         "requires_prior_output_reserve": self.requires_prior_output_reserve,
+                        "thinking": thinking,
+                        "reasoning_effort": reasoning_effort,
                         "serializer": ("openai-chat-payload-v1" if tool_schema_mode == "legacy"
                                        else "openai-chat-deepseek-strict-v1"),
                     }
@@ -95,6 +107,7 @@ class DeepSeekV41TokenEstimator:
 
         payload = openai_chat_request_payload(
             request, model=self._model, tool_schema_mode=self._tool_schema_mode,
+            thinking=self._thinking, reasoning_effort=self._reasoning_effort,
         )
         converted = ChatCompletionRequest(payload).convert(ConversionOptions())
         return len(self._encoding.encode(converted.conversation))

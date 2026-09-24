@@ -18,13 +18,17 @@ from simple_harness.providers.openai_compatible import openai_chat_request_paylo
 def test_extra_body_is_merged_into_the_body_but_never_overrides_the_counted_request() -> None:
     async def exercise() -> None:
         async with httpx.AsyncClient() as client:
-            provider = OpenAICompatibleProvider(client, "https://example.test/v1", "m", Secret("fixture"), extra_body={"thinking": {"type": "disabled"}})
+            provider = OpenAICompatibleProvider(client, "https://example.test/v1", "m", Secret("fixture"), extra_body={"user": "tenant-a"})
             request = ProviderRequest(RequestId("r1"), (Message(MessageRole.USER, "hi"),), max_output_tokens=8)
             payload = provider._request_payload(request)
-            assert payload["thinking"] == {"type": "disabled"} and payload["max_tokens"] == 8
-            assert "thinking" not in openai_chat_request_payload(request, model="m")  # the counted body is unchanged
+            assert payload["user"] == "tenant-a" and payload["max_tokens"] == 8
+            assert "user" not in openai_chat_request_payload(request, model="m")  # the counted body is unchanged
             plain = OpenAICompatibleProvider(client, "https://example.test/v1", "m", Secret("fixture"))
-            assert "thinking" not in plain._request_payload(request)
+            assert "user" not in plain._request_payload(request)
+            # Thinking is a first-class, counted, identity-bearing switch — never an extra field.
+            for field in ("thinking", "reasoning_effort"):
+                with pytest.raises(ValueError):
+                    OpenAICompatibleProvider(client, "https://example.test/v1", "m", Secret("fixture"), extra_body={field: {"type": "disabled"}})
             with pytest.raises(ValueError):
                 OpenAICompatibleProvider(client, "https://example.test/v1", "m", Secret("fixture"), extra_body={"max_tokens": 1})
             with pytest.raises(TypeError):

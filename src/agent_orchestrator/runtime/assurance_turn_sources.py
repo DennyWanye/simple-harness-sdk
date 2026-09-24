@@ -195,13 +195,18 @@ def _selection_binds_request(
     """
     if selection.request_hash == provider.request_fingerprint:
         return True
-    from simple_harness.agents.wire import _ledger_groups, restore_tool_calls
+    from simple_harness.agents.wire import restore_wire_messages
 
-    if not any(message.role.value == "tool" for message in request.messages):
+    if not any(message.role.value in ("tool", "assistant") for message in request.messages):
         return False
-    wire_messages, _ = restore_tool_calls(
-        request.messages, _ledger_groups(uow.database.connection, run_id)
-    )
-    return selection.request_hash == provider_request_fingerprint(
-        replace(request, messages=wire_messages)
-    )
+    # The same original wire rule: issued tool calls, and in thinking mode the replayed
+    # private reasoning (both from durable ledgers; no bytes are invented).
+    for replay in (False, True):
+        wire_messages, _ = restore_wire_messages(
+            tuple(request.messages), uow.database.connection, run_id, replay_reasoning=replay
+        )
+        if selection.request_hash == provider_request_fingerprint(
+            replace(request, messages=wire_messages)
+        ):
+            return True
+    return False

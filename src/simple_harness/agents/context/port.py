@@ -87,9 +87,13 @@ class JournalContextPort:
         recall: Callable[[str, str, int, tuple[int, ...]], Sequence[Message]] | None = None,
         recall_token_share: float = 0.0,
         on_records: Callable[[tuple[AgentJournalRecord, ...]], None] | None = None,
+        replay_reasoning: bool = False,
     ) -> None:
         self._uow = uow
         self._tokenizer = tokenizer
+        # Thinking mode: the wire replays each assistant turn's private reasoning, so the
+        # plan charges it too (the final exact re-count then agrees with the plan).
+        self.replay_reasoning = bool(replay_reasoning)
         self._policy = policy
         self._model = model
         self._tool_specs_for_run = tool_specs_for_run
@@ -124,7 +128,32 @@ class JournalContextPort:
             # ledger before sending; count them here so the budget decision and the
             # final re-count see the same request (BA13).
             cached += self._tool_calls_overhead(record)
+            if self.replay_reasoning:
+                cached += self._reasoning_overhead(record)
         return cached
+
+    def _reasoning_overhead(self, record: AgentJournalRecord) -> int:
+        """Tokens of the private reasoning the wire replays for this assistant turn."""
+        key = (self.policy_hash, f"reasoning:{record.protocol_group_id}")
+        cached = self._counts.get(key)
+        if cached is not None:
+            return cached
+        row = self._uow.database.connection.execute(
+            "SELECT response_json FROM provider_invocations WHERE run_id=? AND request_id=?"
+            " AND state='succeeded' AND response_json IS NOT NULL"
+            " ORDER BY settled_at DESC LIMIT 1",
+            (record.agent_id, record.protocol_group_id),
+        ).fetchone()
+        if row is None:
+            return 0  # not settled yet: not cached, the group may still be in flight
+        try:
+            continuation = json.loads(str(row[0])).get("continuation") or {}
+        except (TypeError, ValueError, AttributeError):
+            continuation = {}
+        text = continuation.get("reasoning_content") if isinstance(continuation, dict) else None
+        overhead = self._tokenizer.count_text(text) if isinstance(text, str) and text else 0
+        self._counts[key] = overhead
+        return overhead
 
     def _tool_calls_overhead(self, record: AgentJournalRecord) -> int:
         key = (self.policy_hash, f"group:{record.protocol_group_id}")

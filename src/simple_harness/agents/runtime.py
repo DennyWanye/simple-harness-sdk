@@ -78,7 +78,7 @@ from .memory.index_jobs import SessionIndexer
 from .memory.retrieval import SearchResult, SessionRetriever
 from .ports import AgentRuntimePorts
 from .tool_registry import BaseAgentToolRegistry
-from .wire import AgentProviderWire
+from .wire import AgentProviderWire, continuation_capability_of, replays_reasoning
 
 ROOT_PROFILE_KEY = "agent.general"
 CHILD_PROFILE_KEY = "agent.base"
@@ -200,6 +200,11 @@ def assemble_runtime(
         requests_prepared=admission is not None,
     )
     provider_adapter = _ConsumerProviderAdapter(wire, ports.model)
+    # Thinking mode is a property of the provider, frozen into every Run's binding and
+    # driver fingerprint (a Run never changes mode; REASONING_REPLAY keeps and replays the
+    # provider's private reasoning, every other mode keeps none).
+    continuation_capability = continuation_capability_of(ports.provider)
+    replay_reasoning = replays_reasoning(ports.provider)
     # The consumer provider adapter reports pricing_key "consumer"; the estimator must match.
     estimator = ports.policies.estimator or FrozenPriceEstimator("consumer-v1", "consumer", 0, 0)
     budget_policy = ports.policies.budget_policy
@@ -243,6 +248,7 @@ def assemble_runtime(
         recall=recall_messages,
         recall_token_share=ports.recall_token_share,
         on_records=indexer.on_records,
+        replay_reasoning=replay_reasoning,
     )
     provider_reconciliation = (
         ports.policies.provider_reconciliation or _DefaultProviderReconciliation()
@@ -284,6 +290,7 @@ def assemble_runtime(
         turn_cancellations=turn_cancellations,
         empty_response_retries=ports.empty_response_retries,
         max_output_tokens_ceiling=ports.max_output_tokens_ceiling,
+        continuation_capability=continuation_capability,
     )
     runtime = build_runtime(
         uow=uow,  # type: ignore[arg-type]

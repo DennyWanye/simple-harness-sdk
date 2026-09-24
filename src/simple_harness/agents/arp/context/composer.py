@@ -35,7 +35,7 @@ from simple_harness.runtime.context import ContextSnapshot
 from ...context.composer import _message_of
 from ...context.port import JournalContextPort
 from ...context.tokenizer import count_message, count_tools
-from ...wire import AgentProviderWire, _ledger_groups, restore_tool_calls, run_id_from_request
+from ...wire import AgentProviderWire, restore_wire_messages, run_id_from_request
 from .. import store
 from ..codec import check
 from ..catalogue import ToolExposureService, read_tool_snapshot
@@ -324,7 +324,9 @@ class ArpContextPort(JournalContextPort):
             messages.append(recall_message(by_id[recall.id], prepared.recall_texts[recall.id]))
         for group in prepared.selection.recent:
             messages.extend(self._group_messages(prepared.snapshot.group(group.id)))
-        restored, _ = restore_tool_calls(tuple(messages), _ledger_groups(self._connection(), prepared.session.agent_id))
+        restored, _ = restore_wire_messages(
+            tuple(messages), self._connection(), prepared.session.agent_id, replay_reasoning=self.replay_reasoning
+        )
         return replace(request, messages=restored)
 
     def _render_and_measure(self, prepared: PreparedContext, request: ProviderRequest, instructions: Sequence[AgentJournalRecord]):  # type: ignore[no-untyped-def]
@@ -493,7 +495,9 @@ class ArpContextPort(JournalContextPort):
             messages.append(recall_message(items[chunk_id], service.chunk_text(generation, chunk_id)))
         for group_id in manifest["recent_group_ids"]:
             messages.extend(self._group_messages(snapshot.group(group_id)))
-        restored, _ = restore_tool_calls(tuple(messages), _ledger_groups(self._connection(), session.agent_id))
+        restored, _ = restore_wire_messages(
+            tuple(messages), self._connection(), session.agent_id, replay_reasoning=self.replay_reasoning
+        )
         wire = replace(request, messages=restored)
         from simple_harness.execution.provider_invocations import provider_request_fingerprint
 

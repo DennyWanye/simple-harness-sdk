@@ -312,14 +312,32 @@ def provider_response_json(
         "model": response.model,
         "finish_reason": response.finish_reason,
         "provider_request_id": response.provider_request_id,
-        "continuation": {
-            "schema_version": 1,
-            "mode": capability.mode.value,
-            "public_content_types": list(capability.public_content_types),
-            "capability_fingerprint": capability.fingerprint,
-            "opaque_ref": response.opaque_continuation_ref,
-        },
+        "continuation": _continuation_json(response, capability),
     }
+
+
+def _continuation_json(
+    response: ProviderResponse, capability: ProviderContinuationCapability
+) -> dict[str, JsonValue]:
+    """The private continuation of a durable response.
+
+    Schema 1 (every mode but REASONING_REPLAY) is unchanged.  Schema 2 adds the private
+    ``reasoning_content`` a thinking-mode provider returned; it is replayed only to the same
+    provider on later requests of the run and never enters public content or Context.
+    Reasoning returned under any other mode is dropped here, as before.
+    """
+
+    value: dict[str, JsonValue] = {
+        "schema_version": 1,
+        "mode": capability.mode.value,
+        "public_content_types": list(capability.public_content_types),
+        "capability_fingerprint": capability.fingerprint,
+        "opaque_ref": response.opaque_continuation_ref,
+    }
+    if capability.mode is ProviderContinuationMode.REASONING_REPLAY:
+        value["schema_version"] = 2
+        value["reasoning_content"] = response.reasoning_content
+    return value
 
 
 def _message_from_json(value: object) -> Message:
@@ -434,21 +452,31 @@ def provider_response_from_json(
         }
     if not isinstance(continuation, dict):
         raise ValueError("stored provider continuation must be an object")
-    if set(continuation) != {
+    continuation_schema = continuation.get("schema_version")
+    if (
+        isinstance(continuation_schema, bool)
+        or not isinstance(continuation_schema, int)
+        or continuation_schema not in (1, 2)
+    ):
+        raise ValueError("unsupported provider continuation schema")
+    base_fields = {
         "schema_version",
         "mode",
         "public_content_types",
         "capability_fingerprint",
         "opaque_ref",
-    }:
-        raise ValueError("stored provider continuation fields differ")
-    continuation_schema = continuation.get("schema_version")
-    if (
-        isinstance(continuation_schema, bool)
-        or not isinstance(continuation_schema, int)
-        or continuation_schema != 1
+    }
+    if set(continuation) != (
+        base_fields if continuation_schema == 1 else base_fields | {"reasoning_content"}
     ):
-        raise ValueError("unsupported provider continuation schema")
+        raise ValueError("stored provider continuation fields differ")
+    if continuation_schema == 2 and (
+        continuation.get("mode") != ProviderContinuationMode.REASONING_REPLAY.value
+    ):
+        raise ValueError("stored private reasoning is forbidden for continuation mode")
+    reasoning_content = continuation.get("reasoning_content")
+    if reasoning_content is not None and not isinstance(reasoning_content, str):
+        raise ValueError("stored private reasoning is malformed")
     raw_types = continuation.get("public_content_types")
     if not isinstance(raw_types, list) or not all(isinstance(item, str) for item in raw_types):
         raise TypeError("stored provider public content types are malformed")
@@ -500,6 +528,7 @@ def provider_response_from_json(
         finish_reason=optional_text[1],
         provider_request_id=optional_text[2],
         opaque_continuation_ref=opaque_ref,
+        reasoning_content=reasoning_content,
     )
 
 

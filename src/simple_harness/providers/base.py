@@ -163,10 +163,20 @@ class ProviderUsage:
                 raise ValueError(f"{name} must be a non-negative integer or None")
 
 
+MAX_REASONING_BYTES = 4 * 1024 * 1024
+PROVIDER_REASONING_KEY = "provider_reasoning_content"
+THINKING_MODES = ("enabled", "disabled")
+REASONING_EFFORTS = ("low", "high", "xhigh", "max")
+
+
 class ProviderContinuationMode(StrEnum):
     PUBLIC_STATELESS = "public_stateless"
     OPAQUE_REFERENCE = "opaque_reference"
     REASONING_DISABLED = "reasoning_disabled"
+    # The provider returns private reasoning that must be passed back verbatim on later
+    # requests of the same run (DeepSeek thinking mode with tools).  The reasoning is kept
+    # in the durable response's private continuation, never in public content or Context.
+    REASONING_REPLAY = "reasoning_replay"
     REJECT = "reject"
 
 
@@ -253,10 +263,19 @@ class ProviderResponse:
     finish_reason: str | None = None
     provider_request_id: str | None = None
     opaque_continuation_ref: str | None = None
+    # Private reasoning returned by a thinking-mode provider.  Never public content: it
+    # is only replayed to the same provider on later requests of the same run.
+    reasoning_content: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request_id, RequestId):
             raise TypeError("request_id must use RequestId")
+        if self.reasoning_content is not None and (
+            not isinstance(self.reasoning_content, str)
+            or "\x00" in self.reasoning_content
+            or len(self.reasoning_content.encode("utf-8")) > MAX_REASONING_BYTES
+        ):
+            raise ValueError("reasoning_content must be bounded text")
         if not isinstance(self.message, Message):
             raise TypeError("message must use Message")
         object.__setattr__(self, "tool_calls", tuple(self.tool_calls))

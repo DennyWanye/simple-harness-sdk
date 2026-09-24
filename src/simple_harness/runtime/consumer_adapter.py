@@ -230,6 +230,13 @@ class _ConsumerProviderAdapter:
     def deployment_capacity(self):
         return getattr(self._port, "deployment_capacity", None)
 
+    @property
+    def continuation_capability(self):
+        """The consumer provider's declared continuation (thinking mode), else the default."""
+        from simple_harness.agents.wire import continuation_capability_of
+
+        return continuation_capability_of(self._port)
+
     async def invoke(
         self,
         request: ProviderRequest,

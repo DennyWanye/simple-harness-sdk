@@ -300,8 +300,14 @@ class ProviderInvocationCoordinator:
         if resolver is None:
             if provider is None or budget_policy is None:
                 raise TypeError("provider and budget_policy are required without resolver")
+            capability = getattr(provider, "continuation_capability", None)
             self._legacy_binding: ProviderBinding | None = ProviderBinding(
-                provider, estimator, budget_policy
+                provider,
+                estimator,
+                budget_policy,
+                continuation_capability=(
+                    ProviderContinuationCapability() if capability is None else capability
+                ),
             )
         else:
             if provider is not None or budget_policy is not None or estimator is not None:

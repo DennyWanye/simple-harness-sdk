@@ -27,7 +27,7 @@ def counter() -> CertifiedDeepSeekCounter:
     path = Path(os.environ.get("SH_TOKENIZER_PATH") or DEFAULT_TOKENIZER)
     if not path.is_file():
         pytest.skip("pinned DeepSeek tokenizer not installed on this machine")
-    return CertifiedDeepSeekCounter(path)
+    return CertifiedDeepSeekCounter(path, thinking="disabled")
 
 
 def test_the_uncertified_official_counter_is_refused_and_the_certified_one_is_exact(counter: CertifiedDeepSeekCounter) -> None:
@@ -37,7 +37,10 @@ def test_the_uncertified_official_counter_is_refused_and_the_certified_one_is_ex
     with pytest.raises(ArpError) as refused:
         model_limits(model="deepseek-flash", tokenizer=plain, input_limit_tokens=1000, max_output_tokens=100)
     assert refused.value.code == "GENERIC_TOKEN_BOUND_UNCERTIFIED"
-    assert counter.count_mode == "EXACT" and counter.fingerprint == plain.fingerprint
+    assert counter.count_mode == "EXACT" and counter.fingerprint != plain.fingerprint  # bound to an explicit thinking mode
+    assert CertifiedDeepSeekCounter(Path(os.environ.get("SH_TOKENIZER_PATH") or DEFAULT_TOKENIZER), thinking="enabled").fingerprint not in (counter.fingerprint, plain.fingerprint)
+    with pytest.raises(ValueError):
+        CertifiedDeepSeekCounter(Path(os.environ.get("SH_TOKENIZER_PATH") or DEFAULT_TOKENIZER))
     assert counter.requires_prior_output_reserve is False and counter.bound_protocol == "deepseek-v41-chat-text-wire-only-v2"
     binding = deepseek_meter_binding(counter, input_limit_tokens=262_144, max_output_tokens=32_768)
     assert isinstance(binding, MeterBinding)

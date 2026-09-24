@@ -44,9 +44,18 @@ class CertifiedDeepSeekCounter(DeepSeekV41TokenEstimator):
 
     count_mode = "EXACT"
 
-    def __init__(self, tokenizer_path: Path, *, model: str = "deepseek-flash", tool_schema_mode: str = "legacy") -> None:
-        super().__init__(tokenizer_path, model=model, tool_schema_mode=tool_schema_mode)
+    def __init__(
+        self, tokenizer_path: Path, *, model: str = "deepseek-flash", tool_schema_mode: str = "legacy",
+        thinking: str | None = None, reasoning_effort: str | None = None,
+    ) -> None:
+        # DeepSeek thinks by default; an unstated mode would be rendered as thinking while
+        # nothing replays the reasoning.  The certified counter is bound to an explicit mode,
+        # the same one the adapter sends (review 2026-09-24).
+        if thinking not in ("enabled", "disabled"):
+            raise ValueError("the certified DeepSeek counter needs an explicit thinking mode: 'enabled' or 'disabled'")
+        super().__init__(tokenizer_path, model=model, tool_schema_mode=tool_schema_mode, thinking=thinking, reasoning_effort=reasoning_effort)
         self.model = model
+        self.thinking = thinking
 
     def count_request_tokens(self, request: ProviderRequest) -> int:
         return self.estimate_input_tokens(request)

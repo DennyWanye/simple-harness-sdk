@@ -21,10 +21,106 @@ from dataclasses import replace
 
 from simple_harness.contracts import JsonValue, Message, MessageRole
 from simple_harness.providers import ProviderRequest, ProviderResponse
+from simple_harness.providers.base import (
+    PROVIDER_REASONING_KEY,
+    ProviderContinuationCapability,
+    ProviderContinuationMode,
+)
 from simple_harness.providers.errors import ProviderProtocolError
 
 PROVIDER_TOOL_CALLS_KEY = "provider_tool_calls"
 REQUEST_ID_MARKER = ":provider-turn:"
+
+
+def continuation_capability_of(provider: object) -> ProviderContinuationCapability:
+    """The continuation capability a provider declares (thinking mode), else the default."""
+
+    capability = getattr(provider, "continuation_capability", None)
+    if capability is None:
+        return ProviderContinuationCapability()
+    if not isinstance(capability, ProviderContinuationCapability):
+        raise TypeError("provider continuation_capability must use ProviderContinuationCapability")
+    return capability
+
+
+def replays_reasoning(provider: object) -> bool:
+    return continuation_capability_of(provider).mode is ProviderContinuationMode.REASONING_REPLAY
+
+
+def _ledger_reasoning(connection: sqlite3.Connection, run_id: str) -> dict[int, str]:
+    """Private reasoning of each succeeded provider turn of the run, by turn ordinal.
+
+    Read from the durable response's private continuation (schema 2, REASONING_REPLAY);
+    never from Context, which holds public content only."""
+
+    reasoning: dict[int, str] = {}
+    prefix = run_id + REQUEST_ID_MARKER
+    for request_id, response_json in connection.execute(
+        "SELECT request_id, response_json FROM provider_invocations"
+        " WHERE run_id=? AND state='succeeded' AND response_json IS NOT NULL"
+        " ORDER BY settled_at, invocation_id",
+        (run_id,),
+    ):
+        request_id = str(request_id)
+        if not request_id.startswith(prefix) or not request_id[len(prefix):].isdigit():
+            continue
+        try:
+            continuation = json.loads(str(response_json)).get("continuation") or {}
+        except (TypeError, ValueError, AttributeError):
+            continue
+        text = continuation.get("reasoning_content") if isinstance(continuation, dict) else None
+        if isinstance(text, str):
+            reasoning[int(request_id[len(prefix):])] = text
+    return reasoning
+
+
+def restore_reasoning(
+    messages: tuple[Message, ...], reasoning: dict[int, str]
+) -> tuple[Message, ...]:
+    """Attach each assistant message's own earlier reasoning to a wire copy.
+
+    Thinking mode with tools: the provider requires the reasoning of *every* earlier
+    assistant message (with or without tool calls) and rejects the request when one is
+    missing, which would repeat on every later turn.  An assistant message whose reasoning
+    is not on record (a failed call, a turn from before the mode was chosen) is sent with an
+    empty reasoning rather than none.
+    """
+
+    restored: list[Message] = []
+    for message in messages:
+        if message.role is MessageRole.ASSISTANT and PROVIDER_REASONING_KEY not in message.metadata:
+            stamped = message.metadata.get("provider_turn_ordinal")
+            text = (
+                reasoning.get(stamped, "")
+                if isinstance(stamped, int) and not isinstance(stamped, bool)
+                else ""
+            )
+            message = Message(
+                message.role,
+                message.content,
+                name=message.name,
+                call_id=message.call_id,
+                metadata={**dict(message.metadata), PROVIDER_REASONING_KEY: text},
+            )
+        restored.append(message)
+    return tuple(restored)
+
+
+def restore_wire_messages(
+    messages: tuple[Message, ...],
+    connection: sqlite3.Connection,
+    run_id: str,
+    *,
+    replay_reasoning: bool,
+) -> tuple[tuple[Message, ...], int]:
+    """The wire copy of a request's messages: replayed reasoning (thinking mode) first,
+    while the turn ordinal stamps are still present, then the issued tool calls."""
+
+    if replay_reasoning and any(m.role is MessageRole.ASSISTANT for m in messages):
+        messages = restore_reasoning(messages, _ledger_reasoning(connection, run_id))
+    if any(m.role is MessageRole.TOOL for m in messages):
+        return restore_tool_calls(messages, _ledger_groups(connection, run_id))
+    return messages, 0
 
 
 def run_id_from_request(request_id: str) -> str | None:
@@ -158,6 +254,7 @@ class AgentProviderWire:
         self._inner = inner
         self._database = database
         self._guard = request_guard
+        self._replay_reasoning = replays_reasoning(inner)
         self._requests_prepared = requests_prepared
         self._semaphore = None if max_concurrent is None else asyncio.Semaphore(max_concurrent)
         self.fallback_total = 0
@@ -169,13 +266,24 @@ class AgentProviderWire:
     def deployment_capacity(self):
         return getattr(self._inner, "deployment_capacity", None)
 
+    @property
+    def continuation_capability(self) -> ProviderContinuationCapability:
+        return continuation_capability_of(self._inner)
+
     def prepare_request(self, request: ProviderRequest) -> ProviderRequest:
         """Freeze the actual wire copy before admission and physical handoff."""
         run_id = run_id_from_request(request.request_id.value)
         wire_request = request
-        if run_id is not None and any(m.role is MessageRole.TOOL for m in request.messages):
-            groups = _ledger_groups(self._database.connection, run_id)
-            messages, fallbacks = restore_tool_calls(request.messages, groups)
+        if run_id is not None and (
+            any(m.role is MessageRole.TOOL for m in request.messages)
+            or (self._replay_reasoning and any(m.role is MessageRole.ASSISTANT for m in request.messages))
+        ):
+            messages, fallbacks = restore_wire_messages(
+                tuple(request.messages),
+                self._database.connection,
+                run_id,
+                replay_reasoning=self._replay_reasoning,
+            )
             self.fallback_total += fallbacks
             wire_request = replace(request, messages=messages)
         if self._guard is not None and run_id is not None:

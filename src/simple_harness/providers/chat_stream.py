@@ -35,7 +35,7 @@ def _placeholder(value: dict[str, Any]) -> bool:
         return True
     if not isinstance(delta, dict):
         return False
-    return not delta.get("content") and not delta.get("tool_calls")
+    return not delta.get("content") and not delta.get("tool_calls") and not delta.get("reasoning_content")
 
 
 class ChatStream:
@@ -47,6 +47,7 @@ class ChatStream:
 
     def __init__(self) -> None:
         self.content: list[str] = []
+        self.reasoning: list[str] = []
         self.tools: dict[int, dict[str, Any]] = {}
         self.identity: dict[str, str] = {}
         self.usage: Any = None
@@ -118,8 +119,13 @@ class ChatStream:
         if not isinstance(delta, dict) or delta.get("role") not in (None, "assistant"):
             raise ProviderProtocolError()
         content, calls = delta.get("content"), delta.get("tool_calls")
-        if self.finish is not None and (content or calls):
+        reasoning = delta.get("reasoning_content")
+        if self.finish is not None and (content or calls or reasoning):
             raise ProviderProtocolError()
+        if reasoning is not None:
+            if not isinstance(reasoning, str):
+                raise ProviderProtocolError()
+            self.reasoning.append(reasoning)
         if content is not None:
             if not isinstance(content, str):
                 raise ProviderProtocolError()
@@ -176,6 +182,7 @@ class ChatStream:
                         "role": "assistant",
                         "content": "".join(self.content),
                         "tool_calls": [self.tools[i] for i in sorted(self.tools)],
+                        **({"reasoning_content": "".join(self.reasoning)} if self.reasoning else {}),
                     },
                 }
             ],

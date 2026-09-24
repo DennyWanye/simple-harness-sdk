@@ -78,6 +78,10 @@ def message_text(message: Message) -> str:
     calls = message.metadata.get("provider_tool_calls") if message.metadata else None
     if calls:
         parts.append(canonical_json(thaw_json(cast(FrozenJsonValue, calls))))
+    # Thinking mode: replayed private reasoning is rendered on the wire, so it is counted.
+    reasoning = message.metadata.get("provider_reasoning_content") if message.metadata else None
+    if isinstance(reasoning, str) and reasoning:
+        parts.append(reasoning)
     return "\n".join(parts)
 
 
