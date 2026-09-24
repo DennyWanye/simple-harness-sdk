@@ -250,6 +250,19 @@ def read_task_content_projection(
             else item
             for item in projected
         )
+        from ..storage.assurance_store import AssuranceStore
+
+        if AssuranceStore(store).lane(mission_id) == "ASSURANCE_1_1":
+            # Assured lane: the official review judged the package frozen from the
+            # approved check-policy view (read_task_content_candidate).  Acceptance
+            # reads the same view — the same criteria, order and required checks —
+            # or the acceptance formula refuses every reviewed ACCEPT as
+            # CRITERIA_NOT_MATCHED (Host native run arp.15, 2026-09-24).  This reader's
+            # own guards above (verified result, recorded Critic PASS, scope) still hold.
+            approved = read_task_check_policy_projection(store, mission_id, task_id)
+            if {item.criterion_id for item in approved.criteria} != {item.criterion_id for item in criteria}:
+                raise OperationCompletionError("OP_COMPLETION_SCOPE_UNRESOLVED", "review scope differs")
+            criteria = tuple(approved.criteria)
         passed_checks = {item.layer for item in layers if item.passed}
         for criterion in criteria:
             missing = set(criterion.required_evidence_policy.required_check_ids) - passed_checks
