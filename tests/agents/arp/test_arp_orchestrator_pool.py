@@ -97,10 +97,11 @@ def test_allow_all_authorization_is_refused_for_a_native_pool(tmp_path) -> None:
 # ---- prior reserve reader (RP-E3b) ------------------------------------------------------------
 
 
-def _invocation(invocation_id: str, state: str, output: int | None) -> SimpleNamespace:
+def _invocation(invocation_id: str, state: str, output: int | None, *, max_output: int | None = None) -> SimpleNamespace:
     # Real records expose ``usage_json`` as a read-only mapping (not a dict); the fake does too.
     usage = None if output is None else MappingProxyType({"usage": MappingProxyType({"input_tokens": 3, "output_tokens": output})})
-    return SimpleNamespace(invocation_id=invocation_id, state=state, usage_json=usage)
+    request = None if max_output is None else MappingProxyType({"max_output_tokens": max_output})
+    return SimpleNamespace(invocation_id=invocation_id, state=state, usage_json=usage, request_json=request)
 
 
 class _FakeUow:
@@ -150,3 +151,21 @@ def test_after_build_binds_the_reader_to_the_assembled_native_pool(tmp_path) -> 
     assembled = assemble_orchestrator_runtime(OrchestratorConfig(evidence_root=tmp_path / "root"), profiles=profiles, default_profile="native")
     assert reader._uow is assembled.pool("native").runtime.uow
     assert reader("run-never").tokens == 0
+
+
+def test_a_definite_failure_without_usage_reserves_its_own_output_cap_instead_of_freezing_the_agent() -> None:
+    """RP-E4 (real model): one empty gateway reply (definite failure, no usage) made every
+    later request of the Agent PRIOR_RESERVE_UNAVAILABLE.  A definite failure's output is
+    bounded by the request's own max_output_tokens, so that bound is reserved — never less."""
+    from agent_orchestrator.runtime.native_plane import RunPriorReserve
+
+    reader = RunPriorReserve()
+    reader.bind(SimpleNamespace(uow=_FakeUow([_invocation("i1", "succeeded", 40), _invocation("i2", "failed", None, max_output=1024)])))
+    basis = reader("run-1")
+    assert basis.tokens == 40 + 1024 and basis.basis_ref is not None
+    # A failure whose request cap is unknown, and anything still uncertain, stays unavailable by name.
+    for rows in ([_invocation("i3", "failed", None)], [_invocation("i4", "unknown", None, max_output=64)], [_invocation("i5", "succeeded", None, max_output=64)]):
+        reader.bind(SimpleNamespace(uow=_FakeUow(rows)))
+        with pytest.raises(ArpError) as unavailable:
+            reader("run-1")
+        assert unavailable.value.code == "PRIOR_RESERVE_UNAVAILABLE"

@@ -73,17 +73,28 @@ class RunPriorReserve:
             usage = record.usage_json  # a read-only mapping on real records, a dict in fakes
             values = usage.get("usage") if isinstance(usage, Mapping) else None
             output = values.get("output_tokens") if isinstance(values, Mapping) else None
+            source = "reported"
+            if str(record.state) == "failed" and output is None:
+                # A definite failure that reported no usage (e.g. an empty completion): its
+                # output can never exceed the request's own cap, so that proven upper bound
+                # is reserved — never less, and the Agent is not frozen by one bad reply.
+                request = getattr(record, "request_json", None)
+                output = request.get("max_output_tokens") if isinstance(request, Mapping) else None
+                source = "failed_request_cap"
             if str(record.state) not in ("succeeded", "failed") or type(output) is not int or output < 0:
                 raise ArpError(
                     "PRIOR_RESERVE_UNAVAILABLE",
                     "prior provider usage is unresolved",
                     detail={"invocation_id": record.invocation_id, "state": str(record.state)},
                 )
-            rows.append((record.invocation_id, output))
-        tokens = sum(output for _, output in rows)
+            rows.append((record.invocation_id, output, source))
+        tokens = sum(output for _, output, _ in rows)
         if tokens == 0:
             return NO_PRIOR
-        basis = {"run_id": run_id, "invocations": [{"invocation_id": i, "output_tokens": o} for i, o in rows]}
+        basis = {"run_id": run_id, "invocations": [
+            {"invocation_id": i, "output_tokens": o} if src == "reported" else {"invocation_id": i, "output_tokens": o, "source": src}
+            for i, o, src in rows
+        ]}
         return PriorBasis(tokens, Pin("receipt", f"prior-output:{run_id}", 0, digest(basis)))
 
 

@@ -11,6 +11,7 @@ internal recall purpose, and gets every refusal as a named tool failure.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
@@ -27,6 +28,10 @@ if TYPE_CHECKING:
     from ..runtime import AgentRuntime
 
 SEARCH_TOOL_NAME = "session_history_search"
+# One model call may advance a SCANNING query this far (each step is one spec page, bounded
+# by the query's own page/total budgets); the policy caps a query at 30 s in total.
+ADVANCE_BUDGET_S = 20.0
+MAX_ADVANCE_STEPS = 256
 READ_TOOL_NAME = "session_history_read"
 DEFAULT_LIMIT = 8
 DEFAULT_MAX_BYTES = 16384
@@ -76,7 +81,9 @@ class ArpSessionHistoryTools:
                 ToolSpec(
                     SEARCH_TOOL_NAME,
                     "在当前 Agent 自己的会话历史索引里检索（词面/精确 seq + 向量融合，冻结快照分页）。"
-                    "扫描未完成时返回空 items 和 next_cursor，继续用 cursor 翻页直到 phase=RESULTS；允许零命中。",
+                    "工具会在一次调用内自动推进扫描并返回结果页；只有扫描超出单次时间预算时才返回空 items 的进度页"
+                    "（page_semantics=PROGRESS，表示“还在扫描”，不是“没找到”），这时用同一 cursor 继续即可，不要换词重搜。"
+                    "结果页 items 为空才表示本查询零命中。",
                     cast(Mapping[str, FrozenJsonValue], SEARCH_SCHEMA),
                 ),
                 cast(ToolHandler, self._search),
@@ -134,6 +141,22 @@ class ArpSessionHistoryTools:
         try:
             access = retriever.access_for(session, purpose="MODEL_SEARCH", caller_ref=self._caller(session), turn_id=turn_id)
             page = retriever.search(access, request)
+            # RP-E4: a SCANNING page is a PROGRESS page (items=[], has_more=true).  Handed to
+            # the model one per call, it reads as "nothing found" and the model re-searches from
+            # scratch.  This tool is the cursor's consumer: it advances the same frozen query
+            # itself (every step is still one spec page and one cursor consumption) and hands the
+            # model the first RESULTS page, or the last PROGRESS page once its time is spent.
+            deadline = time.monotonic() + ADVANCE_BUDGET_S
+            steps = 0
+            while (
+                page.get("page_semantics") == "PROGRESS"
+                and page.get("next_cursor")
+                and steps < MAX_ADVANCE_STEPS
+                and time.monotonic() < deadline
+            ):
+                request = {**request, "cursor": page["next_cursor"]}
+                page = retriever.search(access, request)
+                steps += 1
         except ArpError as error:
             return self._failure(context, error)
         return ToolResult.succeeded(cast(CallId, context.call_id), cast(JsonValue, _json(page)))

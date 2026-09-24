@@ -53,8 +53,17 @@ def test_model_search_pages_a_frozen_query_to_the_secret(tmp_path, embedding) ->
             agent = await _seed(runtime)
             runtime.arp.tick()  # closed groups of the last Turn are indexed by the tick, not by a prepare
             search, _read = _tools(runtime)
-            pages = []
+            connection = runtime.uow.database.connection
+            session = store.read_live_session(connection, agent.agent_id)
             arguments = {"query": "工程暗号", "limit": 4, "max_bytes": 8192}
+            # Search layer (the spec's SearchPage contract): a SCANNING step is a PROGRESS page.
+            retriever = runtime._session_tools.history._retriever
+            access = retriever.access_for(session, purpose="MODEL_SEARCH", caller_ref=Pin("principal", f"agent:{session.agent_id}", 0, digest({"agent": session.agent_id, "session": session.session_id})), turn_id=None)
+            first = retriever.search(access, {"schema_version": 1, "cursor": None, **arguments})
+            assert first["page_semantics"] == "PROGRESS", "scanning progress is not an empty hit"
+            assert first["items"] == [] and first["has_more"] and first["next_cursor"]
+            # Model tool (RP-E4): it consumes the progress cursors itself; the model sees RESULTS.
+            pages = []
             cursor = None
             for n in range(64):
                 result = await search.invoke({**arguments, **({"cursor": cursor} if cursor else {})}, _context(agent, n))
@@ -63,12 +72,10 @@ def test_model_search_pages_a_frozen_query_to_the_secret(tmp_path, embedding) ->
                 pages.append(page)
                 assert page["cursor_purpose"] == "MODEL_SEARCH"
                 assert page["body_bytes"] <= arguments["max_bytes"]
-                if page["page_semantics"] == "PROGRESS":
-                    assert page["items"] == [] and page["has_more"] and page["next_cursor"]
+                assert page["page_semantics"] != "PROGRESS", "the tool advances a scanning query within the call"
                 cursor = page["next_cursor"]
                 if cursor is None:
                     break
-            assert pages[0]["page_semantics"] == "PROGRESS", "scanning progress is not an empty hit"
             final = [p for p in pages if p["page_semantics"] == "APPEND_FINAL"]
             assert final and final[-1]["has_more"] is False and final[-1]["next_cursor"] is None
             assert final[0]["receipt"]["coverage"]["phase"] == "RESULTS" and final[0]["receipt"]["coverage"]["ranking_final"]
@@ -76,19 +83,18 @@ def test_model_search_pages_a_frozen_query_to_the_secret(tmp_path, embedding) ->
             items = [i for p in final for i in p["items"]]
             assert items and all(len(p["items"]) <= 4 for p in final)
             assert [i["rank_ordinal"] for i in items] == list(range(1, len(items) + 1))
-            connection = runtime.uow.database.connection
-            session = store.read_live_session(connection, agent.agent_id)
             service = runtime.arp.search_for(session)[0]
             texts = [service.chunk_text(final[0]["receipt"]["index_generation"], i["chunk_id"]) for i in items]
             assert any("蓝鲸七号" in t for t in texts)
             # The model tool never wrote an internal recall row or a CONTEXT_RECALL cursor.
             assert store.list_pending_recalls(connection) == ()
             assert runtime._session_tools.searches == len(pages)
-            # A cursor re-sent with another limit is refused; the same request replays the page.
-            bad = await search.invoke({**arguments, "limit": 3, "cursor": pages[0]["next_cursor"]}, _context(agent, 99))
+            # A cursor re-sent with another limit is refused; the same request replays the same page.
+            bad = await search.invoke({**arguments, "limit": 3, "cursor": first["next_cursor"]}, _context(agent, 99))
             assert bad.outcome.value != "succeeded" and bad.error_code == "session_history_cursor_request_mismatch"
-            again = await search.invoke({**arguments, "cursor": pages[0]["next_cursor"]}, _context(agent, 100))
-            assert plain(again.value) == pages[1]
+            resumed = await search.invoke({**arguments, "cursor": first["next_cursor"]}, _context(agent, 100))
+            again = await search.invoke({**arguments, "cursor": first["next_cursor"]}, _context(agent, 101))
+            assert plain(resumed.value)["page_semantics"] != "PROGRESS" and plain(again.value) == plain(resumed.value)
 
     asyncio.run(case())
 
