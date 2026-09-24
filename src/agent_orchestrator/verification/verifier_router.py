@@ -314,7 +314,9 @@ class VerifierRouter:
                             if critic.passed
                             else "critic found a blocker: "
                             + "; ".join(
-                                str(f.get("detail"))
+                                # Assurance review findings carry ``description`` (2026-09-25
+                                # desktop run showed "blocker: None; None").
+                                str(f.get("detail") or f.get("description") or f.get("criterion_id") or "?")
                                 for f in critic.findings
                                 if f.get("severity") == "blocker"
                             ),
