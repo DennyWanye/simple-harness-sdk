@@ -3,7 +3,7 @@
   "status": "SOURCE_CHECKPOINT_NOT_RELEASE",
   "assurance_baseline": "187e1f4dc0147cace1d3c2092b9de9acc2757b11",
   "htn_head": "102ad3dfa2db38d575ea929d39ec5ed1561a71da",
-  "arp_head": "cbf595c8d2e1f29ddf6a0699384f1d2f9f299488",
+  "arp_head": "e1cd2792f8ca5a353579a67a91582107901eb27d",
   "previous_checkpoint_date": "2026-09-23",
   "files": [
     {
@@ -1043,8 +1043,8 @@
     },
     {
       "path": "src/agent_orchestrator/assurance/codec.py",
-      "source": "assurance",
-      "sha256": "0115ace0838fd23c8f183070ec985b9cab2de8822edd8f113741d458250b8a05"
+      "source": "arp-1.1.1",
+      "sha256": "b7ea501a619d59cae1a06fa76c9435894d54d208e865b9a1fe555e7b9863e092"
     },
     {
       "path": "src/agent_orchestrator/assurance/contracts/__init__.py",
@@ -1959,7 +1959,7 @@
     {
       "path": "src/agent_orchestrator/orchestrator/assurance_review_collect.py",
       "source": "arp-1.1.1",
-      "sha256": "8e587a812aa32c03e7557bdfac3ad2b4fd1f71532adcd5afec1337e65a6732fa"
+      "sha256": "2cc0eeb5a396b27f7c7faebb2db3d7ceb114be0d4a7ad6d3996965e0db143ccf"
     },
     {
       "path": "src/agent_orchestrator/orchestrator/assurance_review_consumer.py",
@@ -2044,7 +2044,7 @@
     {
       "path": "src/agent_orchestrator/orchestrator/event_handler.py",
       "source": "arp-1.1.1",
-      "sha256": "f2395e740b666dcff5fc03a9598f300d5b5ebc5e3f6ea088cece6fca1629bff2"
+      "sha256": "7e766b29e36de6c813b702fbc7da99e0865f55eb4587300b0a531043eff5beb5"
     },
     {
       "path": "src/agent_orchestrator/orchestrator/fragment_commits.py",
@@ -2754,7 +2754,7 @@
     {
       "path": "src/agent_orchestrator/runtime/assurance_turn_sources.py",
       "source": "arp-1.1.1",
-      "sha256": "45ce51d6dbde7ad4394a47a642708e30ac407668cbaa7e3a1a9d071c850676ed"
+      "sha256": "5500b5d69b35e3107c1efa903dffd8fa23515a05ef788c691c58692d36d7bfea"
     },
     {
       "path": "src/agent_orchestrator/runtime/connectors.py",
@@ -2927,14 +2927,19 @@
       "sha256": "b83f96d2f35a647984bccfae032fe2ccc6fc5702377c8952fd7733fba811d085"
     },
     {
+      "path": "src/agent_orchestrator/storage/assurance_pin_object_schema.py",
+      "source": "arp-1.1.1",
+      "sha256": "200486820980dbc391b9cfe09a4b3a8bb4d7e9b048b2731ea8c29d787b983023"
+    },
+    {
       "path": "src/agent_orchestrator/storage/assurance_pins.py",
       "source": "assurance",
       "sha256": "8ca123ae16e68ff4133d4755b40c431ed889985f4b8dcf166c1acb85d382289a"
     },
     {
       "path": "src/agent_orchestrator/storage/assurance_reads.py",
-      "source": "assurance",
-      "sha256": "646abf22ccf88fd220cfb5a90d02d35f12644e12710258dae9f2735f2e644c79"
+      "source": "arp-1.1.1",
+      "sha256": "a127115b9ee58dc33c6cd51edbc22356dffb948a907ca98936a38b2b6e2d57e9"
     },
     {
       "path": "src/agent_orchestrator/storage/assurance_schema.py",
@@ -2954,7 +2959,7 @@
     {
       "path": "src/agent_orchestrator/storage/assurance_store.py",
       "source": "arp-1.1.1",
-      "sha256": "d8c6420599abb1ee9e2e32eaedcbc116d9e781a034b92aadf98a6875894a10d3"
+      "sha256": "e9319ed37ad62e7b6e2bfc102c3b7dbccd1778744cdcda2648955afbe7811f64"
     },
     {
       "path": "src/agent_orchestrator/storage/assurance_upgrade.py",
@@ -2963,8 +2968,8 @@
     },
     {
       "path": "src/agent_orchestrator/storage/assurance_work.py",
-      "source": "assurance",
-      "sha256": "d1bb443b7dc5add9099fb09caf3a27f590b019a869d1cf85bb81cf9109fafcc5"
+      "source": "arp-1.1.1",
+      "sha256": "aa7b9e4e5ce82b75b5d5195721fcaf07ae012dcf04d92594fb670c1d50756768"
     },
     {
       "path": "src/agent_orchestrator/storage/fragment_schema.py",
@@ -3053,8 +3058,8 @@
     },
     {
       "path": "src/agent_orchestrator/storage/schema.py",
-      "source": "assurance",
-      "sha256": "30640b1274fe05cca446a07aae384d38c1da3cf0ca8e86a3911717934ffea056"
+      "source": "arp-1.1.1",
+      "sha256": "d366368c03d87b1b9ec701bde8107fe5f00e86145e43882bb9034a1057c25837"
     },
     {
       "path": "src/agent_orchestrator/storage/store.py",
@@ -3199,12 +3204,12 @@
     {
       "path": "src/agent_orchestrator/verification/verifier_router.py",
       "source": "arp-1.1.1",
-      "sha256": "e5d0899177353ea4ff0f9fc1faaf52b945a91778a18ca386e581c8c97f897ac8"
+      "sha256": "54e77ceeb4c13ab47ab986b6326f84d83d418b66e6c132e05cb2f73dd1186a5d"
     },
     {
       "path": "src/agent_orchestrator/version.py",
       "source": "arp-1.1.1",
-      "sha256": "94719b46d735074e66a67300b2d90c7b969ac7d966dbdee1ac4b1df77b58f06c"
+      "sha256": "4a6f0a1db1369c7ec34e57a391f1808cecebc6e1c55afadac31ecbe7a64cb6b0"
     },
     {
       "path": "src/simple_harness/__init__.py",
@@ -4349,7 +4354,7 @@
     {
       "path": "src/simple_harness/version.py",
       "source": "arp-1.1.1",
-      "sha256": "fc09679989c948a67b2310d33e477d71efe8cc01ef8c74dd404010ef394fd85c"
+      "sha256": "9985789fe79ca64d8c4bf1e112b78c00e2ce7dc87409c03a254fd90f9a5e4a93"
     },
     {
       "path": "src/simple_harness/workflow/__init__.py",
@@ -4873,8 +4878,8 @@
     },
     {
       "path": "tests/artifact/test_build_contents.py",
-      "source": "assurance",
-      "sha256": "68bb49ae3ff15642438200e1898c05ea634131297611d0fda97b641559bd2928"
+      "source": "arp-1.1.1",
+      "sha256": "708191cb283fc3c309b819645b7bed4d549d18045f955f01a453c4751ae5ae31"
     },
     {
       "path": "tests/artifact/test_exact_wheel_consumer.py",
@@ -5604,7 +5609,7 @@
     {
       "path": "tests/orchestrator/full_target/assurance_exec/test_c_assurance.py",
       "source": "arp-1.1.1",
-      "sha256": "4204447f4d2d8b5c13a0a58eae4035b21d57c520c0ea6f44b05d0fbff2b9931b"
+      "sha256": "0b553c2b3be2e54c83434f21a0f935c94cab75af2f2ec7fd05f29a291ac9ad37"
     },
     {
       "path": "tests/orchestrator/full_target/assurance_exec/test_c_integration.py",
@@ -5637,6 +5642,11 @@
       "sha256": "be84001394b8a89218305fca4295e3cfdda27565137ea098f04ac07c6de35a93"
     },
     {
+      "path": "tests/orchestrator/full_target/assurance_exec/test_exact_metadata_large_body.py",
+      "source": "arp-1.1.1",
+      "sha256": "ab55e0da9486c97ea69486741da65ef30de5af365ed3e76c395e25c53579a49a"
+    },
+    {
       "path": "tests/orchestrator/full_target/assurance_exec/test_executor_check_in_gate.py",
       "source": "arp-1.1.1",
       "sha256": "25f235467387e822051929e9716e0e0df0fb6ec1083817ecd92843e6575fe2d2"
@@ -5657,6 +5667,11 @@
       "sha256": "b922f7ce4f536cdfd79463d92a4c95f01b1484db4b43de23a53ee72bf25b683a"
     },
     {
+      "path": "tests/orchestrator/full_target/assurance_exec/test_same_content_pins_per_object.py",
+      "source": "arp-1.1.1",
+      "sha256": "abe44b51387b9d8cf10166ae686c8c6c63b503e1e6ee21e539186a355eb87371"
+    },
+    {
       "path": "tests/orchestrator/full_target/assurance_exec/test_settlement_held_not_fatal.py",
       "source": "arp-1.1.1",
       "sha256": "3ef5ec98fb827fa2b18bd9333341a341648640bb2cf9f9151b5fb270ba7d72d9"
@@ -5669,7 +5684,7 @@
     {
       "path": "tests/orchestrator/full_target/assurance_exec/test_v_assurance.py",
       "source": "arp-1.1.1",
-      "sha256": "390732428f7e6548b4569c05fb2da0eb9cda042fafe82f2d2c5158e678f2f4a7"
+      "sha256": "466db49ea1475e1af695afa14e0aa0888e5ae406359b477ed4a21adffba4f78e"
     },
     {
       "path": "tests/orchestrator/full_target/fixtures/SOURCE.md",
@@ -7068,8 +7083,8 @@
     },
     {
       "path": "tests/orchestrator/full_target/test_h4_retry_runtime_entry.py",
-      "source": "assurance",
-      "sha256": "aeed5148cefffcb464ce5c9c72dbf1762c7e5609506ec0d5e927dccda20d74ff"
+      "source": "arp-1.1.1",
+      "sha256": "b0388819b85d0efd0b0857312839c6b3c6f4da1c7dc4d1189a436e2b8eb05a90"
     },
     {
       "path": "tests/orchestrator/full_target/test_h5_domain_loader_integration.py",
