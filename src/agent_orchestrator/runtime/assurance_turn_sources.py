@@ -17,7 +17,7 @@ from simple_harness.execution.provider_invocations import (
     provider_response_from_json,
 )
 
-from ..assurance.codec import AssuranceError, canonical, fingerprint
+from ..assurance.codec import MAX_RECORD_BYTES, AssuranceError, canonical, fingerprint
 
 if TYPE_CHECKING:
     from ..storage.store import DispatchIntent
@@ -88,7 +88,7 @@ def read_actual_review_turn(bridge: AgentBridge, intent: DispatchIntent) -> Actu
             exposure = _exposure(uow, agent.run_id, turn, result, native_context=getattr(arp, "context", None))
         except AssuranceError as error:
             return ActualReviewTurn(raw_json, canonical(source), None, error.code)
-        return ActualReviewTurn(raw_json, canonical(source), canonical(exposure), None)
+        return ActualReviewTurn(raw_json, canonical(source), canonical(exposure, limit=MAX_RECORD_BYTES), None)
 
 
 def _exposure(uow: Any, run_id: str, turn: Any, result: AgentTurnResult, *, native_context: Any = None) -> dict:

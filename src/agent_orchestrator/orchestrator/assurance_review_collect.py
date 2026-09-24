@@ -10,7 +10,7 @@ from simple_harness.agents import AgentTurnResult
 from simple_harness.contracts import canonical_json
 
 from ..assurance.checks import ReviewReply
-from ..assurance.codec import AssuranceError, decode, fingerprint
+from ..assurance.codec import MAX_RECORD_BYTES, AssuranceError, decode, fingerprint
 from ..assurance.refs import AssuranceRef, Pin
 from ..assurance.review_input import read_initial_materials
 from ..runtime.assurance_turn_sources import read_actual_review_turn
@@ -58,7 +58,7 @@ async def collect_assurance_review(orchestrator: Any, intent: Any) -> None:
     raw_ref = AssuranceRef("source", Pin(raw_path, 1, raw_hash))
     bound = binding.to_json()
     value = invocation.to_json()
-    manifest = None if actual.exposure_json is None else decode(actual.exposure_json)
+    manifest = None if actual.exposure_json is None else decode(actual.exposure_json, limit=MAX_RECORD_BYTES)
     turn_payload = {
         "review_key": bound["review_key"],
         "invocation_ordinal": value["ordinal"],

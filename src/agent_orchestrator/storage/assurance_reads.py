@@ -15,7 +15,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from ..assurance.codec import AssuranceError, canonical, decode, fingerprint, text
+from ..assurance.codec import MAX_BYTES, MAX_RECORD_BYTES, AssuranceError, canonical, decode, fingerprint, text
 from ..assurance.event_kinds import EVENT_REF_KINDS, SOURCE_EVENT_SQL
 from ..assurance.evidence import ReadItem
 from ..assurance.refs import AssuranceRef
@@ -175,7 +175,8 @@ class AssuranceReader:
             if len(rows) != 1:
                 raise AssuranceError("REF_LOCATOR_AMBIGUOUS", ref.pin.id)
             row = dict(rows[0])
-            body = decode(row[body_column])
+            limit = MAX_RECORD_BYTES if ref.kind == "input_manifest" else MAX_BYTES
+            body = decode(row[body_column], limit=limit)
             if not isinstance(body, dict):
                 raise AssuranceError("REF_BODY_INVALID", ref.pin.id)
             if ref.kind == "input_manifest" and row["origin_mission_id"] != self.mission_id:
@@ -203,7 +204,7 @@ class AssuranceReader:
             # body is carried (and hash-checked) once, not again as an escaped string that
             # pushed a 230 KB reviewer manifest past the 256 KB limit (2026-09-25 desktop run).
             lifecycle = {key: value for key, value in row.items() if key != body_column}
-            return ExactMetadata(ref, canonical(body), canonical(lifecycle))
+            return ExactMetadata(ref, canonical(body, limit=limit), canonical(lifecycle))
 
     def _event_metadata(self, ref: AssuranceRef) -> ExactMetadata:
         if ref.pin.revision != 0:
@@ -332,10 +333,13 @@ def read_complete_evidence_snapshot(
                         # is not a complete readable record. Keep exact original
                         # bytes in the set digest after validating its structure.
                         try:
-                            decode(row[column])
+                            decode(row[column], limit=MAX_RECORD_BYTES)
                         except AssuranceError as error:
                             raise AssuranceError("EVIDENCE_EVALUATION_INCOMPLETE", kind) from error
-                encoded = canonical(dict(row))
+                try:  # a whole-request manifest row may exceed MAX_BYTES; the set budget still bounds it
+                    encoded = canonical(dict(row), limit=MAX_RECORD_BYTES)
+                except AssuranceError as error:
+                    raise AssuranceError("EVIDENCE_EVALUATION_INCOMPLETE", kind) from error
                 count += 1
                 size += len(encoded.encode("utf-8"))
                 if count > maximum_rows or size > maximum_bytes:

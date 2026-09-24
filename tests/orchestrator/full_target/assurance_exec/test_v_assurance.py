@@ -526,6 +526,34 @@ def test_complete_collection_not_topk(tmp_path):
     _run(tmp_path, checks)
 
 
+def test_snapshot_reads_a_whole_request_manifest_row_over_256kb(tmp_path):
+    """2026-09-25 desktop run: an earlier reviewer turn's input manifest (211 KB body,
+    275 KB as a row with the body escaped) made every later snapshot of the Mission fail
+    JSON_BYTES_LIMIT, so no review could ever be prepared again.  Historical records get
+    the larger record cap; the encoding (and every set hash) is unchanged."""
+
+    from agent_orchestrator.assurance.codec import MAX_BYTES, canonical, fingerprint
+
+    async def checks(world, assured, legacy):
+        body = {"messages": [{"role": "tool", "name": f"t{i}", "content": f"line {i}"} for i in range(4200)]}
+        row = {"manifest_hash": fingerprint(body), "origin_mission_id": assured.id,
+               "manifest_json": canonical(body), "created_at": 1.0}
+        assert len(canonical(row, limit=8 * 1024 * 1024).encode()) > MAX_BYTES  # over the old cap as a row
+        world.store.connection.execute(
+            "INSERT INTO input_manifests(manifest_hash, origin_mission_id, manifest_json, created_at) VALUES (?,?,?,?)",
+            (row["manifest_hash"], row["origin_mission_id"], row["manifest_json"], row["created_at"]))
+        reader = AssuranceReader(world.store, tenant_id=TENANT, mission_id=assured.id)
+        complete = read_complete_evidence_snapshot(reader, scope_id="scope-v")
+        manifests = next(r for r in complete if json.loads(r.query_key)["query_kind"] == "input_manifests")
+        assert any(row["manifest_hash"] in encoded for encoded in manifests.rows)
+        # Other records keep the 256 KB cap.
+        with pytest.raises(AssuranceError) as raised:
+            canonical({"x": "y" * (MAX_BYTES + 1)})
+        assert raised.value.code == "JSON_BYTES_LIMIT"
+
+    _run(tmp_path, checks)
+
+
 # --------------------------------------------------------------------------- V07
 def test_insert_counterevidence_barrier(tmp_path):
     async def checks(world, assured, legacy):

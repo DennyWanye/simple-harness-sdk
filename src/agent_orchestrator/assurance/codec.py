@@ -13,6 +13,12 @@ from typing import Any
 from simple_harness.contracts import canonical_json
 
 MAX_BYTES = 256 * 1024
+# Historical records whose body is a whole provider request (a reviewer turn's input
+# manifest / exposure: messages + provider_request for a 256K-token context).  Only the
+# evidence-snapshot and exact-manifest reads use it; every other record keeps MAX_BYTES.
+# The encoding is unchanged, so every existing hash stays byte-identical (2026-09-25
+# desktop run: a 211 KB manifest row encoded to 275 KB and failed every review).
+MAX_RECORD_BYTES = 8 * 1024 * 1024
 MAX_INTEGER = 9007199254740991
 
 
@@ -112,10 +118,10 @@ def _constant(value: str) -> None:
     raise AssuranceError("JSON_NUMBER_INVALID", value)
 
 
-def decode(raw: str | bytes) -> Any:
+def decode(raw: str | bytes, *, limit: int = MAX_BYTES) -> Any:
     try:
         encoded = raw.encode("utf-8", errors="strict") if isinstance(raw, str) else raw
-        if not isinstance(encoded, bytes) or len(encoded) > MAX_BYTES:
+        if not isinstance(encoded, bytes) or len(encoded) > limit:
             raise AssuranceError("JSON_BYTES_LIMIT")
         value = json.loads(
             encoded.decode("utf-8", errors="strict"),
@@ -128,11 +134,11 @@ def decode(raw: str | bytes) -> Any:
         raise AssuranceError("JSON_INVALID") from exc
 
 
-def canonical(value: Any) -> str:
+def canonical(value: Any, *, limit: int = MAX_BYTES) -> str:
     try:
         _validate_tree(value)
         result = canonical_json(value)
-        if len(result.encode("utf-8")) > MAX_BYTES:
+        if len(result.encode("utf-8")) > limit:
             raise AssuranceError("JSON_BYTES_LIMIT")
         return result
     except (UnicodeError, RecursionError) as exc:
