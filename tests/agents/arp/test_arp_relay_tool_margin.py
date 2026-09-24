@@ -98,3 +98,34 @@ def test_the_calibrating_provider_learns_from_every_reported_prompt_count(counte
     assert margin.value == 160 and not margin.alarms and margin.max_excess == 110
     asyncio.run(CalibratingProvider(Relay(230), relay).invoke(_request(tools=True), cancel=None))
     assert margin.value == 280 and margin.alarms[-1]["excess"] == 230
+
+
+def test_the_ordinary_path_plans_the_relay_margin_with_its_tools(counters) -> None:  # type: ignore[no-untyped-def]
+    """Review 2026-09-24: the non-ARP Context port planned tools without the margin, so a
+    near-full window was refused on every turn by the final re-count."""
+    from types import SimpleNamespace
+
+    from simple_harness.agents.context.port import JournalContextPort
+    from simple_harness.agents.context.tokenizer import count_tools
+
+    exact, relay, margin = counters
+    port = SimpleNamespace(_tokenizer=relay, _tool_specs_for_run=lambda run_id: (TOOL,))
+    assert JournalContextPort.tool_tokens(port, "r") == count_tools(relay, (TOOL,)) + margin.value  # type: ignore[arg-type]
+    none = SimpleNamespace(_tokenizer=relay, _tool_specs_for_run=lambda run_id: ())
+    assert JournalContextPort.tool_tokens(none, "r") == 0  # type: ignore[arg-type]
+    plain = SimpleNamespace(_tokenizer=exact, _tool_specs_for_run=lambda run_id: (TOOL,))
+    assert JournalContextPort.tool_tokens(plain, "r") == count_tools(exact, (TOOL,))  # type: ignore[arg-type]
+
+
+def test_the_legacy_counter_keeps_the_released_identity_and_semantics() -> None:
+    pytest.importorskip("deepseek_recipe")
+    if not TOKENIZER.is_file():
+        pytest.skip("pinned DeepSeek tokenizer not installed on this machine")
+    from agent_orchestrator.runtime.deepseek_tokens import LegacyPriorOutputDeepSeekCounter
+
+    legacy = LegacyPriorOutputDeepSeekCounter(TOKENIZER, model="deepseek-v4.1-flash")
+    # The fingerprint released on main before 2026-09-24 (reproduced from that source).
+    assert legacy.fingerprint == "deepseek-v41:24caaa2f95c620f603f1536676a3566ca4d3aaefbf96e101667fc7bdea9a2d25"
+    assert legacy.requires_prior_output_reserve is True and legacy.bound_protocol == "deepseek-v41-chat-text-plus-prior-output-v1"
+    enabled = CertifiedDeepSeekCounter(TOKENIZER, model="deepseek-v4.1-flash", thinking="enabled")
+    assert legacy.estimate_input_tokens(_request(tools=True)) == enabled.count_request_tokens(_request(tools=True))  # endpoint-default render

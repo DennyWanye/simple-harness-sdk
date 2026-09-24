@@ -182,7 +182,13 @@ class JournalContextPort:
         return overhead
 
     def tool_tokens(self, run_id: str) -> int:
-        return count_tools(self._tokenizer, tuple(self._tool_specs_for_run(run_id)))
+        specs = tuple(self._tool_specs_for_run(run_id))
+        # An upper-bound relay counter charges its learned tool-preamble margin on every
+        # request with tools; the plan charges it too, so the final re-count agrees (review
+        # 2026-09-24: otherwise a near-full window is refused on every turn).
+        margin = getattr(getattr(self._tokenizer, "margin", None), "value", 0)
+        extra = margin if specs and type(margin) is int and margin > 0 else 0
+        return count_tools(self._tokenizer, specs) + extra
 
     # ---- ContextPort --------------------------------------------------------
 

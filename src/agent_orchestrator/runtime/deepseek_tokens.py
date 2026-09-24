@@ -113,4 +113,39 @@ class DeepSeekV41TokenEstimator:
         return len(self._encoding.encode(converted.conversation))
 
 
-__all__ = ("DeepSeekV41TokenEstimator", "TOKENIZER_SHA256", "TOKENIZER_URL")
+class LegacyPriorOutputDeepSeekCounter(DeepSeekV41TokenEstimator):
+    """The counter identity released before 2026-09-24, kept only for execution pools that
+    were frozen with it.
+
+    A pool's context identity pins its tokenizer fingerprint and nothing migrates old
+    requests, so a pool frozen with this identity keeps exactly its old semantics: the same
+    fingerprint, the endpoint-default (thinking) rendering and the prior-output reserve in
+    admission — all overcounting relative to today's wire, never under.  New pools use the
+    current counters.
+    """
+
+    requires_prior_output_reserve = True
+    bound_protocol = "deepseek-v41-chat-text-plus-prior-output-v1"
+
+    def __init__(self, tokenizer_path: Path, *, model: str = "deepseek-flash", tool_schema_mode: str = "legacy") -> None:
+        super().__init__(tokenizer_path, model=model, tool_schema_mode=tool_schema_mode)
+        self.fingerprint = (
+            "deepseek-v41:"
+            + sha256(
+                canonical_json(
+                    {
+                        "recipe_version": RECIPE_VERSION,
+                        "recipe_commit": RECIPE_COMMIT,
+                        "tokenizer_sha256": TOKENIZER_SHA256,
+                        "model": model,
+                        "bound_protocol": self.bound_protocol,
+                        "requires_prior_output_reserve": True,
+                        "serializer": ("openai-chat-payload-v1" if tool_schema_mode == "legacy"
+                                       else "openai-chat-deepseek-strict-v1"),
+                    }
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+
+
+__all__ = ("DeepSeekV41TokenEstimator", "LegacyPriorOutputDeepSeekCounter", "TOKENIZER_SHA256", "TOKENIZER_URL")
