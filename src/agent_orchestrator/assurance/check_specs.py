@@ -107,6 +107,11 @@ class CheckSpec:
 
 LOCAL_LAYERS = ("format_check", "rule_check")
 EXECUTOR_LAYERS = ("code_test",)
+# Verification layers the Assurance review itself satisfies: on the assured lane the
+# critic_review layer *is* the review (event_handler runs the Assurance review there), so
+# it is never a registered check the review could wait for.  human_review is not here:
+# it is a separate human gate with no Assurance counterpart and stays unresolved.
+REVIEW_LAYERS = ("critic_review",)
 
 
 def local_layer_spec(layer: str, implementation_hash: str) -> CheckSpec:

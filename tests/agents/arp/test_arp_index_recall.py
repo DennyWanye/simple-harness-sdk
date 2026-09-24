@@ -143,7 +143,10 @@ def test_recall_resumes_the_same_frozen_query_after_a_crash_between_pages(tmp_pa
         def fault(name: str) -> None:
             if armed["on"] and name == "recall.after_page":
                 armed["hits"] += 1
-                if armed["hits"] == crash_after_page:
+                # The process is gone from this page on: every later attempt (the background
+                # pump retries the recall) dies at the same point until the "restart" below.
+                # Failing only once let the pump finish the recall before we looked (flaky).
+                if armed["hits"] >= crash_after_page:
                     raise RuntimeError("process exit between pages")
 
         provider = ScriptedProvider(["记住了。"] + ["好的。"] * len(FILLERS) + ["暗号是蓝鲸七号。"])
@@ -154,9 +157,10 @@ def test_recall_resumes_the_same_frozen_query_after_a_crash_between_pages(tmp_pa
             armed["on"] = True
             receipt = await agent.submit("请问工程暗号 是什么？", input_id="ask")
             try:
-                await agent.wait_turn(receipt.turn_id, timeout=2)
+                await agent.wait_turn(receipt.turn_id, timeout=10)
             except Exception:  # noqa: BLE001 - the crash window is what we test
                 pass
+            assert armed["hits"] >= crash_after_page
             rows = store.list_pending_recalls(connection)
             assert len(rows) == 1
             row = rows[0]

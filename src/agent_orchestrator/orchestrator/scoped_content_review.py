@@ -23,6 +23,7 @@ from ..contracts.resolution import (
     AllExpr,
     Criterion,
     CriterionExpr,
+    EvaluationKind,
     RequirementsRevision,
     SuccessExpression,
 )
@@ -97,11 +98,27 @@ def read_task_check_policy_projection(
             if key in spec.content_criterion_ids:
                 criteria.append(root_catalogue[key])
             else:
-                criterion = local[key]
-                criteria.append(replace(criterion, required_evidence_policy=replace(
-                    criterion.required_evidence_policy,
-                    required_check_ids=tuple(task.verification_policy))))
+                criteria.append(local_check_criterion(local[key], tuple(task.verification_policy)))
         return ScopedTaskCheckPolicy(requirements,scope,tuple(criteria))
+
+
+def local_check_criterion(criterion: Criterion, verification_policy: tuple[str, ...]) -> Criterion:
+    """A Task-derived criterion as the Assurance check policy sees it.
+
+    Its required checks are the Task's verification layers minus the ones the Assurance
+    review itself satisfies (``REVIEW_LAYERS``: requiring the review to wait for its own
+    verdict can never resolve — canary-native-4, 2026-09-24).  When only review layers
+    were declared the criterion is judged by the reviewer alone, so it is SEMANTIC; the
+    reviewer's grade still enters every CHECKED criterion too.  Any other unregistered
+    layer (human_review, ...) is kept and stays unresolved — nothing is invented or dropped.
+    """
+    from ..assurance.check_specs import REVIEW_LAYERS
+
+    checks = tuple(layer for layer in verification_policy if layer not in REVIEW_LAYERS)
+    policy = replace(criterion.required_evidence_policy, required_check_ids=checks)
+    if not checks and len(checks) != len(verification_policy):
+        return replace(criterion, evaluation_kind=EvaluationKind.SEMANTIC, required_evidence_policy=policy)
+    return replace(criterion, required_evidence_policy=policy)
 
 
 def _scoped_local_criteria(binding, scope, layers, carried):
