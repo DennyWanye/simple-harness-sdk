@@ -53,3 +53,32 @@ def test_one_search_call_returns_results_not_a_progress_page(tmp_path) -> None:
             assert provider.calls == len(script)
 
     asyncio.run(case())
+
+
+def test_advancing_yields_to_the_event_loop_between_steps(tmp_path) -> None:
+    """Review blocker: the advance loop must not hold the event loop (lease heartbeats)."""
+
+    async def case() -> None:
+        script = ["记住了。"] + ["好的。"] * len(FILLERS) + [(SEARCH_TOOL_NAME, {"query": "工程暗号"}), "暗号是蓝鲸七号。"]
+        runtime = build(tmp_path, ScriptedProvider(script))
+        async with runtime:
+            agent = await runtime.create(CONFIG, creation_key="k1", caller=trusted_caller())
+            assert (await _turn(agent, SECRET, "i0")).state is AgentTurnState.COMMITTED
+            for i, filler in enumerate(FILLERS, 1):
+                assert (await _turn(agent, filler, f"i{i}")).state is AgentTurnState.COMMITTED
+            ticks = 0
+            stop = asyncio.Event()
+
+            async def ticker() -> None:
+                nonlocal ticks
+                while not stop.is_set():
+                    ticks += 1
+                    await asyncio.sleep(0)
+
+            task = asyncio.create_task(ticker())
+            before = ticks
+            assert (await _turn(agent, "请用工具查一下工程暗号。", "ask")).state is AgentTurnState.COMMITTED
+            stop.set(); await task
+            assert ticks - before > 3, "other tasks must run while the search advances"
+
+    asyncio.run(case())

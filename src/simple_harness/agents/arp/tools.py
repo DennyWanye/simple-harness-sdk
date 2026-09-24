@@ -10,6 +10,7 @@ internal recall purpose, and gets every refusal as a named tool failure.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Mapping
@@ -29,8 +30,10 @@ if TYPE_CHECKING:
 
 SEARCH_TOOL_NAME = "session_history_search"
 # One model call may advance a SCANNING query this far (each step is one spec page, bounded
-# by the query's own page/total budgets); the policy caps a query at 30 s in total.
-ADVANCE_BUDGET_S = 20.0
+# by the query's own page budget).  Kept well under a third of the runtime lease (30 s,
+# heartbeat every 10 s); past it the call returns the last PROGRESS page and the tool
+# description tells the model to continue with the same cursor.
+ADVANCE_BUDGET_S = 5.0
 MAX_ADVANCE_STEPS = 256
 READ_TOOL_NAME = "session_history_read"
 DEFAULT_LIMIT = 8
@@ -154,6 +157,9 @@ class ArpSessionHistoryTools:
                 and steps < MAX_ADVANCE_STEPS
                 and time.monotonic() < deadline
             ):
+                # Each step is synchronous (≤ one page budget); yield between steps so the
+                # runtime's lease heartbeat and other Agents keep running.
+                await asyncio.sleep(0)
                 request = {**request, "cursor": page["next_cursor"]}
                 page = retriever.search(access, request)
                 steps += 1
