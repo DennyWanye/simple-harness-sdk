@@ -11069,6 +11069,37 @@ class Orchestrator:
             # Preserve the exact original executor, reservation and UNKNOWN
             # grants. The ordinary collector can still import a later answer.
             # Neither an auth failure nor a business timeout is accounting proof.
+            # Never re-handed off here (that re-sends the original request).
+            planning = (
+                intent.kind == "plan"
+                and not self._assured_review_intent(intent)
+                and str(intent.config.get("role", ""))
+                not in {"root_reviewer", "operation_proposal_reviewer", "operation_outcome_reviewer"}
+            )
+            new_mode = self._new_mode(mission) if planning else None
+            if new_mode is None:
+                return "give_up"  # reviews keep their original executor (§6.2); attempts unchanged
+            # A Planner / MethodSynthesizer round is not a review: after the same bound as
+            # P2.3f it ends through its own failure door instead of waiting for the wall
+            # clock (host-final-arp10, 2026-09-24: ~17 minutes frozen).  On this lane that
+            # door keeps the UNKNOWN grants and the reservation (never under-counted).
+            since = self._service_blocked_since.setdefault(key, self.store.now)
+            waited = self.store.now - since
+            if waited < self._service_blocker_limit:
+                return "give_up"
+            self._service_blocked_since.pop(key, None)
+            await self._give_up_blocked_plan_intent(
+                intent,
+                mission,
+                new_mode,
+                detail={
+                    "waited_seconds": round(waited, 3),
+                    "limit_seconds": self._service_blocker_limit,
+                    "blocker": dict(liveness.blocker or {}),
+                    "rehandoffs": 0,
+                    "assurance_lane": True,
+                },
+            )
             return "give_up"
         new_mode = self._new_mode(mission)
         if new_mode is None:

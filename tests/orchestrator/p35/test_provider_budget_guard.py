@@ -59,8 +59,7 @@ class ZeroUsageProvider(ActualProvider):
 
 @asynccontextmanager
 async def setup_runtime(
-    tmp_path, *, tokens=20_000, estimate=100, slots=1, blocked=False, empty_retry=False, provider_factory=ActualProvider,
-    **port_overrides,
+    tmp_path, *, tokens=20_000, estimate=100, slots=1, blocked=False, empty_retry=False, provider_factory=ActualProvider
 ):
     commit, mission, tasks = graph_service(tmp_path, nodes=[node("A", tokens=tokens)])
     counter = Counter(estimate)
@@ -76,7 +75,6 @@ async def setup_runtime(
         default_max_output_tokens=1_000,
         max_output_tokens_ceiling=2_000 if empty_retry else 1_000,
         empty_response_retries=1 if empty_retry else 0,
-        **port_overrides,
     )
     try:
         async with build_agent_runtime(ports) as runtime:
@@ -344,35 +342,3 @@ def test_an_unknown_outcome_frees_its_slot_but_keeps_its_charge(tmp_path):
 
     asyncio.run(exercise())
 
-
-class BreaksOnceProvider(ActualProvider):
-    async def invoke(self, request, *, cancel):
-        if not self.requests:
-            self.requests.append(request)
-            raise RuntimeError("peer closed connection without sending complete message body")
-        return await super().invoke(request, cancel=cancel)
-
-
-def test_after_an_unknown_outcome_the_next_call_goes_out_at_once(tmp_path):
-    """One slot, the first call's stream is lost: under the orchestrator's fail_turn policy
-    the turn fails now, its charge stays held, and the next turn is admitted without waiting."""
-
-    async def exercise():
-        async with setup_runtime(tmp_path, provider_factory=BreaksOnceProvider, provider_unknown="fail_turn") as (
-            commit, _, task, guard, provider, runtime,
-        ):
-            agent, attempt, key = await create_bound(commit, task, guard, runtime, "first")
-            first = await agent.ask("request", input_id=key, timeout=5)
-            assert str(first.state) == "failed" and first.error["error_code"] == "provider_outcome_unknown"
-            # The orchestrator re-dispatches on a fresh Agent (as planner 3 did live); the
-            # single slot is free, so it is sent at once.
-            second, _, second_key = await create_bound(commit, task, guard, runtime, "second")
-            again = await second.ask("request", input_id=second_key, timeout=5)
-            assert str(again.state) == "committed"
-            assert provider.calls == 2
-            states = [row["state"] for row in grants(commit)]
-            assert sorted(states) == ["SETTLED", "UNKNOWN"]
-            with commit.store.transaction():
-                assert commit.ledger.reservation(attempt.id)["state"] == "RESERVED"
-
-    asyncio.run(exercise())

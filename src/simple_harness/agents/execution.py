@@ -143,10 +143,8 @@ class AgentExecutionDriver:
         turn_cancellations: MutableMapping[str, CancellationToken] | None = None,
         empty_response_retries: int = 2,
         max_output_tokens_ceiling: int = 8192,
-        provider_unknown: str = "wait",
     ) -> None:
         self._clock = clock
-        self._provider_unknown = provider_unknown
         self._empty_response_retries = max(0, int(empty_response_retries))
         self._max_output_tokens_ceiling = max(1, int(max_output_tokens_ceiling))
         # In-process cooperative cancel tokens keyed by turn_id (T8); the durable
@@ -614,34 +612,6 @@ class AgentExecutionDriver:
                     ToolAuthorizationPending,
                     ToolEffectUnknownError,
                 ) as error:
-                    if isinstance(error, ProviderInvocationUnknownError) and self._provider_unknown == "fail_turn":
-                        # Nothing can ever learn the outcome (no request lookup on a chat
-                        # completion): end the turn now instead of waiting for the wall
-                        # clock.  The call stays UNKNOWN at its upper bound (host-final-
-                        # arp10, 2026-09-24: an Agent frozen 17 minutes).
-                        self._settle_failed_turn(invocation, run_id)
-                        return DriverResult(
-                            RunState.WAITING,
-                            {"response_present": False, "raw_failures": [{"error_code": "provider_outcome_unknown"}]},
-                            agent_turn_outcome=failed_outcome(
-                                agent_id=agent_id,
-                                turn_id=turn_id,
-                                seq=seq,
-                                input_id=input_id,
-                                input_hash=input_hash,
-                                error={
-                                    "error_code": "provider_outcome_unknown",
-                                    "source_kind": "provider_transport",
-                                    "error_type": type(error).__name__,
-                                    "retryable": True,
-                                },
-                                delegation_count=self._delegations(turn_id),
-                                provider_turn_ordinal_from=ordinal_from,
-                                provider_turn_ordinal_to=_checkpoint_totals(
-                                    checkpoint_port, invocation.run.run_id
-                                ).provider_turns,
-                            ),
-                        )
                     return _react_failure_result(error)
                 break
         finally:
@@ -1056,7 +1026,6 @@ def build_agent_execution_driver(
     turn_cancellations: MutableMapping[str, CancellationToken] | None = None,
     empty_response_retries: int = 2,
     max_output_tokens_ceiling: int = 8192,
-    provider_unknown: str = "wait",
 ) -> AgentExecutionDriver:
     """Hard-policy builder; the fingerprint protocol differs from legacy ReAct on purpose."""
 
@@ -1092,7 +1061,6 @@ def build_agent_execution_driver(
         turn_cancellations=turn_cancellations,
         empty_response_retries=empty_response_retries,
         max_output_tokens_ceiling=max_output_tokens_ceiling,
-        provider_unknown=provider_unknown,
     )
 
 

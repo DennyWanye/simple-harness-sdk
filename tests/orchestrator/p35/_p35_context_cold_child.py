@@ -471,14 +471,11 @@ async def cold(root, original, result_path):
                 for _ in range(3):
                     await orch._cycle()
                     await asyncio.sleep(0.01)
-                # 2026-09-24 (never freeze): the unknowable call ends its turn and a new
-                # attempt may run on a fresh Agent (its own calls / retrieval).  The frozen
-                # original — this Agent's journal, selections, requests, effects — is
-                # never touched or re-sent.
-                assert snapshot(root, marker["agent_id"]) == marker["snapshot"], (
+                assert provider.calls == 0 and retrieval == {"prewarm": 0, "search": 0}, (
                     f"cold recovery pass={recovery_pass + 1}: "
                     f"provider_calls={provider.calls}, retrieval={retrieval}"
                 )
+                assert snapshot(root, marker["agent_id"]) == marker["snapshot"]
                 assert (
                     assert_request_identities(
                         snapshot(root, marker["agent_id"]),
@@ -488,7 +485,7 @@ async def cold(root, original, result_path):
                     )
                     == marker["request_identity"]
                 )
-                assert orch.store.list_attempts(marker["task_id"])[0].id == marker["attempt_id"]
+                assert len(orch.store.list_attempts(marker["task_id"])) == 1
                 assert orch.store.find_result_for_attempt(marker["attempt_id"]) is None
             grant = orch.store.connection.execute(
                 "SELECT state,actual_tokens,actual_cost_micros FROM provider_token_grants "
@@ -517,9 +514,10 @@ async def cold(root, original, result_path):
                 file=sys.stderr,
                 flush=True,
             )
-    assert snapshot(root, marker["agent_id"]) == marker["snapshot"], (
+    assert provider.calls == 0 and retrieval == {"prewarm": 0, "search": 0}, (
         f"cold after close: provider_calls={provider.calls}, retrieval={retrieval}"
     )
+    assert snapshot(root, marker["agent_id"]) == marker["snapshot"]
     write_marker(
         result_path, {"pid": os.getpid(), "provider_calls": provider.calls, "retrieval": retrieval}
     )

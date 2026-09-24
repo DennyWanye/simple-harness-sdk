@@ -207,8 +207,13 @@ def test_rotated_worker_context_sigkill_cold_unknown_preserves_frozen_request(tm
         assert cold.returncode == 0, _tail(log)
         result = json.loads(result_path.read_text())
         assert result["pid"] == cold.pid and cold.pid != warm.pid
-        # 2026-09-24 (never freeze): a new attempt on a fresh Agent may call and retrieve;
-        # the child already proved the original Agent's frozen request untouched.
+        assert result["provider_calls"] == 0 and result["retrieval"] == {
+            "prewarm": 0,
+            "search": 0,
+        }, (
+            f"cold receipt: provider_calls={result['provider_calls']}, "
+            f"retrieval={result['retrieval']}"
+        )
     finally:
         _cleanup(cold)
     assert snapshot(root, marker["agent_id"]) == marker["snapshot"]
