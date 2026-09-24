@@ -354,10 +354,12 @@ def _ddl_hash(connection):
 
 
 def test_real_migration_and_legacy(tmp_path):
-    assurance = schema.MIGRATIONS[-1]
-    assert assurance.name == "orchestrator-assurance-exec-v1.1"
+    # The Assurance migration and every later one apply on top of a pre-Assurance
+    # library (migration 27 re-keys the live review pin guard per object).
+    assurance = next(m for m in schema.MIGRATIONS if m.name == "orchestrator-assurance-exec-v1.1")
+    later = [m for m in schema.MIGRATIONS if m.version > assurance.version]
     legacy_path = tmp_path / "legacy.db"
-    legacy = _legacy_library(str(legacy_path), len(schema.MIGRATIONS) - 1)
+    legacy = _legacy_library(str(legacy_path), assurance.version - 1)
     legacy_tables = ("missions", "events", "orch_schema_migrations")
     before = _dump(legacy.connection, legacy_tables)
     ddl_before = {row["name"]: row["sql"] for row in legacy.connection.execute(
@@ -371,12 +373,13 @@ def test_real_migration_and_legacy(tmp_path):
     assert after["missions"] == before["missions"] and after["events"] == before["events"]
     migrations = [tuple(row) for row in upgraded.connection.execute(
         "SELECT version,name,checksum FROM orch_schema_migrations ORDER BY version")]
-    assert migrations[:-1] == [row[:3] for row in before["orch_schema_migrations"]]
-    assert migrations[-1] == (assurance.version, assurance.name, assurance.checksum)
+    applied = len(before["orch_schema_migrations"])
+    assert migrations[:applied] == [row[:3] for row in before["orch_schema_migrations"]]
+    assert migrations[applied:] == [(m.version, m.name, m.checksum) for m in (assurance, *later)]
     for name, ddl in ddl_before.items():
         current = upgraded.connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
         assert current is not None and current[0] == ddl, name  # legacy DDL untouched
-    backup = legacy_path.with_name(f"{legacy_path.name}.pre-schema-{assurance.version}.backup")
+    backup = legacy_path.with_name(f"{legacy_path.name}.pre-schema-{schema.SCHEMA_VERSION}.backup")
     assert backup.is_file()
     # The legacy Mission keeps its lane; reopen is idempotent; a full new library matches.
     # A pre-Assurance Mission has no creation contract: it is never adopted into a
@@ -413,10 +416,10 @@ def test_real_migration_and_legacy(tmp_path):
         Store.open(legacy_path)
     # A failing migration rolls the whole upgrade back: the legacy library stays at its version.
     second = tmp_path / "legacy-2.db"
-    _legacy_library(str(second), len(schema.MIGRATIONS) - 1).close()
+    _legacy_library(str(second), assurance.version - 1).close()
     broken = schema.Migration(assurance.version, assurance.name,
                               assurance.ddl + "\nCREATE TABLE broken(x INTEGER REFERENCES nope(y));\nINSERT INTO broken VALUES(1);")
-    with patch.object(schema, "MIGRATIONS", (*schema.MIGRATIONS[:-1], broken)):
+    with patch.object(schema, "MIGRATIONS", (*schema.MIGRATIONS[:assurance.version - 1], broken, *later)):
         with pytest.raises(sqlite3.Error):
             Store.open(second)
     rows = sqlite3.connect(second).execute("SELECT MAX(version) FROM orch_schema_migrations").fetchone()[0]

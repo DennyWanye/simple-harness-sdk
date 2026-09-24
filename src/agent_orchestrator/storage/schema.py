@@ -20,6 +20,7 @@ from ..governance.mission_system_tail_schema import DDL as DDL_V15
 from .acceptance_receipt_schema import DDL as DDL_V17
 from .admission_seams_schema import DDL as DDL_V20
 from .assurance_schema import DDL as DDL_V26
+from .assurance_pin_object_schema import DDL as DDL_V27
 from .fragment_schema import FRAGMENT_SCHEMA_SQL as DDL_V14
 from .htn_schema import DDL as DDL_V16
 from .planning_human_store import DDL as DDL_V24
@@ -570,6 +571,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(24, "orchestrator-planning-human-requests", DDL_V24),
     Migration(25, "orchestrator-taskgraph-execution-v2", DDL_V25),
     Migration(26, "orchestrator-assurance-exec-v1.1", DDL_V26),
+    Migration(27, "orchestrator-assurance-pin-per-object", DDL_V27),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -597,6 +599,7 @@ __all__ = (
     "DDL_V18",
     "DDL_V19",
     "DDL_V20",
+    "DDL_V27",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

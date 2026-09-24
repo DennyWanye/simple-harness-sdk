@@ -604,10 +604,11 @@ class AssuranceStore:
                 return False
             # One live pin per review object. A RELEASED row is immutable history
             # (never reopened); the new preparation takes its own pin identity.
+            # Keyed on the object (migration 27): byte-identical objects share a blob.
             live = connection.execute(
                 "SELECT pin_id FROM assurance_blob_pins WHERE mission_id=? AND review_key=? "
-                "AND blob_hash=? AND state<>'RELEASED'",
-                (row["mission_id"], row["review_key"], row["blob_hash"]),
+                "AND object_ref_json=? AND state<>'RELEASED'",
+                (row["mission_id"], row["review_key"], row["object_ref_json"]),
             ).fetchone()
             if live is not None:
                 raise AssuranceError("IMMUTABLE_IDENTITY_CONFLICT", pin_id)
