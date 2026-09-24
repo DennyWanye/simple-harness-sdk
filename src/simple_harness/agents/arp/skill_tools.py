@@ -163,7 +163,7 @@ class ArpSkillTools:
         arp, session = resolved
         call_id = cast(CallId, context.call_id)
         try:
-            view = arp.skill_use.execute(session, call_id=call_id.value, request={"skill_ref": arguments.get("skill_ref"), "arguments": arguments.get("arguments", {})})
+            view = await arp.skill_use.execute_async(session, call_id=call_id.value, request={"skill_ref": arguments.get("skill_ref"), "arguments": arguments.get("arguments", {})})
         except ArpError as error:
             return self._failure(context, error)
         value = cast(JsonValue, _json(view))

@@ -654,8 +654,8 @@ class RuntimePlaneService:
     def _owner_replayed(self, verb: str, command_id: str, *, session: store.SessionRow | None = None) -> bool:
         """Owner-side evidence that this command already applied (crash between the owner's
         write and the host receipt): the retry replays through the owner instead of hitting
-        the moved revision fence.  Verbs without an owner ledger (suspend / resume / retire)
-        report the owner's state error on such a retry; the Host reads and issues a new command."""
+        the moved revision fence.  Suspend / resume / retire have no ledger table: their
+        evidence is the activation's latest step naming this command (``_skill_step_replayed``)."""
 
         connection = self.connection
         if verb == "agent_session_destroy":
@@ -672,6 +672,10 @@ class RuntimePlaneService:
         if verb == "agent_skill_admit":
             return connection.execute("SELECT 1 FROM arp_skill_admissions WHERE namespace_id=? AND command_id=?", (ns, command_id)).fetchone() is not None
         return False
+
+    def _skill_step_replayed(self, verb: str, activation: cat.ActivationRow, caller: TrustedCaller, command_id: str) -> bool:
+        state = _SKILL_STEP_TARGET.get(verb)
+        return state is not None and self.catalogue.applied_by(activation, state=state, caller=caller, command_id=command_id)
 
     def _catalogue_subject(self, subject: str) -> None:
         if subject != self.catalogue.namespace_id:
@@ -718,7 +722,7 @@ class RuntimePlaneService:
         activation = cat.read_activation(self.connection, self.catalogue.namespace_id, "SKILL", revision.entry_id, revision.revision)
         if activation is None:
             raise ArpError("CATALOGUE_STALE", "skill activation row missing")
-        if not self._owner_replayed(verb, command_id):
+        if not (self._owner_replayed(verb, command_id) or self._skill_step_replayed(verb, activation, caller, command_id)):
             self._expect(value, activation.row_version)
         if verb == "agent_skill_trial":
             binding = lifecycle.begin_trial(payload, caller=caller, command_id=command_id)
@@ -741,6 +745,9 @@ class RuntimePlaneService:
         item = self._skill_item(revision)
         receipt = self._record_command(command_id=command_id, verb=verb, subject_id=subject, command_hash=command_hash, subject_agent_id=None, subject_session_id=None, result_ref=revision.pin, result_revision=after.row_version, result=item)
         return item, after.row_version, receipt
+
+
+_SKILL_STEP_TARGET = {"agent_skill_suspend": "SUSPENDED", "agent_skill_resume": "ADMITTED", "agent_skill_retire": "RETIRED"}
 
 
 def digest_bytes(data: bytes) -> str:

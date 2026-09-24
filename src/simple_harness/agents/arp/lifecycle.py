@@ -297,11 +297,23 @@ class SkillLifecycleService:
         with self.catalogue.uow.database.transaction() as txn:
             return self._admit_locked(txn, revision, activation.evaluation_ref, acceptance_ref, caller=caller, command_id=command_id, run_id=run_id)
 
+    def _command_replayed(self, activation: cat.ActivationRow, *, state: str, caller: TrustedCaller, command_id: str) -> bool:
+        """Owner-side ledger for suspend / resume / retire: the activation's latest step names
+        its command.  The same command re-sent replays; the id reused for another step conflicts."""
+
+        if self.catalogue.applied_by(activation, state=state, caller=caller, command_id=command_id):
+            return True
+        if activation.authority_ref.id == f"catalogue:{caller.principal_ref.id}:catalogue:{command_id}":
+            raise ArpError("SOURCE_HASH_CONFLICT", "command id already names another lifecycle step")
+        return False
+
     def suspend(self, command: Mapping[str, Any], *, caller: TrustedCaller, command_id: str, run_id: str | None = None) -> cat.ActivationRow:
         if not isinstance(caller, TrustedCaller):
             raise ArpError("AUTHORITY_SOURCE_MISSING", "skill commands need an authenticated caller")
         value = check("SkillSuspendCommand", plain(command))
         revision, activation = self._skill(Pin.from_json(value["skill_ref"]))
+        if self._command_replayed(activation, state="SUSPENDED", caller=caller, command_id=command_id):
+            return activation
         if activation.state == "SUSPENDED":
             return activation
         if activation.state not in ("TRIAL", "ADMITTED"):
@@ -317,6 +329,8 @@ class SkillLifecycleService:
         target = ACTION_TARGET[action]
         acceptance_ref = None if value["evaluation_ref"] is None else Pin.from_json(value["evaluation_ref"])
         lock_ref = Pin.from_json(value["dependency_lock_ref"])
+        if action != "TRIAL" and self._command_replayed(activation, state=target, caller=caller, command_id=command_id):
+            return activation
         if activation.state == target:
             if target != "ADMITTED" or (activation.evaluation_ref is not None and self.admission_for(revision, activation.evaluation_ref) == acceptance_ref):
                 return activation  # re-sent command: the original outcome

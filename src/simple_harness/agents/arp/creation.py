@@ -63,6 +63,16 @@ def session_id_for(agent_id: str, root: RootIdentity, creation_key: str) -> str:
     )[:32]
 
 
+def session_creation_key(owner_scope: str, creation_key: str) -> str:
+    """The session row's key: creation identity is (owner, key), so two owners may share a key.
+
+    Rows written before this rule hold the bare key; ``insert_session_locked`` accepts that
+    spelling when replaying the same session.
+    """
+
+    return "owner:" + digest({"owner_scope": owner_scope, "creation_key": creation_key})
+
+
 def session_marker(
     *,
     session_id: str,
@@ -302,7 +312,8 @@ class NativeCreationService:
                 profile_ref=self._profile.pin,
                 creation_root_id=self._root.root_id,
                 root_incarnation=self._root.root_incarnation,
-                creation_key=creation_key,
+                creation_key=session_creation_key(owner_scope, creation_key),
+                legacy_creation_key=creation_key,
                 create_command_hash=command_hash,
                 relative_directory=relative_directory,
                 journal_seq_from=1,

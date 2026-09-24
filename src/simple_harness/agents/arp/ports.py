@@ -187,6 +187,9 @@ class ScriptRunReceipt:
 
 
 class ScriptRunnerPort(Protocol):
+    """``run`` is required; a runner may also offer ``async run_async(request)``, which the
+    model tool awaits instead of moving ``run`` to a worker thread."""
+
     def run(self, request: ScriptRun) -> ScriptRunReceipt: ...
 
 

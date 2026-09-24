@@ -418,8 +418,13 @@ def insert_session_locked(
     relative_directory: str,
     journal_seq_from: int,
     now_ms: int,
+    legacy_creation_key: str | None = None,
 ) -> SessionRow:
-    """CREATING row; a replay with identical identity returns the stored row."""
+    """CREATING row; a replay with identical identity returns the stored row.
+
+    ``legacy_creation_key`` is the bare key an older library stored for this same session
+    (found by ``session_id``); replaying such a row is not a mismatch.
+    """
 
     require_transaction(connection)
     profile_ref.require_kind("profile")
@@ -433,7 +438,7 @@ def insert_session_locked(
             or existing.profile_ref != profile_ref
             or existing.creation_root_id != creation_root_id
             or existing.root_incarnation != root_incarnation
-            or existing.creation_key != creation_key
+            or existing.creation_key not in {creation_key, legacy_creation_key or creation_key}
             or existing.create_command_hash != create_command_hash
             or existing.relative_directory != relative_directory
         ):

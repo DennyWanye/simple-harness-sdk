@@ -19,6 +19,7 @@ failure; an unconfirmed end is UNKNOWN, never a success.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
@@ -41,6 +42,16 @@ INLINE_TEXT_MAX = 32000
 SCRIPT_TIMEOUT_MS = 60_000
 ARGV_TOKENS = ("{input_json}", "{output_json}")
 EXECUTE_TOOL_ID = "skill_execute"
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedScript:
+    session: store.SessionRow
+    use: Mapping[str, Any]
+    run: ScriptRun
+    call_ref: Pin
+    tool_ref: Pin
+    revision: cat.RevisionRow
 
 
 @dataclass(slots=True)
@@ -176,6 +187,35 @@ class SkillUseService:
     # ---- execute (§9.9) ----------------------------------------------------------------------
 
     def execute(self, session: store.SessionRow, *, call_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
+        prepared = self._begin_execute(session, call_id=call_id, request=request)
+        if isinstance(prepared, dict):
+            return prepared
+        assert self.script_runner is not None
+        return self._finish_script(prepared, self.script_runner.run(prepared.run))
+
+    async def execute_async(self, session: store.SessionRow, *, call_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
+        """``execute`` for the model tool: the script runs without blocking the event loop.
+
+        A runner with ``run_async`` (the sandbox executor is asynchronous) is awaited; a
+        plain synchronous runner is moved to a worker thread.  The durable reads and writes
+        around the run stay on the caller's thread."""
+
+        prepared = self._begin_execute(session, call_id=call_id, request=request)
+        if isinstance(prepared, dict):
+            return prepared
+        runner = self.script_runner
+        assert runner is not None
+        run_async = getattr(runner, "run_async", None)
+        receipt = await run_async(prepared.run) if run_async is not None else await asyncio.to_thread(runner.run, prepared.run)
+        return self._finish_script(prepared, receipt)
+
+    def _finish_script(self, prepared: "_PreparedScript", receipt: Any) -> dict[str, Any]:
+        if not isinstance(receipt, ScriptRunReceipt):
+            raise ArpError("SOURCE_UNAVAILABLE", "script runner returned no receipt")
+        view = self._script_view(prepared.call_ref, prepared.tool_ref, prepared.revision, receipt)
+        return self._record(prepared.session, prepared.use, view, runner_receipt=receipt)
+
+    def _begin_execute(self, session: store.SessionRow, *, call_id: str, request: Mapping[str, Any]) -> "dict[str, Any] | _PreparedScript":
         value = check("SkillExecutionRequest", plain(request))
         revision, activation, lock = self.usable_skill(Pin.from_json(value["skill_ref"]))
         kind = str(revision.body["implementation"]["kind"])
@@ -216,11 +256,7 @@ class SkillUseService:
             skill_ref=revision.pin, runner_ref=runner_ref, script_path=script_path, script_bytes=script_bytes, argv=argv, input_json=input_json,
             workspace_key=f"skill/{session.session_id}/{use['use_id']}", timeout_ms=SCRIPT_TIMEOUT_MS, output_limit_bytes=int(self._result_limit(tool_ref)),
         )
-        receipt = self.script_runner.run(run)
-        if not isinstance(receipt, ScriptRunReceipt):
-            raise ArpError("SOURCE_UNAVAILABLE", "script runner returned no receipt")
-        view = self._script_view(call_ref, tool_ref, revision, receipt)
-        return self._record(session, use, view, runner_receipt=receipt)
+        return _PreparedScript(session=session, use=use, run=run, call_ref=call_ref, tool_ref=tool_ref, revision=revision)
 
     def _execute_tool_ref(self) -> Pin:
         revision = cat.latest_revision(self.catalogue.connection, self.catalogue.namespace_id, "TOOL", EXECUTE_TOOL_ID)

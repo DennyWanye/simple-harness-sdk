@@ -514,10 +514,21 @@ class CatalogueService:
                 ).fetchone()
                 if lock is None or int(lock[0]) != 1:
                     raise ArpError("DEPENDENCY_UNRESOLVED", f"skill {revision.entry_id}@{revision.revision} has no complete dependency lock (§9.5)")
-            receipt = Pin("receipt", f"catalogue:{command_id}", 0, digest({"command": command_id, "pin": pin.to_json(), "state": state, "caller": caller.to_json()}))
+            receipt = self.command_receipt(pin, state=state, caller=caller, command_id=command_id)
             row = transition_activation_locked(connection, current, state=state, authority_ref=self._authority(caller, receipt), evaluation_ref=evaluation_ref, admission_ref=admission_ref)
             self._changed_locked(connection, entry=row.pin, source_receipt_ref=receipt, run_id=run_id)
             return row
+
+    @staticmethod
+    def command_receipt(pin: Pin, *, state: str, caller: TrustedCaller, command_id: str) -> Pin:
+        return Pin("receipt", f"catalogue:{command_id}", 0, digest({"command": command_id, "pin": pin.to_json(), "state": state, "caller": caller.to_json()}))
+
+    def applied_by(self, activation: ActivationRow, *, state: str, caller: TrustedCaller, command_id: str) -> bool:
+        """The activation's latest step is exactly this command (same caller, target state and
+        definition): a retry after a crash between this write and the Host receipt."""
+
+        receipt = self.command_receipt(activation.pin, state=state, caller=caller, command_id=command_id)
+        return activation.state == state and activation.authority_ref == self._authority(caller, receipt)
 
     @staticmethod
     def _authority(caller: TrustedCaller, receipt: Pin | None = None) -> Pin:
