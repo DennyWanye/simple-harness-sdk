@@ -16,6 +16,7 @@ publishes the generation pointer on first use (``RuntimeIndexGenerationPublished
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
@@ -113,6 +114,15 @@ class SessionIndexCoordinator:
     # handler is handed back untouched.
     handlers: dict[str, Callable[[store.JobRow], Mapping[str, Any]]] = field(default_factory=dict)
     _states: dict[str, SessionIndexState] = field(default_factory=dict)
+    # Vectors computed off the event loop for claimed jobs, keyed by the texts' digest and
+    # consumed by the job's own recorded embedding call (``process_due_async``).
+    _prefetched: dict[str, list[list[float]]] = field(default_factory=dict)
+
+    @property
+    def background_embedding(self) -> bool:
+        """A heavy embedding model (a real one) is run by the background pump, off the event
+        loop, never inline in a Turn's prepare; a light one (tests) keeps the inline path."""
+        return self.embedding is not None and bool(getattr(self.embedding, "prefers_background", False))
 
     # ---- partition / generation -----------------------------------------------------
 
@@ -257,6 +267,96 @@ class SessionIndexCoordinator:
             results.append(self._process_guarded(job, now_ms))
         return tuple(results)
 
+    async def process_due_async(self, *, limit: int = 8) -> tuple[Mapping[str, Any], ...]:
+        """The background pump's pass: as ``process_due``, but each INDEX job's embedding is
+        computed in a worker thread first (pure computation, no database), then the job is
+        processed on the loop as usual — its embedding call is still recorded before and
+        after, and is served from the precomputed vectors."""
+
+        now_ms = self.clock_ms()
+        with self.uow.database.transaction() as connection:
+            claimed = store.claim_jobs_locked(
+                connection, owner_id=self.owner_id, now_ms=now_ms, lease_ms=LEASE_MS, limit=limit, per_session=2, session_id=None
+            )
+        results = []
+        for job in claimed:
+            if job.kind != "INDEX":
+                handler = self.handlers.get(job.kind)
+                if handler is None:
+                    with self.uow.database.transaction() as connection:
+                        store.complete_job_locked(connection, job, state="PENDING", owner_id=self.owner_id, next_at_ms=now_ms + LEASE_MS)
+                    continue
+                results.append(handler(job))
+                continue
+            texts = self._job_texts(job)
+            if texts:
+                try:
+                    self._prefetched[digest(texts)] = await asyncio.to_thread(self.embedding.embed, list(texts))
+                except Exception:  # noqa: BLE001 - the recorded call below reports the failure
+                    pass
+            results.append(self._process_guarded(job, now_ms))
+        return tuple(results)
+
+    def _job_texts(self, job: store.JobRow) -> list[str] | None:
+        """The chunk texts an INDEX job will embed (None when nothing is to be embedded or
+        the job will not get that far; ``process`` makes every decision itself)."""
+
+        if self.embedding is None:
+            return None
+        try:
+            connection = self.uow.database.connection
+            session = store.read_session(connection, job.session_id)
+            if session is None or session.state != "ACTIVE":
+                return None
+            generation = self.state_for(session).generation
+            if generation.embedding_fingerprint == NO_EMBEDDING_FINGERPRINT:
+                return None
+            chunks = self._chunks(job, session, generation)
+        except Exception:  # noqa: BLE001 - prefetch is an optimisation only
+            return None
+        return [str(c["text_view"]) for c in chunks] if chunks else None
+
+    def _chunks(self, job: store.JobRow, session: store.SessionRow, generation: GenerationRow) -> list[dict[str, Any]]:
+        connection = self.uow.database.connection
+        payload = job.payload
+        record_ids = [Pin.from_json(r).id for r in payload["source_refs"]]
+        records = _records_by_id(connection, session.agent_id, record_ids)
+        source_hash = digest([[r.record_id, r.content_hash] for r in records])
+        chunks: list[dict[str, Any]] = []
+        for record in records:
+            if record.visibility != "context":
+                continue
+            for start, end, piece in chunk_text(
+                _text_of(record),
+                chunk_tokens=int(self.policy["embedding_chunk_tokens"]),
+                overlap_tokens=int(self.policy["embedding_overlap_tokens"]),
+                count=self.count,
+            ):
+                chunk_id = "chunk-" + digest(
+                    {"gen": generation.index_generation, "record": record.record_id, "start": start, "end": end, "source": source_hash}
+                )[:32]
+                chunks.append(
+                    {
+                        "chunk_id": chunk_id,
+                        "record_id": record.record_id,
+                        "utf8_start": start,
+                        "utf8_end": end,
+                        "text_view": piece,
+                        "provenance": PROVENANCE_OF[record.kind],
+                        "validity_epoch": 0,
+                    }
+                )
+        return chunks
+
+    def _port_for(self, texts: Sequence[str]) -> Any:
+        """The embedding port for one recorded call: served from vectors precomputed for
+        exactly these texts when available, else the real port (a blocking call)."""
+
+        vectors = self._prefetched.pop(digest(list(texts)), None)
+        if vectors is None or len(vectors) != len(texts):
+            return self.embedding
+        return _PrecomputedPort(self.embedding, vectors)
+
     def _process_guarded(self, job: store.JobRow, now_ms: int) -> Mapping[str, Any]:
         try:
             return self.process(job)
@@ -299,30 +399,7 @@ class SessionIndexCoordinator:
             return self._finish(job, "BLOCKED", reason="GENERATION_STALE", session=session)
         # Chunks from the visible records only (the view policy); journal_only bodies
         # are never indexed as model-visible text.
-        chunks: list[dict[str, Any]] = []
-        for record in records:
-            if record.visibility != "context":
-                continue
-            for start, end, piece in chunk_text(
-                _text_of(record),
-                chunk_tokens=int(self.policy["embedding_chunk_tokens"]),
-                overlap_tokens=int(self.policy["embedding_overlap_tokens"]),
-                count=self.count,
-            ):
-                chunk_id = "chunk-" + digest(
-                    {"gen": generation.index_generation, "record": record.record_id, "start": start, "end": end, "source": source_hash}
-                )[:32]
-                chunks.append(
-                    {
-                        "chunk_id": chunk_id,
-                        "record_id": record.record_id,
-                        "utf8_start": start,
-                        "utf8_end": end,
-                        "text_view": piece,
-                        "provenance": PROVENANCE_OF[record.kind],
-                        "validity_epoch": 0,
-                    }
-                )
+        chunks = self._chunks(job, session, generation)
         view_hash = digest([[r.record_id, r.content_hash] for r in records if r.visibility == "context"])
         vectors: dict[str, Sequence[float]] | None = None
         embedding_ref: Pin | None = None
@@ -336,7 +413,7 @@ class SessionIndexCoordinator:
                 # its own key; the next attempt gets its own ordinal (and its own intent).
                 call_key = f"{job.job_id}/{attempt}/{digest(texts)}"
                 receipt = embedding_call.perform_call(
-                    self.uow, run_id=session.agent_id, call_key=call_key, purpose="SESSION_INDEX", texts=texts, port=self.embedding,
+                    self.uow, run_id=session.agent_id, call_key=call_key, purpose="SESSION_INDEX", texts=texts, port=self._port_for(texts),
                     deployment_ref=deployment, clock=self.clock, clock_ms=self.clock_ms, fault=self.fault, fault_name="index.before_embed",
                 )
                 invocation_refs.append(Pin.from_json(receipt["invocation_ref"]))
@@ -505,3 +582,18 @@ __all__ = (
     "chunker_fingerprint",
     "finish_job_locked",
 )
+
+
+class _PrecomputedPort:
+    """The real embedding port, answering one call with vectors it already computed for
+    exactly these texts off the event loop (same model, same fingerprint)."""
+
+    def __init__(self, inner: Any, vectors: list[list[float]]) -> None:
+        self._inner = inner
+        self._vectors = vectors
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return self._vectors

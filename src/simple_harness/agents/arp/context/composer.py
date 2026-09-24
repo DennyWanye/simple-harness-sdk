@@ -214,7 +214,10 @@ class ArpContextPort(JournalContextPort):
             arp.index.enqueue_closed_groups_locked(
                 txn, session=session, snapshot=snapshot, generation=state.generation, authority_ref=arp.policy.approval_ref, turn_ref=turn_ref
             )
-        arp.index.process_due(session_id=session.session_id)
+        if not arp.index.background_embedding:
+            # A heavy embedding model runs in the background pump, never inside a Turn:
+            # groups closed moments ago are still in the recent window.
+            arp.index.process_due(session_id=session.session_id)
         # Budget (U_wire) with the real deployment limits and the request's own output cap.
         budget = Budget(
             configured_total=int(policy["max_context_tokens"]),

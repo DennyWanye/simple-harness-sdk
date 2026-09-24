@@ -503,7 +503,8 @@ class AgentRuntime:
                     # Native plane tick: due INDEX jobs (embedding outside every lock) and
                     # non-terminal recalls are driven here, not only inside prepare.
                     try:
-                        outcome = arp.tick()
+                        tick_async = getattr(arp, "tick_async", None)
+                        outcome = await tick_async() if tick_async is not None else arp.tick()
                         settled = settled or bool(outcome.get("jobs") or outcome.get("recalls"))
                     except Exception:  # noqa: BLE001 - a tick defect must not kill the pump
                         pass

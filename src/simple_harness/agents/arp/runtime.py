@@ -112,7 +112,14 @@ class ArpRuntime:
     def tick(self) -> dict[str, int]:
         """One fair coordination pass: due INDEX/PURGE jobs, DRAINING proofs, then non-terminal recalls."""
 
-        jobs = self.index.process_due()
+        return self._tick_after(self.index.process_due())
+
+    async def tick_async(self) -> dict[str, int]:
+        """The background pump's pass: embeddings are computed off the event loop."""
+
+        return self._tick_after(await self.index.process_due_async())
+
+    def _tick_after(self, jobs: tuple[Any, ...]) -> dict[str, int]:
         draining = 0 if self.sessions is None else self.sessions.drive_draining()
         probed = False
         if self.catalogue is not None and self.bootstrap is not None and self.catalogue_caller is not None:
