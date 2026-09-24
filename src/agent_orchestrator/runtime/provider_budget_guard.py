@@ -44,6 +44,20 @@ from .first_request_budget import (
 
 HELD = ("RESERVED", "HANDED_OFF", "UNKNOWN")
 
+# Additive, versioned auxiliary table in the shared orchestration store: the grants whose
+# SDK call has terminated on the wire (succeeded/failed) while their usage stays
+# unresolved.  They keep their allowance (state UNKNOWN, awaiting late accounting) but no
+# longer occupy a physical slot — and every pool reads this from the shared store, never
+# from its own SDK library (rule 2026-09-24: may overcount, never freeze).
+WIRE_TERMINAL_TABLE = "provider_grant_wire_terminal_v1"
+_HELD_GRANTS_SQL = (
+    "SELECT g.invocation_id, g.state, i.config_json FROM provider_token_grants g "
+    "LEFT JOIN dispatch_intents i ON i.intent_id=g.intent_id "
+    "WHERE g.state IN ('RESERVED','HANDED_OFF','UNKNOWN') AND NOT ("
+    "g.state='UNKNOWN' AND EXISTS(SELECT 1 FROM " + WIRE_TERMINAL_TABLE + " w"
+    " WHERE w.invocation_id=g.invocation_id AND w.handoff_ordinal=g.handoff_ordinal))"
+)
+
 
 def _deny(
     reason: str, *, reason_code: str = "authority_rejected", **detail
@@ -60,15 +74,56 @@ def _tokens(value: object, name: str, *, positive: bool = False) -> int:
     return value
 
 
-def _usage(record):
+def _positive(value: object) -> int | None:
+    return value if type(value) is int and value > 0 else None
+
+
+def valid_usage(record) -> tuple[int, int] | None:
+    """The call's reported usage as ``(input, output)`` — only when it is a usable report.
+
+    Rule (user decision 2026-09-24): the accounts may overcount, never undercount.  A missing
+    report, or one that says zero (some relays answer 0/0/0 on every call), is not evidence
+    of a zero charge: it is *unresolved*, so the grant stays UNKNOWN with its reservation held
+    until late accounting resolves it.  Non-integer values remain a protocol violation.
+    """
+
     usage = record.usage_json
     if not isinstance(usage, Mapping) or not isinstance(usage.get("usage"), Mapping):
         return None
     values = usage["usage"]
-    return (
+    actual = (
         _tokens(values.get("input_tokens"), "actual input"),
         _tokens(values.get("output_tokens"), "actual output"),
     )
+    return None if 0 in actual else actual
+
+
+def request_output_cap(record) -> int | None:
+    """The proven upper bound of a call's output: its request's own ``max_output_tokens``."""
+
+    request = getattr(record, "request_json", None)
+    return _positive(request.get("max_output_tokens")) if isinstance(request, Mapping) else None
+
+
+_usage = valid_usage
+
+
+def ensure_wire_terminal_table(store) -> None:
+    store.connection.execute(
+        f"CREATE TABLE IF NOT EXISTS {WIRE_TERMINAL_TABLE} ("
+        " invocation_id TEXT NOT NULL,"
+        " handoff_ordinal INTEGER NOT NULL CHECK(handoff_ordinal > 0),"
+        " marked_at REAL NOT NULL,"
+        " PRIMARY KEY(invocation_id, handoff_ordinal))"
+    )
+
+
+def held_guarded_grants(store) -> int:
+    """Guarded grants occupying a physical slot, as every pool sharing the store counts them."""
+    ensure_wire_terminal_table(store)
+    return int(store.connection.execute(
+        "SELECT COUNT(*) FROM (" + _HELD_GRANTS_SQL + ")"
+    ).fetchone()[0])
 
 
 class ProviderBudgetCommitAdapter:
@@ -521,31 +576,35 @@ class ProviderBudgetGuard:
                         continue
                     if str(previous.state) == "claimed":
                         continue  # a proven never-handed-off request has no usage
-                    actual = _usage(previous)
-                    if str(previous.state) not in {"succeeded", "failed"} or actual is None:
-                        raise _deny(
-                            "prior provider usage is unresolved; allowance held",
-                            reason_code="usage_unresolved",
-                        )
                     previous_price = ProviderPrice.from_record(previous)
                     if (None if previous_price is None else previous_price.digest) != price_digest:
                         raise _deny(
                             "Agent provider price changed from its frozen history",
                             reason_code="price_mismatch",
                         )
-                    if (
-                        price is not None
-                        and previous_price is not None
-                        and previous_price.known_charge(
+                    actual = _usage(previous) if str(previous.state) in {"succeeded", "failed"} else None
+                    resolved = actual is not None and (
+                        price is None
+                        or previous_price is None
+                        or previous_price.known_charge(
                             previous, input_tokens=actual[0], output_tokens=actual[1]
                         )
-                        is None
-                    ):
+                        is not None
+                    )
+                    if resolved:
+                        prior_output += actual[1]
+                        continue
+                    # Rule 2026-09-24 (may overcount, never undercount): an earlier call whose
+                    # usage or price is unresolved keeps its own grant held (UNKNOWN, awaiting
+                    # late accounting) but never freezes the Agent's next call — its output is
+                    # bounded by its request's own cap, a proven upper bound.
+                    cap = request_output_cap(previous)
+                    if cap is None:
                         raise _deny(
-                            "prior provider price is unresolved; allowance held",
+                            "prior provider usage is unresolved and unbounded; allowance held",
                             reason_code="usage_unresolved",
                         )
-                    prior_output += actual[1]
+                    prior_output += cap
                 extra = prior_output if self.estimator.requires_prior_output_reserve else 0
                 upper = public_input + extra + output
                 cost_upper = None if price is None else price.cost(public_input + extra, output)
@@ -581,10 +640,11 @@ class ProviderBudgetGuard:
                         "observed provider usage exceeded its bound protocol",
                         reason_code="bound_overrun",
                     )
-                active = self.store.connection.execute(
-                    "SELECT COUNT(*) FROM provider_token_grants"
-                    " WHERE state IN ('RESERVED','HANDED_OFF','UNKNOWN')"
-                ).fetchone()[0]
+                # A physical slot is held by every grant still in flight; a grant whose
+                # call terminated on the wire with unresolved usage keeps only its
+                # allowance (see WIRE_TERMINAL_TABLE).
+                held = self.held_grant_rows()
+                active = len(held)
                 from .legacy_provider_slots import held_legacy_slots
 
                 active += held_legacy_slots(self.store)
@@ -592,14 +652,9 @@ class ProviderBudgetGuard:
                 if self.profile_slots is not None:
                     # Count durable grants in the shared orchestration transaction:
                     # separate SDK pools cannot each acquire a copy of this allowance.
-                    held = self.store.connection.execute(
-                        "SELECT i.config_json FROM provider_token_grants g "
-                        "LEFT JOIN dispatch_intents i ON i.intent_id=g.intent_id "
-                        "WHERE g.state IN ('RESERVED','HANDED_OFF','UNKNOWN')"
-                    ).fetchall()
                     held_profiles = []
                     for existing in held:
-                        config = json.loads(existing[0]) if existing[0] else {}
+                        config = json.loads(existing[2]) if existing[2] else {}
                         held_profile = config.get("runtime_profile_id")
                         agent_profile = (config.get("agent_config") or {}).get("model_profile_ref")
                         if held_profile not in self.profile_slots or agent_profile != held_profile:
@@ -706,6 +761,23 @@ class ProviderBudgetGuard:
             self._waiting[record.invocation_id] = (binding.agent_id, turn.turn_id)
             await asyncio.sleep(self.poll_seconds)
 
+    def held_grant_rows(self) -> list:
+        """Grants occupying a physical slot: in flight, or UNKNOWN without a wire-terminal
+        mark.  Read from the shared store only, so every pool counts the same set."""
+        self._ensure_wire_terminal_table()
+        return self.store.connection.execute(_HELD_GRANTS_SQL).fetchall()
+
+    def _ensure_wire_terminal_table(self) -> None:
+        ensure_wire_terminal_table(self.store)
+
+    def _mark_wire_terminal(self, ticket) -> None:
+        self._ensure_wire_terminal_table()
+        self.store.connection.execute(
+            f"INSERT OR IGNORE INTO {WIRE_TERMINAL_TABLE} (invocation_id, handoff_ordinal, marked_at)"
+            " VALUES (?,?,?)",
+            (ticket.invocation_id, ticket.handoff_ordinal, self.store.now),
+        )
+
     def _row(self, ticket):
         return self.store.connection.execute(
             "SELECT * FROM provider_token_grants WHERE invocation_id=? AND handoff_ordinal=?",
@@ -793,6 +865,9 @@ class ProviderBudgetGuard:
             return False
         actual = _usage(record) if state in {"succeeded", "failed"} else None
         if actual is None:
+            if state in {"succeeded", "failed"}:
+                # Terminated on the wire, usage unresolved: allowance held, slot free.
+                self._mark_wire_terminal(ticket)
             if row["state"] in HELD and row["state"] != "UNKNOWN":
                 self._update(ticket, "UNKNOWN")
             return False

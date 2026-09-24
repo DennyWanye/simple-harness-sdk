@@ -40,14 +40,67 @@ class MissingUsageProvider(RoleScriptedProvider):
         return replace(response, usage=None)
 
 
-@pytest.mark.parametrize(
-    "reason", ["budget_exhausted", "estimator_unavailable", "usage_unresolved"]
-)
+def _grants(orch, subject_id):
+    return [
+        dict(row)
+        for row in orch.store.connection.execute(
+            "SELECT state, actual_tokens, actual_output_tokens, total_upper FROM provider_token_grants"
+            " WHERE subject_id=? ORDER BY created_at, invocation_id",
+            (subject_id,),
+        )
+    ]
+
+
+def test_a_missing_usage_report_is_bounded_and_never_pauses_the_task(tmp_path):
+    """Rule 2026-09-24 (may overcount, never undercount): a successful call whose gateway
+    reported no usage used to hold the Agent's next call (``usage_unresolved``).  Its grant
+    stays UNKNOWN with the reservation held (late accounting may resolve it), but the next
+    call is admitted with that call's output bounded by its own cap."""
+
+    async def exercise():
+        provider = MissingUsageProvider({"worker": [("workspace_list", {})] * 3})
+        profile = RuntimeProfile("default", provider, MODEL, default_max_output_tokens=1000, max_output_tokens_ceiling=1000)
+        config = OrchestratorConfig(evidence_root=tmp_path, max_concurrency=1, candidates_per_task=1, attempt_reserve_tokens=4000)
+        async with Orchestrator(config, profiles={"default": profile}, provider_token_estimator=Counter("ok")) as orch:
+            mission = await orch.submit_mission(
+                MissionSpec(
+                    "Write the full original deliverable", ("file:answer.txt",), "test", "admission",
+                    allowed_tools=("workspace_list", "workspace_write_file"), budget=Budget(max_tokens=400000, max_attempts=10),
+                )
+            )
+            planning = orch.commit.begin_planning(mission.id)
+            tasks, _ = orch.commit.commit_task_graph(
+                mission.id,
+                TaskGraphProposal.from_json({"tasks": [{
+                    "key": "A", "goal": "Write the full original deliverable", "rationale": "missing usage", "dependencies": [],
+                    "success_criteria": ["file:answer.txt"], "verification_policy": ["format_check", "rule_check"],
+                    "allowed_tools": ["workspace_list", "workspace_write_file"], "budget": {"max_tokens": 90000, "max_attempts": 3},
+                }]}),
+                base_version=planning.version, source={"planner": "fixture"},
+            )
+            task = tasks[0]
+            for _ in range(800):
+                await orch._cycle()
+                current = orch.store.get_task(task.id)
+                if provider.calls >= 2 or current.paused or current.status is TaskStatus.FAILED:
+                    break
+                await asyncio.sleep(0.002)
+            current = orch.store.get_task(task.id)
+            assert not current.paused, current.pause_reason
+            assert provider.calls >= 2, "the second call must be admitted after a usage-less first call"
+            attempt = orch.store.list_attempts(task.id)[0]
+            first = _grants(orch, attempt.id)[0]
+            assert first["state"] == "UNKNOWN" and first["actual_tokens"] is None and first["total_upper"] == 1100
+            with orch.store.transaction():
+                assert orch.commit.ledger.has_unknown_usage(attempt.id)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("reason", ["budget_exhausted", "estimator_unavailable"])
 def test_actual_guard_denial_stops_or_waits_without_another_attempt(tmp_path, reason):
     async def exercise():
-        provider_type = (
-            MissingUsageProvider if reason == "usage_unresolved" else RoleScriptedProvider
-        )
+        provider_type = RoleScriptedProvider
         provider = provider_type({"worker": [("workspace_list", {})] * 3})
         profile = RuntimeProfile(
             "default",

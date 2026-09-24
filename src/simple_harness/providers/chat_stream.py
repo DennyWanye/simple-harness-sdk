@@ -10,6 +10,34 @@ from typing import Any
 from .errors import ProviderProtocolError
 
 
+def _billed(usage: Any) -> bool:
+    """A usage object that states a charge: any positive token count."""
+
+    return isinstance(usage, dict) and any(
+        type(v) is int and v > 0 for v in usage.values()
+    )
+
+
+def _placeholder(value: dict[str, Any]) -> bool:
+    """A chunk with no content, no tool-call delta, no finish and no billing."""
+
+    if _billed(value.get("usage")):
+        return False
+    choices = value.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        return False
+    choice = choices[0]
+    finish = choice.get("finish_reason")
+    if finish not in (None, ""):
+        return False
+    delta = choice.get("delta")
+    if delta is None:
+        return True
+    if not isinstance(delta, dict):
+        return False
+    return not delta.get("content") and not delta.get("tool_calls")
+
+
 class ChatStream:
     """Single-choice deltas, with an explicit finish and transport terminator.
 
@@ -53,6 +81,11 @@ class ChatStream:
             raise ProviderProtocolError() from None
         if not isinstance(value, dict) or "error" in value:
             raise ProviderProtocolError()
+        if _placeholder(value):
+            # Some compatible relays open the stream with an empty delta under a
+            # provisional id and repeat a 0/0/0 usage on every delta.  Such a chunk
+            # carries nothing, so it pins neither the response identity nor billing.
+            return
         for name in ("id", "model"):
             part = value.get(name)
             if part is not None:
@@ -62,6 +95,8 @@ class ChatStream:
                     raise ProviderProtocolError()
                 self.identity[name] = part
         usage = value.get("usage")
+        if usage is not None and not _billed(usage):
+            usage = None  # an all-zero usage is a placeholder, never a billing statement
         if usage is not None:
             if self.usage is not None and self.usage != usage:
                 self.usage = None  # contradictory billing must remain unknown

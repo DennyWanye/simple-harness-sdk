@@ -75,6 +75,10 @@ def openai_chat_request_payload(
     )
 
 
+_REQUEST_BODY_FIELDS = frozenset(
+    {"model", "messages", "tools", "tool_choice", "max_tokens", "temperature", "stream", "stream_options"}
+)
+
 _DIAGNOSTIC_FINISH_REASONS = frozenset(
     {"content_filter", "function_call", "length", "stop", "tool_calls"}
 )
@@ -133,6 +137,8 @@ class OpenAICompatibleProvider:
     """Perform one OpenAI-compatible chat-completions request per invocation."""
 
     __slots__ = (
+        "_extra_body",
+        "_response_model_aliases",
         "_client",
         "_endpoint",
         "_redactor",
@@ -156,6 +162,8 @@ class OpenAICompatibleProvider:
         tool_schema_mode: str = LEGACY_TOOL_SCHEMA_MODE,
         allow_private_http: bool = False,
         stream: bool = False,
+        extra_body: Mapping[str, Any] | None = None,
+        response_model_aliases: Sequence[str] = (),
     ) -> None:
         if not isinstance(client, httpx.AsyncClient):
             raise TypeError("client must be an httpx.AsyncClient")
@@ -174,6 +182,26 @@ class OpenAICompatibleProvider:
             raise TypeError("allow_private_http must be a boolean")
         if type(stream) is not bool:
             raise TypeError("stream must be a boolean")
+        if extra_body is not None:
+            # Provider-specific request fields (e.g. DeepSeek ``thinking``); they ride along
+            # with every request body but never replace the counted, fingerprinted request.
+            if not isinstance(extra_body, Mapping) or any(
+                type(key) is not str or not key for key in extra_body
+            ):
+                raise TypeError("extra_body must be a mapping with non-empty string keys")
+            clash = sorted(set(extra_body) & _REQUEST_BODY_FIELDS)
+            if clash:
+                raise ValueError(f"extra_body must not override request fields: {clash}")
+            validate_json_value(_plain_mapping(extra_body))
+        self._extra_body = None if not extra_body else _plain_mapping(extra_body)
+        # Names under which a relay echoes *this* model (e.g. a vendor-prefixed spelling).
+        # The kernel trusts usage only when the echo equals the bound model name, so a
+        # declared alias is normalised to it here; any other echo stays untrusted.
+        if isinstance(response_model_aliases, str) or not isinstance(response_model_aliases, Sequence) or any(
+            not isinstance(alias, str) or not alias.strip() for alias in response_model_aliases
+        ):
+            raise TypeError("response_model_aliases must be a sequence of non-empty strings")
+        self._response_model_aliases = frozenset(response_model_aliases)
         private_http = False
         if allow_private_http and hostname is not None:
             try:
@@ -379,9 +407,12 @@ class OpenAICompatibleProvider:
             return self._parse_response(request, payload, response)
 
     def _request_payload(self, request: ProviderRequest) -> dict[str, Any]:
-        return openai_chat_request_payload(
+        payload = openai_chat_request_payload(
             request, model=self._target.model, tool_schema_mode=self._tool_schema_mode
         )
+        if self._extra_body:
+            payload.update(self._extra_body)
+        return payload
 
     @staticmethod
     def _payload_for_model(
@@ -552,7 +583,7 @@ class OpenAICompatibleProvider:
         tool_calls = self._parse_tool_calls(raw_message.get("tool_calls", []))
         usage = self._parse_usage(payload.get("usage"))
         model = payload.get("model")
-        if model is None:
+        if model is None or model in self._response_model_aliases:
             model = self._target.model
         finish_reason = choice.get("finish_reason")
         provider_request_id = response.headers.get("x-request-id") or payload.get("id")

@@ -49,14 +49,22 @@ class ActualProvider(ScriptedProvider):
         )
 
 
+class ZeroUsageProvider(ActualProvider):
+    """A relay that answers normally but reports usage 0/0/0 (observed 2026-09-24)."""
+
+    async def invoke(self, request, *, cancel):
+        response = await super().invoke(request, cancel=cancel)
+        return replace(response, usage=ProviderUsage(input_tokens=0, output_tokens=0, total_tokens=0))
+
+
 @asynccontextmanager
 async def setup_runtime(
-    tmp_path, *, tokens=20_000, estimate=100, slots=1, blocked=False, empty_retry=False
+    tmp_path, *, tokens=20_000, estimate=100, slots=1, blocked=False, empty_retry=False, provider_factory=ActualProvider
 ):
     commit, mission, tasks = graph_service(tmp_path, nodes=[node("A", tokens=tokens)])
     counter = Counter(estimate)
     guard = ProviderBudgetGuard(commit, owner="test-owner", estimator=counter, max_slots=slots)
-    provider = ActualProvider(blocked=blocked)
+    provider = provider_factory(blocked=blocked)
     if empty_retry:
         provider.script[0] = ""
     ports = AgentRuntimePorts(
@@ -244,5 +252,54 @@ def test_real_empty_length_usage_is_settled_and_reserved_for_next_call(tmp_path)
                 settled = commit.ledger.settle(subject_id=attempt.id)
                 assert settled["settled_tokens"] == 300
                 assert not commit.ledger.has_unknown_usage(attempt.id)
+
+    asyncio.run(exercise())
+
+
+def test_zero_usage_is_held_unknown_and_never_holds_the_next_call(tmp_path):
+    """Rule 2026-09-24 (may overcount, never undercount): a 0/0/0 usage report is not a zero
+    charge.  Each grant stays UNKNOWN with its reservation held (late accounting may still
+    resolve it), the ledger imports no fact for it, and — unlike before — the next call of the
+    same run is still admitted: the earlier call's output is bounded by its own cap instead of
+    holding the Agent."""
+
+    async def exercise():
+        async with setup_runtime(tmp_path, empty_retry=True, provider_factory=ZeroUsageProvider) as (
+            commit, _, task, guard, provider, runtime,
+        ):
+            agent, attempt, key = await create_bound(commit, task, guard, runtime, "zero")
+            result = await agent.ask("request", input_id=key, timeout=5)
+            assert str(result.state) == "committed"
+            assert provider.calls == 2
+            rows = grants(commit)
+            # First call: empty reply (failed) with usage 0/0/0 -> unresolved, held UNKNOWN.
+            # Second call: admitted after it (no hold); its prior-output bound is the first
+            # call's own cap 1000 (the fixture counter requires a prior reserve); also 0/0/0.
+            assert [row["state"] for row in rows] == ["UNKNOWN", "UNKNOWN"]
+            assert [row["actual_tokens"] for row in rows] == [None, None]
+            assert [row["prior_output_upper"] for row in rows] == [0, 1000]
+            assert [row["total_upper"] for row in rows] == [1100, 3100]
+            bridge = AgentBridge(runtime, unpriced=True)
+            assert bridge.usage_facts(agent_id=agent.agent_id) == []
+            # A hierarchical terminal import keeps both calls on the books as unknown —
+            # never as a zero (independent review 2026-09-24, blocker 2).
+            unknown = bridge.usage_facts(agent_id=agent.agent_id, include_unknown=True)
+            assert len(unknown) == 2 and all(fact.unknown and fact.tokens == 0 for fact in unknown)
+            with commit.store.transaction():
+                assert commit.ledger.has_unknown_usage(attempt.id)
+                assert commit.ledger.reservation(attempt.id)["state"] == "RESERVED"
+                # Both grants terminated on the wire: marked in the shared store, so no pool
+                # — this one or another sharing the store — counts them as holding a slot
+                # (independent review 2026-09-24, blocker 1).
+                marks = commit.store.connection.execute(
+                    "SELECT invocation_id, handoff_ordinal FROM provider_grant_wire_terminal_v1 ORDER BY handoff_ordinal"
+                ).fetchall()
+                assert {(m[0], m[1]) for m in marks} == {(r["invocation_id"], r["handoff_ordinal"]) for r in rows} and len(marks) == 2
+                assert guard.held_grant_rows() == []
+                other_pool = ProviderBudgetGuard(commit, owner="other-pool", estimator=Counter(100), max_slots=1)
+                assert other_pool.held_grant_rows() == []
+                # A legacy (unguarded) pool sharing the store counts the same set.
+                from agent_orchestrator.runtime.provider_budget_guard import held_guarded_grants
+                assert held_guarded_grants(commit.store) == 0
 
     asyncio.run(exercise())

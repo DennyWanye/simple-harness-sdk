@@ -306,9 +306,13 @@ class LegacyProviderSlots(LocalProviderAdmission):
                                 reason_code="usage_unresolved"
                             )
                         )
-                    active = self.store.connection.execute(
-                        f"SELECT COUNT(*) FROM provider_token_grants WHERE {HELD_SQL}"
-                    ).fetchone()[0] + held_legacy_slots(self.store)
+                    # Guarded pools mark grants whose call terminated on the wire with
+                    # unresolved usage (they keep their allowance, not a slot); a legacy
+                    # pool sharing the store counts the same set, or it would freeze as
+                    # those marks accumulate (independent review 2026-09-24).
+                    from .provider_budget_guard import held_guarded_grants
+
+                    active = held_guarded_grants(self.store) + held_legacy_slots(self.store)
                     if (
                         active < self.max_slots
                         and held_legacy_slots(self.store, self.profile_id) < self.profile_slots

@@ -5,9 +5,10 @@
 
 Optional dependency and tokenizer bytes are installed by the deployment, never
 downloaded on import/startup. The official renderer counts the public wire input.
-Thinking tool continuations may add previous reasoning on the server: admission
-MUST additionally reserve every prior reported output token for this Agent. The
-counter alone is not a complete charge bound and cannot account for unknown calls.
+The endpoint is stateless: prior ``reasoning_content`` is passed back *by the client*
+inside the next request (official thinking-mode guide), never retained server-side, so
+the counted wire request is the whole server context and no prior-output reserve exists.
+The counter alone is not a complete charge bound and cannot account for unknown calls.
 """
 
 from __future__ import annotations
@@ -39,8 +40,8 @@ class DeepSeekV41TokenEstimator:
     other aliases require separate profiles. The wire name is fingerprinted.
     """
 
-    requires_prior_output_reserve = True
-    bound_protocol = "deepseek-v41-chat-text-plus-prior-output-v1"
+    requires_prior_output_reserve = False
+    bound_protocol = "deepseek-v41-chat-text-wire-only-v2"
 
     def __init__(
         self, tokenizer_path: Path, *, model: str = "deepseek-flash",
@@ -72,7 +73,7 @@ class DeepSeekV41TokenEstimator:
                         "tokenizer_sha256": TOKENIZER_SHA256,
                         "model": model,
                         "bound_protocol": self.bound_protocol,
-                        "requires_prior_output_reserve": True,
+                        "requires_prior_output_reserve": self.requires_prior_output_reserve,
                         "serializer": ("openai-chat-payload-v1" if tool_schema_mode == "legacy"
                                        else "openai-chat-deepseek-strict-v1"),
                     }

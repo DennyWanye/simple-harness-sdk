@@ -35,11 +35,11 @@ def counter():
     return DeepSeekV41TokenEstimator(Path(path))
 
 
-def test_official_hello_render_and_required_opaque_output_reserve(counter):
+def test_official_hello_render_and_no_prior_output_reserve(counter):
     request = ProviderRequest(RequestId("hello"), (Message(MessageRole.USER, "Hello"),))
     assert counter.estimate_input_tokens(request) == 31
     assert counter.count_text("这是测试。") == 3
-    assert counter.requires_prior_output_reserve is True
+    assert counter.requires_prior_output_reserve is False  # stateless endpoint: the wire is the context (2026-09-24)
     assert counter.fingerprint.startswith("deepseek-v41:")
 
 

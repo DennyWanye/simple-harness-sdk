@@ -194,11 +194,26 @@ class AgentBridge:
             tokens = usage.get("usage") if isinstance(usage, Mapping) else None
             if self._runtime.ports.provider_admission is not None and (
                 not isinstance(tokens, Mapping)
-                or not isinstance(tokens.get("input_tokens"), int)
-                or not isinstance(tokens.get("output_tokens"), int)
+                or type(tokens.get("input_tokens")) is not int
+                or type(tokens.get("output_tokens")) is not int
+                or tokens["input_tokens"] <= 0
+                or tokens["output_tokens"] <= 0
             ):
-                # Terminal transport failure without usage is not evidence of
-                # zero charge. The admission grant remains UNKNOWN instead.
+                # Terminal transport failure without usage — or a relay's 0/0/0
+                # placeholder report (2026-09-24) — is not evidence of zero
+                # charge. The admission grant remains UNKNOWN instead; a
+                # hierarchical terminal import keeps it on the books as unknown
+                # so the released grant is never settled as a zero.
+                if include_unknown:
+                    facts.append(
+                        UsageFact(
+                            f"provider-invocation:{record.invocation_id}",
+                            0,
+                            0,
+                            None,
+                            unknown=True,
+                        )
+                    )
                 continue
             input_tokens = int((tokens or {}).get("input_tokens") or 0)
             output_tokens = int((tokens or {}).get("output_tokens") or 0)
