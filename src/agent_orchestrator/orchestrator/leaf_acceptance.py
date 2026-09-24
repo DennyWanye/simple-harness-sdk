@@ -506,6 +506,9 @@ class LeafAcceptanceAssembly:
                 raise ContractError("TASKGRAPH_REVIEW_MANIFEST_MISMATCH")
         else:
             manifest = input_manifest_hash or self._manifest_hash(mission_id, task_id)
+        from ..storage.assurance_store import AssuranceStore
+
+        assured = AssuranceStore(self.store).lane(mission_id) == "ASSURANCE_1_1"
         package = self._package(
             mission_id,
             binding,
@@ -514,10 +517,8 @@ class LeafAcceptanceAssembly:
             manifest,
             producer_agent_ids,
             projection=projection,
+            reviewed=assured,
         )
-        from ..storage.assurance_store import AssuranceStore
-
-        assured = AssuranceStore(self.store).lane(mission_id) == "ASSURANCE_1_1"
         record = self._record(package, outcomes, result_id, reviewer_agent_id, assured=assured)
         acceptance_id = f"acc-{content_hash_of({'task': task_id, 'result': result_id})[:32]}"
         previous = None
@@ -728,6 +729,7 @@ class LeafAcceptanceAssembly:
         *,
         projection: Any = None,
         persist: bool = True,
+        reviewed: bool = False,
     ) -> ReviewPackage:
         package = ReviewPackage(
             package_id=ReviewPackageId(
@@ -777,6 +779,9 @@ class LeafAcceptanceAssembly:
             # Assurance freezes the same original package before the reserve/
             # intent transaction. Its transport owns the atomic insertion.
             return package
+        return self._stored_package(package, reviewed=reviewed)
+
+    def _stored_package(self, package: ReviewPackage, *, reviewed: bool) -> ReviewPackage:
         try:
             stored = self.semantics.get_review_package(str(package.package_id))
         except StoreError:
@@ -785,8 +790,22 @@ class LeafAcceptanceAssembly:
         # A replay re-presents the *same* frozen anchor, so re-inserting it would be
         # a conflict about nothing.  A differing one is a real conflict and is left
         # to the store to refuse rather than silently replaced.
-        if stored.content_hash() != package.content_hash():
-            self.semantics.insert_review_package(package)
+        if stored.content_hash() == package.content_hash():
+            return package
+        if reviewed and (
+            stored.purpose == package.purpose
+            and stored.binding == package.binding
+            and stored.candidate_refs == package.candidate_refs
+            and tuple(stored.producer_agent_ids) == tuple(package.producer_agent_ids)
+        ):
+            # Assured lane: the official review judged the package Assurance froze
+            # before its Critic ran (read_task_content_candidate: criteria from the
+            # approved check policy).  Accept exactly that package; this reader's own
+            # criteria view (checks that ran) is a different spelling of the same
+            # subject, not a different subject (Host native run arp.14, 2026-09-24:
+            # the first ACCEPT crashed six cycles on the duplicate package id).
+            return stored
+        self.semantics.insert_review_package(package)
         return package
 
     def _record(
