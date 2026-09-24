@@ -325,7 +325,7 @@ class AssuranceValidity:
                 check = CheckBinding.from_json(decode(reader.read_exact_metadata(ref).body_json))
                 consumed_bindings[ref] = check
                 blobs.update(check.evidence_refs)
-                if check.execution_ref.kind == "local_check_receipt":
+                if check.execution_ref.kind in {"local_check_receipt", "execution_receipt"}:
                     payload = decode(reader.read_exact_metadata(check.execution_ref).body_json)[
                         "payload"
                     ]
@@ -347,13 +347,13 @@ class AssuranceValidity:
         check_uses = []
         for ref, check in sorted(consumed_bindings.items(), key=lambda item: item[0].key):
             if (
-                check.execution_ref.kind != "local_check_receipt"
+                check.execution_ref.kind not in {"local_check_receipt", "execution_receipt"}
                 or self.check_adapter is None
                 or target.kind != "result"
             ):
-                # An executor source has no current importer yet, and a local check
-                # is bound to a Result (a MISSION_FINAL target is the root Task): both
-                # stay UNKNOWN rather than being replayed from their historical PASS.
+                # A check is bound to a Result (a MISSION_FINAL target is the root
+                # Task): it stays UNKNOWN there rather than being replayed from its
+                # historical PASS.  Executor checks are used from their recorded receipt.
                 continue
             check_uses.append(
                 prepare_local_check_use(

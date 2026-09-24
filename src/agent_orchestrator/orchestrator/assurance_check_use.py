@@ -123,9 +123,16 @@ class PreparedCheckUse:
         if now_ms < self.prepared_at_ms or now_ms >= self.not_after_ms:
             raise AssuranceError("CHECK_USE_EXPIRED")
         adapter._require_deployment()
+        from .assurance_check_import import _SOURCES
+
+        # The adapter that recorded a check is fixed by its receipt kind: a local check
+        # receipt by the local adapter, an executor receipt (code_test) by the executor
+        # adapter.  Executor checks used to be refused here, so any criterion requiring
+        # code_test stayed UNKNOWN (Host native run arp.13, 2026-09-24).
+        source = _SOURCES.get(self.binding.execution_ref.kind)
         if (
-            self.binding.adapter_ref
-            != Pin("assurance-local-check-adapter", 1, adapter.recorder_hash)
+            source is None
+            or self.binding.adapter_ref != Pin(source[3], 1, adapter.recorder_hash)
             or self.binding.environment_hash != adapter.environment_hash
         ):
             raise AssuranceError("RECHECK_REQUIRED")

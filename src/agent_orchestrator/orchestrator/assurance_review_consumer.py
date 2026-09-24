@@ -212,7 +212,7 @@ class AssuranceReviewConsumer:
             }
             for _, check in selected.values():
                 blobs.update(check.evidence_refs)
-                if check.execution_ref.kind != "local_check_receipt":
+                if check.execution_ref.kind not in {"local_check_receipt", "execution_receipt"}:
                     continue
                 payload = decode(reader.read_exact_metadata(check.execution_ref).body_json)[
                     "payload"
@@ -235,9 +235,13 @@ class AssuranceReviewConsumer:
         checks = []
         try:
             for ref, check in selected.values():
-                if check.execution_ref.kind != "local_check_receipt" or self.check_adapter is None:
-                    # Unsupported executor sources remain UNKNOWN; no synthesized
-                    # successful check or retry of a potentially effectful tool.
+                if (
+                    check.execution_ref.kind not in {"local_check_receipt", "execution_receipt"}
+                    or self.check_adapter is None
+                ):
+                    # Unsupported sources remain UNKNOWN; no synthesized successful
+                    # check or retry of a potentially effectful tool.  An executor
+                    # check (code_test) is used from its recorded receipt, never re-run.
                     continue
                 try:
                     prepared = prepare_local_check_use(
