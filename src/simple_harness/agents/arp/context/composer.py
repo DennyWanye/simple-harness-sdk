@@ -230,7 +230,7 @@ class ArpContextPort(JournalContextPort):
             input_scope=str(limits["input_limit_scope"]),
         )
         instructions = [r for r in snapshot.instructions if r.visibility == "context"]
-        tool_tokens = count_tools(self._tokenizer, tuple(request.tools))
+        tool_tokens = self._fixed_tool_charge(request, instructions)
         skill_blocks = skill_blocks_for(arp, session, count=arp.index.count)
         fixed = sum(self._count(r) for r in instructions) + tool_tokens + sum(b.tokens for b in skill_blocks)
         rule_groups = [
@@ -299,6 +299,22 @@ class ArpContextPort(JournalContextPort):
         return wire
 
     # ---- rendering / metering ------------------------------------------------------------------
+
+    def _fixed_tool_charge(self, request: ProviderRequest, instructions: Sequence[AgentJournalRecord]) -> int:
+        """The tool block's charge in the plan.  With an exact rendered-request counter the
+        fixed part (instructions + tool schemas + the template's request framing and
+        tool-calling preamble) is measured on that same counter — a skeleton request with no
+        history — so the plan and the final measurement agree.  A generic word heuristic
+        would under-charge it (the real DeepSeek template adds ~270 tokens) and step 8 would
+        then drop the recall first on every full window."""
+
+        heuristic = count_tools(self._tokenizer, tuple(request.tools))
+        exact = getattr(self.arp.meter.binding.tokenizer, "count_request_tokens", None)
+        if not callable(exact) or not instructions:
+            return heuristic
+        skeleton = replace(request, messages=tuple(_message_of(r) for r in instructions))
+        measured = self.arp.meter.count_wire(skeleton) - sum(self._count(r) for r in instructions)
+        return max(heuristic, measured)
 
     def _render(self, prepared: PreparedContext, request: ProviderRequest, instructions: Sequence[AgentJournalRecord]) -> ProviderRequest:
         by_id = {item["chunk_id"]: item for item in prepared.recall_result.get("candidate_items", [])}
