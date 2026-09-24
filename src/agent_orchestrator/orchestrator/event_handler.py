@@ -2481,8 +2481,10 @@ class Orchestrator:
                 self._note(f"mission {mission.id}: stall check could not read the plan ({error})")
                 continue
             rows = self.store.list_tasks(mission.id)
-            if any(task.status is TaskStatus.ACTIVE for task in rows):
+            if any(task.status is TaskStatus.ACTIVE and not self._awaiting_retry_decision(mission.id, task)
+                   for task in rows):
                 # A row still running is not a stalled plan; the loop is waiting on it.
+                # A leaf only waiting for a retry decision is not running (2026-09-25).
                 continue
             if all(task.status in TERMINAL_TASK for task in rows):
                 # Nothing is left to dispatch because nothing is left: that Mission is
@@ -3040,7 +3042,10 @@ class Orchestrator:
             and task.mission_id == mission.id
             # After registration a live task can temporarily return to READY for
             # a retry. Its exact identity is still the registered producer.
-            and (registered or task.status in {TaskStatus.ACTIVE, TaskStatus.VERIFYING})
+            # A WAIT needs a producer that is actually running: an ACTIVE leaf that only
+            # waits for its own retry decision would never wake it (2026-09-25).
+            and (registered or (task.status in {TaskStatus.ACTIVE, TaskStatus.VERIFYING}
+                                and not self._awaiting_retry_decision(mission.id, task)))
             and semantics is not None
             and int(semantics.contract_revision) == ref.semantic_revision
             and semantics.content_hash() == ref.content_hash
@@ -6704,6 +6709,24 @@ class Orchestrator:
                 detail={"attempts": ordinal, **dict(detail)},
                 stop_reason=stop,
             )
+        elif self._repair_still_owed(mission.id):
+            # 2026-09-25 desktop run: a repair round refused while the leaf waited for its
+            # retry decision left the Mission ACTIVE with no work and no human request —
+            # the ordinal (which also counts the committed rounds) had "spent" the ladder
+            # the planner was told still had rounds left, and the stall check skipped the
+            # ACTIVE leaf.  Count refusals, as the planning package does; open the next
+            # round with the refusal on the record, or end the Mission by name.
+            if not self._planning_ladder_spent(mission.id):
+                await self._planner_round_on_committed_plan(
+                    mission.id, ordinal=self._next_planning_ordinal(mission.id), phase="repair_ladder"
+                )
+            else:
+                self._stop_planning_round(
+                    mission.id,
+                    reason="repair_planning_exhausted",
+                    detail={"attempts": ordinal, "rejected_rounds": self._planning_attempts(mission.id), **dict(detail)},
+                    stop_reason=MissionStopReason.PLANNING_FAILED,
+                )
         else:
             # P2.3d: a Mission that already holds a committed plan is not killed by a
             # round that came *after* it — the root-review repair (D5-A) and the nested
@@ -7237,6 +7260,22 @@ class Orchestrator:
             for event in self.store.list_events(mission_id)
             if event.type in {"TaskGraphRejected", "PlanningRejected"}
         )
+
+    def _awaiting_retry_decision(self, mission_id: str, task: Any) -> bool:
+        """An ACTIVE leaf whose latest attempt ended failed and that waits for the
+        planner's retry decision: nothing of it is running."""
+        from .planning_retry import retry_decision_required
+
+        return task.status is TaskStatus.ACTIVE and retry_decision_required(self.store, mission_id, task.id)
+
+    def _repair_still_owed(self, mission_id: str) -> bool:
+        """A repair is still owed to this Mission: an unaddressed repair request, or a
+        leaf waiting for a retry decision that only a planning round can give."""
+        from .planning_repair_requests import pending_requests
+
+        if pending_requests(self.store, mission_id):
+            return True
+        return any(self._awaiting_retry_decision(mission_id, task) for task in self.store.list_tasks(mission_id))
 
     def _planning_ladder_spent(self, mission_id: str) -> bool:
         return self._planning_attempts(mission_id) >= (

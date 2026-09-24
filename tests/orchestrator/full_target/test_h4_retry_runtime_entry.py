@@ -155,3 +155,45 @@ def test_runtime_wakes_fence_stale_planner_and_repeated_source_transitions(tmp_p
             second, _ = attempt(loop, task_id, first.id)
             assert second.retry_of == first.id
     asyncio.run(case())
+
+
+async def _owed_repair(loop, tmp_path, key):
+    """A committed plan, a leaf whose attempt timed out, and the repair still owed."""
+    mission, dispatch, task_id = await refined(loop, tmp_path, key)
+    first, first_intent = attempt(loop, task_id)
+    loop.commit.claim_intent(first_intent.intent_id, owner=loop._owner, lease_seconds=60)
+    loop.commit.record_agent_created(first_intent.intent_id, agent_id="fixture", expected_turn_id="turn-1")
+    loop.commit.record_submitted(first_intent.intent_id, receipt={"turn_id": "turn-1", "seq": 1})
+    loop.commit.mark_attempt_timed_out(first.id, reason="stalled", detail={})
+    assert collect_triggers(loop, mission) and pending_requests(loop.store, mission.id)
+    return loop.store.get_mission(mission.id), task_id
+
+
+def test_a_refused_repair_round_opens_the_next_round_instead_of_idling(tmp_path):
+    """2026-09-25 desktop run: the repair round's ordinal (4, counting the committed
+    rounds) was over the ladder although it was the first refusal, so the refusal was
+    only noted and the Mission sat ACTIVE with no work and no human request."""
+
+    async def case():
+        async with Orchestrator(_config(tmp_path), RoleScriptedProvider({"planner": []})) as loop:
+            mission, _task_id = await _owed_repair(loop, tmp_path, "h4-refused-repair")
+            refused = await loop._create_planner_intent(mission.id, ordinal=4)
+            before = {i for i in range(1, 10) if loop.store.get_intent_for_subject(f"{mission.id}:planner:{i}")}
+            await loop._planning_rejected(refused, reason="proposal_not_grounded", detail={"why": "fixture"})
+            assert loop.store.get_mission(mission.id).status.value == "ACTIVE"
+            after = {i for i in range(1, 10) if loop.store.get_intent_for_subject(f"{mission.id}:planner:{i}")}
+            assert len(after - before) == 1  # the next round, not silence
+    asyncio.run(case())
+
+
+def test_a_spent_repair_ladder_ends_the_mission_by_name(tmp_path):
+    async def case():
+        async with Orchestrator(_config(tmp_path), RoleScriptedProvider({"planner": []})) as loop:
+            mission, _task_id = await _owed_repair(loop, tmp_path, "h4-spent-repair")
+            for n in (2, 3):
+                loop.commit.record_planning_rejected(mission.id, ordinal=n, reason="proposal_not_grounded", detail={})
+            refused = await loop._create_planner_intent(mission.id, ordinal=4)
+            await loop._planning_rejected(refused, reason="proposal_not_grounded", detail={})
+            final = loop.store.get_mission(mission.id)
+            assert final.status.value == "FAILED", final.status
+    asyncio.run(case())
