@@ -84,7 +84,11 @@ def test_fresh_schema_v5_is_a_self_contained_static_artifact() -> None:
     assert 'joinpath("0005_fresh.sql")' in loader
     assert "0001_initial.sql" not in loader
     assert "0002_context_authority.sql" not in loader
-    assert loader.count(".read_text(") == 1
+    # The fresh schema reads exactly one SQL file.  The only other read is the explicit
+    # ARP 1.1.1 additive descriptor (applied by its own upgrade, never part of fresh).
+    assert loader.count(".read_text(") == 2
+    assert 'joinpath("sql/execution_additive_v1_1_1.sql")' in loader
+    assert loader.count('files("simple_harness.agents.arp")') == 1
 
     legacy_tables: set[str] = set()
     for legacy_name in ("0001_initial.sql", "0002_context_authority.sql"):
