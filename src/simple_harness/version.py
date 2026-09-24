@@ -3,6 +3,6 @@
 
 """Single SDK version authority used by metadata and runtime reports."""
 
-__version__ = "0.13.0.dev20260924+arp.16"
+__version__ = "0.13.0.dev20260924+arp.17"
 
 __all__ = ("__version__",)

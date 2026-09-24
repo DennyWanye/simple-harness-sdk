@@ -203,8 +203,10 @@ class AgentBridge:
                 # placeholder report (2026-09-24) — is not evidence of zero
                 # charge. The admission grant remains UNKNOWN instead; a
                 # hierarchical terminal import keeps it on the books as unknown
-                # so the released grant is never settled as a zero.
-                if include_unknown:
+                # so the released grant is never settled as a zero.  An admission
+                # denial never entered transport: it is a known zero, not unknown.
+                denied = str(record.state) == "failed" and record.error_code == "provider_admission_denied"
+                if include_unknown and not denied:
                     facts.append(
                         UsageFact(
                             f"provider-invocation:{record.invocation_id}",
