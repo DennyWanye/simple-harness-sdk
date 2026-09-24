@@ -143,9 +143,9 @@ class PreparedCheckUse:
             if reader.read_exact_metadata(metadata.ref) != metadata:
                 raise AssuranceError("RECHECK_REQUIRED")
         for ref, captured in self.permissions:
-            current = _permission(authority, identity, ref, now_ms)
-            if current != captured:
-                raise AssuranceError("RECHECK_REQUIRED")
+            # Same grant, not the same lease (the fifth barrier missed by run 10's fix;
+            # Host native run arp.11, 2026-09-24: every checked review re-checked 32x).
+            _require_same_permission(authority, identity, ref, captured, now_ms)
         for blob in self.blobs:
             blob.require_current_locked(
                 reader,

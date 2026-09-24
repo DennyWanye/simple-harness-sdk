@@ -59,3 +59,29 @@ def test_captured_lease_still_bounds_the_use():
     with pytest.raises(AssuranceError) as raised:
         _require_same_permission(authority, IDENTITY, REF, captured, 1_000 + TTL)
     assert raised.value.code == "CHECK_USE_EXPIRED"
+
+
+def test_no_barrier_compares_the_whole_permission():
+    """Host native run arp.11 (2026-09-24): the fifth barrier (local check use at
+    review import) still compared the whole permission, so every second review with
+    required checks re-checked 32 times and went MANUAL_REQUIRED.  Every loop over
+    captured permissions must use ``_require_same_permission``."""
+
+    import ast
+    from pathlib import Path
+
+    import agent_orchestrator.orchestrator as package
+
+    root = Path(package.__file__).parent
+    offenders = []
+    for path in sorted(root.glob("assurance*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.For) or not isinstance(node.iter, ast.Attribute):
+                continue
+            if node.iter.attr != "permissions":
+                continue
+            calls = {n.func.id for n in ast.walk(node) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+            if "_require_same_permission" not in calls:
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == []
