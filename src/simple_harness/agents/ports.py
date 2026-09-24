@@ -71,6 +71,12 @@ class AgentRuntimePorts:
     # the historical field name for caller compatibility; other errors do not retry.
     empty_response_retries: int = 2
     max_output_tokens_ceiling: int = 8192
+    # A provider call whose outcome is unknowable after hand-off (transport error, lost
+    # stream): "wait" keeps the turn waiting for provider reconciliation (the historical
+    # behaviour); "fail_turn" ends the turn at once with provider_outcome_unknown — the
+    # call stays UNKNOWN and charged at its upper bound, nothing is released or replayed —
+    # for deployments that re-dispatch failed turns themselves (the Agent Orchestrator).
+    provider_unknown: str = "wait"
     # Batch creation caps (BA02/BA04): checked before any write.
     max_agents: int = 1000
     max_batch_size: int = 200
@@ -169,6 +175,8 @@ class AgentRuntimePorts:
             or self.empty_response_retries < 0
         ):
             raise ValueError("empty_response_retries must be a non-negative integer")
+        if self.provider_unknown not in ("wait", "fail_turn"):
+            raise ValueError("provider_unknown must be 'wait' or 'fail_turn'")
         for name in ("max_concurrent_model_calls", "max_concurrent_tool_calls"):
             value = getattr(self, name)
             if value is not None and (

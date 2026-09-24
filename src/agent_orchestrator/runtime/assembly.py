@@ -609,6 +609,10 @@ def assemble_orchestrator_runtime(
             default_max_output_tokens=default_out,
             max_output_tokens_ceiling=max(ceiling, default_out),
             empty_response_retries=config.empty_response_retries,
+            # The orchestrator re-dispatches failed turns itself: an unknowable provider
+            # outcome ends the turn now (charged at its upper bound) instead of freezing the
+            # Agent until the wall clock (host-final-arp10, 2026-09-24).
+            provider_unknown="fail_turn",
             max_concurrent_model_calls=min(
                 config.max_concurrent_model_calls,
                 profile.max_concurrent_model_calls or config.max_concurrent_model_calls,

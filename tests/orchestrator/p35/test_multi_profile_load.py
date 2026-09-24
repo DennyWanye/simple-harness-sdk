@@ -265,7 +265,10 @@ def test_legacy_unknown_without_profile_identity_blocks_new_profile_admission(tm
 
     async def exercise():
         commit, _, tasks = graph_service(tmp_path, nodes=[node("A"), node("B")])
-        old_provider, new_provider = LostResponse(), ActualProvider()
+        # 2026-09-24: an UNKNOWN call has ended on the wire and no longer holds a slot
+        # (its allowance stays spent), so the unattributable *slot* this rule guards is a
+        # legacy call still on the wire.
+        old_provider, new_provider = ActualProvider(blocked=True), ActualProvider()
         old = ProviderBudgetGuard(commit, owner="test-owner", estimator=Counter(100), max_slots=2)
         new = ProviderBudgetGuard(
             commit,
@@ -304,7 +307,7 @@ def test_legacy_unknown_without_profile_identity_blocks_new_profile_admission(tm
                     intent.intent_id, receipt={"turn_id": receipt.turn_id, "seq": receipt.seq}
                 )
                 await until(
-                    lambda: bool(grants(commit)) and grants(commit)[0]["state"] == "UNKNOWN"
+                    lambda: bool(grants(commit)) and grants(commit)[0]["state"] == "HANDED_OFF"
                 )
                 before = grants(commit)
                 assert "runtime_profile_id" not in intent.config
@@ -348,7 +351,8 @@ def test_legacy_unknown_without_profile_identity_blocks_new_profile_admission(tm
                     assert result.error["detail"]["reason_code"] == "profile_identity_unknown"
                     assert (
                         grants(commit) == before
-                    )  # original UNKNOWN allowance and identity untouched
+                    )  # original in-flight allowance and identity untouched
+                    old_provider.allow.set()
         finally:
             commit.store.close()
 

@@ -187,7 +187,12 @@ def _exercise(tmp_path, scenario):
         _cleanup(cold)
     # Check persisted state again after the cold runtime has shut down.
     after = _sdk_rows(root)
-    assert [(r[0], r[1], r[3], r[4]) for r in after] == [(r[0], r[1], r[3], r[4]) for r in original]
+    # The original calls are untouched (never re-handed off).  Under the never-freeze rule
+    # a new attempt's own calls may follow the unknowable one (handoff scenario only).
+    kept = [r for r in after if r[0] in {o[0] for o in original}]
+    assert [(r[0], r[1], r[3], r[4]) for r in kept] == [(r[0], r[1], r[3], r[4]) for r in original]
+    if scenario == "sdk-result":
+        assert kept == after
     if scenario == "sdk-result":
         assert after == original
         assert (
@@ -200,8 +205,8 @@ def _exercise(tmp_path, scenario):
         assert len(critic) == 2
         assert all(r[1] != marker["agent_id"] and r[2:] == ("succeeded", 1, 0) for r in critic)
     else:
-        assert all(r[2] in {"handed_off", "unknown"} for r in after)
-        assert _sdk_rows(root, "critic") == []
+        assert all(r[2] in {"handed_off", "unknown"} for r in kept)
+        assert all(r[1] != marker["agent_id"] for r in after if r not in kept)  # new attempts only
         assert (
             _rows(
                 root / "orchestrator.db",
@@ -307,8 +312,8 @@ async def _recover(root, scenario, marker):
             assert len(orch.store.list_events(intent.mission_id)) == before
             assert provider.by_role == {"critic": 2}
         else:
-            # Two recovery passes, three real scheduler cycles each. UNKNOWN is
-            # allowed to remain in flight; run(max_cycles=N) is NOT a wall timeout.
+            # Two recovery passes, three real scheduler cycles each. The UNKNOWN grant
+            # stays held at its upper bound; run(max_cycles=N) is NOT a wall timeout.
             for _ in range(2):
                 await _step(orch.recover())
                 for _ in range(3):
@@ -325,8 +330,12 @@ async def _recover(root, scenario, marker):
                 assert held["settled_tokens"] is None and held["settled_cost_micros"] is None
                 assert held["reserved_tokens"] == reservation["reserved_tokens"] > 0
                 assert held["reserved_cost_micros"] == reservation["reserved_cost_micros"] > 0
-                assert provider.calls == 0
-                assert len(orch.store.list_attempts(attempt.task_id)) == 1
+                # 2026-09-24 (never freeze): the unknowable call ends its turn, the original
+                # attempt waits to retry and the Mission goes on with a *new* attempt — the
+                # original request itself is never re-sent and its charge stays held above.
+                attempts = orch.store.list_attempts(attempt.task_id)
+                assert attempts[0].id == attempt.id and str(attempts[0].status) != "RUNNING"
+                assert len(attempts) >= 2
                 (record,) = bridge.runtime.uow.list_provider_invocations(RunId(intent.agent_id))
                 assert record.invocation_id == marker["invocation_ids"][0]
                 assert record.handoff_attempt == 1 and record.rehandoff_count == 0

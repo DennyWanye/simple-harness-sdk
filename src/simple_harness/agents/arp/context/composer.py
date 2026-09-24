@@ -477,6 +477,23 @@ class ArpContextPort(JournalContextPort):
                 now=self._clock(),
             )
 
+    def replayed_request(self, request: ProviderRequest) -> tuple[store.ContextRequestRow, ProviderRequest] | None:
+        """Read-only: the frozen manifest of ``request`` and the wire request it really sent.
+
+        For readers that must prove what a finished request showed the model (the Assurance
+        review import): no session state is required to be ACTIVE and nothing is written.
+        None when no manifest was frozen for this request; ``REQUEST_HASH_MISMATCH`` when
+        the durable sources no longer reproduce the planned hash (never a guess)."""
+
+        connection = self._connection()
+        frozen = store.read_context_by_request_key(connection, request.request_id.value)
+        if frozen is None:
+            return None
+        session = store.read_session(connection, frozen.session_id)
+        if session is None or session.agent_id != frozen.agent_id:
+            raise ArpError("SESSION_IDENTITY_MISMATCH", "frozen context names no such session")
+        return frozen, self._replay(frozen, session, request)
+
     def _replay(self, frozen: store.ContextRequestRow, session: store.SessionRow, request: ProviderRequest) -> ProviderRequest:
         """Re-render the frozen manifest; the wire must reproduce the planned request hash."""
 
@@ -490,12 +507,13 @@ class ArpContextPort(JournalContextPort):
         instructions = [r for r in snapshot.instructions if r.visibility == "context"]
         messages: list[Message] = [_message_of(r) for r in instructions]
         messages.extend(skill_message(b) for b in replay_skill_blocks(arp, manifest, count=arp.index.count))
-        generation = arp.index.state_for(session).generation.index_generation
-        service = arp.search_for(session)[0]
-        recall_row = store.read_context_recall(self._connection(), str(manifest["retrieval_receipt_ref"]["id"]))
-        items = {} if recall_row is None or recall_row.result is None else {i["chunk_id"]: i for i in recall_row.result["candidate_items"]}
-        for chunk_id in manifest["recalled_chunk_ids"]:
-            messages.append(recall_message(items[chunk_id], service.chunk_text(generation, chunk_id)))
+        if manifest["recalled_chunk_ids"]:  # the index is touched only when something was recalled
+            generation = arp.index.state_for(session).generation.index_generation
+            service = arp.search_for(session)[0]
+            recall_row = store.read_context_recall(self._connection(), str(manifest["retrieval_receipt_ref"]["id"]))
+            items = {} if recall_row is None or recall_row.result is None else {i["chunk_id"]: i for i in recall_row.result["candidate_items"]}
+            for chunk_id in manifest["recalled_chunk_ids"]:
+                messages.append(recall_message(items[chunk_id], service.chunk_text(generation, chunk_id)))
         for group_id in manifest["recent_group_ids"]:
             messages.extend(self._group_messages(snapshot.group(group_id)))
         restored, _ = restore_wire_messages(

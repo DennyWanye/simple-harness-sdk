@@ -289,6 +289,7 @@ def assemble_runtime(
         clock=ports.clock,
         turn_cancellations=turn_cancellations,
         empty_response_retries=ports.empty_response_retries,
+        provider_unknown=ports.provider_unknown,
         max_output_tokens_ceiling=ports.max_output_tokens_ceiling,
         continuation_capability=continuation_capability,
     )

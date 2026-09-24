@@ -83,14 +83,15 @@ def read_actual_review_turn(bridge: AgentBridge, intent: DispatchIntent) -> Actu
             "state": result.state.name,
             "usage_refs": list(stored.usage_refs),
         }
+        arp = getattr(bridge.runtime, "arp", None)
         try:
-            exposure = _exposure(uow, agent.run_id, turn, result)
+            exposure = _exposure(uow, agent.run_id, turn, result, native_context=getattr(arp, "context", None))
         except AssuranceError as error:
             return ActualReviewTurn(raw_json, canonical(source), None, error.code)
         return ActualReviewTurn(raw_json, canonical(source), canonical(exposure), None)
 
 
-def _exposure(uow: Any, run_id: str, turn: Any, result: AgentTurnResult) -> dict:
+def _exposure(uow: Any, run_id: str, turn: Any, result: AgentTurnResult, *, native_context: Any = None) -> dict:
     from simple_harness.contracts import RequestId
 
     if result.state is not AgentTurnState.COMMITTED:
@@ -109,6 +110,8 @@ def _exposure(uow: Any, run_id: str, turn: Any, result: AgentTurnResult) -> dict
         provider_invocation_id(RunId(run_id), RequestId(request_id))
     )
     selection = uow.read_agent_context_selection_by_request(request_id)
+    if selection is None and native_context is not None and provider is not None:
+        return _native_exposure(uow, provider, request_id, result, native_context)
     if provider is None or selection is None or provider.request_json is None:
         raise AssuranceError("REVIEW_PROVIDER_INPUT_UNAVAILABLE")
     request = thaw_json(provider.request_json)
@@ -176,6 +179,97 @@ def _exposure(uow: Any, run_id: str, turn: Any, result: AgentTurnResult) -> dict
         "response_model": decoded_response.model,
         "selection_id": selection.selection_id,
         "source_highwater": selection.source_highwater,
+        "selected_message_ids": [item["message_id"] for item in selected],
+        "messages": selected,
+    }
+
+
+def _native_exposure(uow: Any, provider: Any, request_id: str, result: AgentTurnResult, native_context: Any) -> dict:
+    """The native runtime plane's proof of what the final request showed the model.
+
+    The plane persists only the request's required content; what it sent is the frozen
+    manifest (``arp_context_requests``) re-rendered from durable sources, which must
+    reproduce the planned wire hash (the same rule every native prepare obeys).  Only
+    journal messages whose exact bytes are in that wire count as exposure — nothing is
+    relaxed relative to the legacy selection proof (host-final-arp10, 2026-09-24)."""
+    from simple_harness.agents.arp.errors import ArpError
+    from simple_harness.contracts import RequestId
+
+    if provider.request_json is None:
+        raise AssuranceError("REVIEW_PROVIDER_INPUT_UNAVAILABLE")
+    request = thaw_json(provider.request_json)
+    response = thaw_json(provider.response_json) if provider.response_json is not None else None
+    try:
+        decoded_request = provider_request_from_json(RequestId(request_id), request)
+        decoded_response = provider_response_from_json(response)
+    except (TypeError, ValueError, KeyError) as error:
+        raise AssuranceError("REVIEW_PROVIDER_INPUT_MISMATCH") from error
+    try:
+        replayed = native_context.replayed_request(decoded_request)
+    except (ArpError, KeyError, LookupError) as error:
+        raise AssuranceError("REVIEW_PROVIDER_INPUT_MISMATCH") from error
+    if replayed is None:
+        raise AssuranceError("REVIEW_PROVIDER_INPUT_UNAVAILABLE")
+    frozen, wire = replayed
+    if (
+        provider.state.value != "succeeded"
+        or provider.handed_off_at is None
+        or provider.settled_at is None
+        or fingerprint(request) != provider.request_fingerprint
+        or frozen.agent_id != result.agent_id
+        or frozen.turn_id != result.turn_id
+        or response is None
+        or response.get("request_id") != request_id
+        or result.public_output is None
+        or decoded_response.message.to_dict() != result.public_output.to_dict()
+        or provider_request_json(decoded_request) != request
+        or provider_request_fingerprint(wire) != frozen.planned_request_hash
+    ):
+        raise AssuranceError("REVIEW_PROVIDER_INPUT_MISMATCH")
+    if frozen.journal_highwater > 20_000:
+        raise AssuranceError("EVIDENCE_EVALUATION_INCOMPLETE")
+    # The wire restores ledger tool calls / replayed reasoning onto assistant messages;
+    # compare journal bytes against the wire message both as sent and without that
+    # restored reasoning metadata (the journal never holds private reasoning).
+    sent = []
+    for message in wire.messages:
+        body = message.to_dict()
+        sent.append(body)
+        metadata = dict(body.get("metadata") or {})
+        if metadata.pop("provider_reasoning_content", None) is not None:
+            stripped = dict(body)
+            if metadata:
+                stripped["metadata"] = metadata
+            else:
+                stripped.pop("metadata", None)
+            sent.append(stripped)
+    journal = uow.read_agent_journal(result.agent_id, from_seq=1, to_seq=frozen.journal_highwater)
+    selected = []
+    for item in journal:
+        message = thaw_json(item.message_json)
+        if fingerprint(message) != item.content_hash:
+            raise AssuranceError("REVIEW_JOURNAL_HASH_MISMATCH")
+        if message in sent:
+            selected.append(
+                {
+                    "message_id": item.record_id,
+                    "seq": item.seq,
+                    "kind": item.kind,
+                    "turn_id": item.turn_id,
+                    "message": message,
+                    "message_hash": item.content_hash,
+                }
+            )
+    return {
+        "provider_invocation_id": provider.invocation_id,
+        "provider_request_id": request_id,
+        "provider_input_hash": provider.request_fingerprint,
+        "wire_input_hash": frozen.planned_request_hash,
+        "provider_request": request,
+        "provider_response_hash": fingerprint(response),
+        "response_model": decoded_response.model,
+        "selection_id": frozen.context_id,
+        "source_highwater": frozen.journal_highwater,
         "selected_message_ids": [item["message_id"] for item in selected],
         "messages": selected,
     }

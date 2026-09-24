@@ -865,8 +865,11 @@ class ProviderBudgetGuard:
             return False
         actual = _usage(record) if state in {"succeeded", "failed"} else None
         if actual is None:
-            if state in {"succeeded", "failed"}:
-                # Terminated on the wire, usage unresolved: allowance held, slot free.
+            if state in {"succeeded", "failed", "unknown"}:
+                # Terminated on the wire, usage unresolved: allowance held, slot free.  An
+                # SDK "unknown" record is settled after the local call ended (transport
+                # error / cancel after hand-off): its charge stays at the upper bound, but
+                # it must not hold the pool's slot forever (host-final-arp10, 2026-09-24).
                 self._mark_wire_terminal(ticket)
             if row["state"] in HELD and row["state"] != "UNKNOWN":
                 self._update(ticket, "UNKNOWN")
@@ -1001,8 +1004,12 @@ class ProviderBudgetGuard:
                         and str(resolution.outcome) == "confirmed_not_started"
                     ):
                         self._update(ticket, "RELEASED")
-                    elif row["state"] in HELD and row["state"] != "UNKNOWN":
-                        self._update(ticket, "UNKNOWN")
+                    else:
+                        if row["state"] in HELD and row["state"] != "UNKNOWN":
+                            self._update(ticket, "UNKNOWN")
+                        if str(record.state) == "unknown" and record.handoff_attempt == row["handoff_ordinal"]:
+                            # Older libraries: an unknown call already ended on the wire.
+                            self._mark_wire_terminal(ticket)
                 elif row["state"] == "RESERVED":
                     # Do not release a live competing owner's pre-handoff grant.
                     intent = self.store.get_intent(row["intent_id"])
