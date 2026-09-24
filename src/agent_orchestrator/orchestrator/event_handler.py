@@ -656,13 +656,12 @@ class Orchestrator:
                     )
                     else None
                 )
-                self._provider_admissions = {
-                    key: None
-                    if self._provider_token_estimators[key] is None
-                    else ProviderBudgetGuard(
+                def guard_for(key: str, estimator: Any) -> Any:
+                    profile = self._profiles[key]
+                    return ProviderBudgetGuard(
                         self._commit,
                         owner=self._owner,
-                        estimator=self._provider_token_estimators[key],
+                        estimator=estimator,
                         max_slots=self._config.max_concurrent_model_calls,
                         profile_slots=slots,
                         price_tables={
@@ -673,8 +672,23 @@ class Orchestrator:
                             )
                         },
                     )
-                    for key, profile in self._profiles.items()
-                }
+
+                def admission_for(key: str) -> Any:
+                    """A pool may offer several candidate estimators (a counter identity
+                    changed while the pool kept intents frozen with the older one).  The
+                    admission identity persisted in its intents picks the candidate; a
+                    pool with no persisted intent takes the first.  Nothing is migrated."""
+                    estimator = self._provider_token_estimators[key]
+                    if estimator is None:
+                        return None
+                    candidates = tuple(estimator) if isinstance(estimator, (tuple, list)) else (estimator,)
+                    guards = [guard_for(key, candidate) for candidate in candidates]
+                    if len(guards) == 1:
+                        return guards[0]
+                    frozen = self._frozen_admission_fingerprints(key)
+                    return next((guard for guard in guards if guard.fingerprint in frozen), guards[0])
+
+                self._provider_admissions = {key: admission_for(key) for key in self._profiles}
                 self._provider_admission = self._provider_admissions[self._default_profile]
             local_admissions = {}
             if self._provider_admissions is None and self.store.has_table(
@@ -1638,6 +1652,22 @@ class Orchestrator:
         if guard is None:
             return
         guard.release_held_grants(intent_id=intent.intent_id, reason="provider_outcome_unknown")
+
+    def _frozen_admission_fingerprints(self, profile_id: str) -> set[str]:
+        """Admission identities persisted in this pool's dispatch intents."""
+        if not self.store.has_table("dispatch_intents"):
+            return set()
+        found: set[str] = set()
+        for (encoded,) in self.store.connection.execute("SELECT config_json FROM dispatch_intents"):
+            try:
+                frozen = json.loads(encoded)
+            except (TypeError, ValueError):
+                continue
+            if str(frozen.get("runtime_profile_id") or DEFAULT_PROFILE) == profile_id:
+                value = frozen.get("provider_admission_fingerprint")
+                if isinstance(value, str):
+                    found.add(value)
+        return found
 
     def _release_mission_unknown_grants(self, mission_id: str) -> None:
         for intent in self.store.list_intents(

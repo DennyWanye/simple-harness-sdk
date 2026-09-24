@@ -27,7 +27,13 @@ from simple_harness.agents.arp.pins import Pin
 from simple_harness.agents.arp.strict import digest
 from simple_harness.providers import ProviderRequest
 
-from .deepseek_tokens import RECIPE_COMMIT, RECIPE_VERSION, TOKENIZER_SHA256, DeepSeekV41TokenEstimator
+from .deepseek_tokens import (
+    RECIPE_COMMIT,
+    RECIPE_VERSION,
+    TOKENIZER_SHA256,
+    DeepSeekV41TokenEstimator,
+    LegacyPriorOutputDeepSeekCounter,
+)
 
 COUNTER_ID = "deepseek-v41-official-exact"
 COUNTER_REVISION = 2
@@ -159,13 +165,32 @@ class RelayDeepSeekCounter(CertifiedDeepSeekCounter):
         return self.exact_input_tokens(request) + self.margin.charge(request)
 
 
+class LegacyRelayDeepSeekCounter(LegacyPriorOutputDeepSeekCounter):
+    """The released (pre-2026-09-24) identity on a relay: same fingerprint and semantics as
+    the pool was frozen with, plus the relay's learned tool-preamble margin.  The legacy
+    thinking-mode rendering adds only ~25 tokens; the relay adds ~110 with tools, so without
+    the margin a legacy relay pool would undercount (review 2026-09-24)."""
+
+    def __init__(self, tokenizer_path: Path, *, margin: RelayToolMargin, **kwargs: Any) -> None:
+        if not isinstance(margin, RelayToolMargin):
+            raise TypeError("LegacyRelayDeepSeekCounter needs a RelayToolMargin")
+        super().__init__(tokenizer_path, **kwargs)
+        self.margin = margin  # fingerprint unchanged: the frozen identity is kept
+
+    def exact_input_tokens(self, request: ProviderRequest) -> int:
+        return super().estimate_input_tokens(request)
+
+    def estimate_input_tokens(self, request: ProviderRequest) -> int:
+        return self.exact_input_tokens(request) + self.margin.charge(request)
+
+
 class CalibratingProvider:
     """A provider decorator that learns a relay's tool-preamble margin from every reported
     prompt count (the request it sees is the final wire request)."""
 
-    def __init__(self, inner: Any, counter: RelayDeepSeekCounter) -> None:
-        if not isinstance(counter, RelayDeepSeekCounter):
-            raise TypeError("CalibratingProvider needs the relay counter")
+    def __init__(self, inner: Any, counter: Any) -> None:
+        if not isinstance(counter, (RelayDeepSeekCounter, LegacyRelayDeepSeekCounter)):
+            raise TypeError("CalibratingProvider needs a relay counter")
         self._inner = inner
         self._counter = counter
 
@@ -255,6 +280,7 @@ __all__ = (
     "RELAY_TOOL_MARGIN_FLOOR",
     "CalibratingProvider",
     "CertifiedDeepSeekCounter",
+    "LegacyRelayDeepSeekCounter",
     "RelayDeepSeekCounter",
     "RelayToolMargin",
     "certification_ref",

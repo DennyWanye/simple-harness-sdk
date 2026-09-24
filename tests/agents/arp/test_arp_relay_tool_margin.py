@@ -129,3 +129,19 @@ def test_the_legacy_counter_keeps_the_released_identity_and_semantics() -> None:
     assert legacy.requires_prior_output_reserve is True and legacy.bound_protocol == "deepseek-v41-chat-text-plus-prior-output-v1"
     enabled = CertifiedDeepSeekCounter(TOKENIZER, model="deepseek-v4.1-flash", thinking="enabled")
     assert legacy.estimate_input_tokens(_request(tools=True)) == enabled.count_request_tokens(_request(tools=True))  # endpoint-default render
+
+
+def test_a_legacy_pool_on_a_relay_keeps_its_identity_and_charges_the_margin() -> None:
+    pytest.importorskip("deepseek_recipe")
+    if not TOKENIZER.is_file():
+        pytest.skip("pinned DeepSeek tokenizer not installed on this machine")
+    from agent_orchestrator.runtime.deepseek_meter import LegacyRelayDeepSeekCounter
+    from agent_orchestrator.runtime.deepseek_tokens import LegacyPriorOutputDeepSeekCounter
+
+    margin = RelayToolMargin()
+    legacy = LegacyPriorOutputDeepSeekCounter(TOKENIZER, model="deepseek-v4.1-flash")
+    relay = LegacyRelayDeepSeekCounter(TOKENIZER, model="deepseek-v4.1-flash", margin=margin)
+    assert relay.fingerprint == legacy.fingerprint and relay.requires_prior_output_reserve is True
+    assert relay.estimate_input_tokens(_request(tools=True)) == legacy.estimate_input_tokens(_request(tools=True)) + 160
+    assert relay.estimate_input_tokens(_request(tools=False)) == legacy.estimate_input_tokens(_request(tools=False))
+    assert isinstance(CalibratingProvider(object(), relay), CalibratingProvider)
