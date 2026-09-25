@@ -1453,6 +1453,13 @@ class PlanCommitsMixin:
                 f"{reserved} unrefined compound(s); a plan whose work cannot pay for anything "
                 "is refused, not opened with an account nobody can draw on (§21.5)",
             )
+        # 2026-09-25 user decision: a deployment that names a fixed per-leaf allowance
+        # gives every new leaf that allowance instead of the even share.  The even share
+        # stays the upper bound, so a pool that cannot pay the fixed amount for every
+        # leaf still splits what it has and the conservation equation below holds.
+        cap = getattr(self, "_task_max_tokens", None)
+        if cap is not None and funded_now:
+            share = cap if share is None else min(share, cap)
         built: list[OccurrenceTask] = []
         ordinal = len(stored)
         # P2.3k verification P1-2: the occurrences a root criterion is linked to keep

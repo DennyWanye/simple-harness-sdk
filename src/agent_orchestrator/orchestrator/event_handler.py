@@ -579,6 +579,7 @@ class Orchestrator:
                 self._store,
                 conflict_tasks=self._config.knowledge_sharing,
                 global_budget=self._config.global_budget,
+                task_max_tokens=self._config.task_max_tokens,
                 deployed_layers=self._deployed,
                 task_floor=self._task_floor,
                 candidates_for=self._candidates_for,

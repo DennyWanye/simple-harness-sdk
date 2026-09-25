@@ -323,6 +323,7 @@ SNAPSHOT_FIELDS: dict[str, str] = {
             "manager_reserve_tokens",
             "aging_window_seconds",
             "global_budget",
+            "task_max_tokens",  # fixed per-leaf allowance (2026-09-25)
             "max_running_attempts",
             "max_pending_dispatch",
             "max_pending_verifications",

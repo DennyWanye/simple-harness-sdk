@@ -373,6 +373,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         *,
         conflict_tasks: bool = True,
         global_budget: Budget | None = None,
+        task_max_tokens: int | None = None,
         deployed_layers: frozenset[str] = STEP2_IMPLEMENTED_LAYERS,
         task_floor: TaskBudgetFloor | None = None,
         candidates_for: Callable[[str], int] | None = None,
@@ -405,6 +406,10 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         self._ledger = BudgetLedger(store)
         self._conflict_tasks = conflict_tasks  # D4-19: False = defer every conflict
         self._global_budget = global_budget  # D6-1: None = no deployment-wide cap
+        if task_max_tokens is not None and int(task_max_tokens) < 1:
+            raise ValueError("task_max_tokens must be a positive token count")
+        # fixed per-leaf allowance (None = even share of the pool); see plan_commits
+        self._task_max_tokens = None if task_max_tokens is None else int(task_max_tokens)
         # host support 0.9.8: the verification layers this deployment runs — without local
         # code execution ``code_test`` is not among them; the Graph Manager checks, the
         # system default policies and the conflict path all follow it

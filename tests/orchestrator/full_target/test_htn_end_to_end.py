@@ -400,9 +400,10 @@ def build_world(
     domain: str | None = None,
     tools: tuple[str, ...] = TOOLS,
     max_runtime_seconds: int | None = None,
+    task_max_tokens: int | None = None,
 ) -> World:
     path = Path(tmp_path) / name
-    service = CommitService(Store.open(path))
+    service = CommitService(Store.open(path), task_max_tokens=task_max_tokens)
     mission, _ = service.create_mission(
         _spec(
             key,
@@ -580,6 +581,34 @@ def test_the_two_primitives_share_the_pool(world: World) -> None:
     shares = [rows[task_id].budget.max_tokens for task_id in rows if task_id != ROOT_TASK]
     assert shares == [MISSION_TOKENS // 2, MISSION_TOKENS // 2]
     assert sum(shares) <= MISSION_TOKENS
+
+
+def test_a_fixed_task_allowance_replaces_the_even_share(tmp_path) -> None:
+    """2026-09-25 user decision: each leaf gets the deployment's fixed allowance, not
+    the pool divided by the leaves (the desktop run where 4M over three leaves left a
+    reworked leaf short while the Mission still had 2.36M unused)."""
+
+    world = committed(tmp_path, key="p23c-fixed", task_max_tokens=30_000)
+    rows = world.tasks()
+    shares = [rows[task_id].budget.max_tokens for task_id in rows if task_id != ROOT_TASK]
+    assert shares == [30_000, 30_000]
+    equation = world.events(OCCURRENCES_MATERIALISED)[0].payload["budget"]
+    assert equation["share_tokens"] == 30_000 and equation["holds"] is True
+
+
+def test_a_fixed_allowance_the_pool_cannot_pay_falls_back_to_what_is_left(tmp_path) -> None:
+    """Conservation outranks the fixed amount: two leaves of 150K do not fit a 200K pool."""
+
+    world = committed(tmp_path, key="p23c-fixed-big", task_max_tokens=150_000)
+    rows = world.tasks()
+    shares = [rows[task_id].budget.max_tokens for task_id in rows if task_id != ROOT_TASK]
+    assert shares == [MISSION_TOKENS // 2, MISSION_TOKENS // 2]
+    assert sum(int(t.budget.max_tokens or 0) for t in rows.values()) <= task_pool_tokens(world.mission)
+
+
+def test_a_fixed_allowance_must_be_positive(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        CommitService(Store.open(Path(tmp_path) / "zero.db"), task_max_tokens=0)
 
 
 def test_the_sum_of_every_row_never_exceeds_the_pool(world: World) -> None:

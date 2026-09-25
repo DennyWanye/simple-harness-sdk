@@ -85,6 +85,7 @@ PLAN_CONFIG = frozenset(
         # accepted, so the plan (the operator) sets it, the same for every strategy
         "min_task_tokens",
         "global_budget",
+        "task_max_tokens",  # fixed per-leaf allowance (2026-09-25)
         "price_table",
         "hard_cap_micros",
     }
