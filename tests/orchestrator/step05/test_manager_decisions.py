@@ -94,6 +94,13 @@ def test_s5_01_a_worker_proposal_reaches_the_graph_only_through_the_manager(tmp_
             assert (
                 b_result.verification_state == "REJECTED" and b_result.verdict == "outcome:blocked"
             )
+            # 2026-09-25: the blocked Attempt is settled after its intent closed (the
+            # Assurance lane refused the old settle-inside-record order every round).
+            intent_state = store.connection.execute(
+                "SELECT state FROM dispatch_intents WHERE subject_id=?", (b_attempts[0].id,)).fetchone()
+            assert intent_state is not None and intent_state[0] == "SETTLED"
+            assert all(row[0] != "RESERVED" for row in store.connection.execute(
+                "SELECT state FROM budget_reservations WHERE subject_id=?", (b_attempts[0].id,)))
             assert not any(
                 e.type == "VerificationStarted" and e.task_id == t["B"].id for e in events
             )

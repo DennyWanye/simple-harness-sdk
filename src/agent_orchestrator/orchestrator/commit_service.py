@@ -4170,7 +4170,11 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
         """A non-candidate Result Envelope (§13 blocked / failure / no_progress /
         proposed_subtasks; D5-5): kept as history (never verified), the Attempt ends in
         RETRY_WAIT with the outcome as its failure, the Task stays ACTIVE for the
-        Manager's decision (D5-6).  Idempotent on (attempt, turn)."""
+        Manager's decision (D5-6).  Idempotent on (attempt, turn).
+
+        Settlement is the caller's next step, after it closes the dispatch intent
+        (2026-09-25): settling in here ran before the intent was closed, which the
+        Assurance lane refuses -- every loop round then failed on the same row."""
 
         with self._store.transaction():
             attempt = self._require_attempt(attempt_id)
@@ -4234,7 +4238,6 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 ),
                 expected_version=attempt.version,
             )
-            self._settle_subject(attempt.id, attempt.mission_id, task_id=attempt.task_id)
             self._emit(
                 "ResultSubmitted",
                 attempt.mission_id,

@@ -3269,8 +3269,16 @@ class Orchestrator:
                 if await self._collect_after_stop(intent):
                     progressed = True
                 continue
-            if await self._collect(intent):
-                progressed = True
+            try:
+                if await self._collect(intent):
+                    progressed = True
+            except (BudgetError, CommitRejected) as error:
+                # 2026-09-25: one Mission's refused collection must not stop every
+                # other Mission's results (it re-raised out of run() each round).
+                # The row stays SUBMITTED and is retried next round, visibly.
+                self._note(f"intent {intent.id}: collection refused ({type(error).__name__}: {error})")
+                logger.warning("orchestrator.collection_refused intent=%s mission=%s error=%s: %s",
+                               intent.id, intent.mission_id, type(error).__name__, error)
         # D6-9': verification runs in a bounded set of tasks (``verifier_workers``); the loop
         # reaps finished ones and starts new ones.  A crash inside a verification is raised at
         # the next phase boundary — nothing else is decided after it (fault-injection tests)
@@ -8880,6 +8888,9 @@ class Orchestrator:
                 usage_refs=tuple(result.usage_refs),
             )
             self._settle_intent(intent, "SETTLED")
+            # Same order as every other outcome: close the intent, then settle (an
+            # open Assurance responsibility keeps the reservation held, visibly).
+            self._settle_if_known(self.store.get_attempt(attempt.id) or attempt)
             await self._release_attempt(attempt.id, cancel=False)
             self._note(f"attempt {attempt.id}: outcome {envelope.outcome} → manager decision")
             await self._request_management(
