@@ -198,8 +198,13 @@ def assemble_runtime_views(*, store: Any, mission: Any, network: Any, world: Any
              "connector": action["connector"], "operation": action["operation"], "target": action["target"]}
             for action in store.list_actions(mission.id) if action["state"] == "SUCCEEDED"
         ][-16:]
-    result["planning_protocol"] = {**package["planning_protocol"], "enabled_decision_types": sorted(
-        key for key, value in enablement.items() if value.executable)}
+    # 2026-09-25: the model sees legal decision types and legal repair kinds, never the
+    # internal ``REPAIR/<kind>`` enablement keys (they are not decision types).
+    from ..contracts.planning_decisions import exposed_enablement
+    decision_types, repair_kinds = exposed_enablement(enablement)
+    result["planning_protocol"] = {**package["planning_protocol"],
+                                   "enabled_decision_types": decision_types,
+                                   "enabled_repair_kinds": repair_kinds}
     from ..storage.planning_human_store import PlanningHumanStore
     result["human_answers"] = [
         {"subject_key": row["subject_key"], "question": row["request"]["payload"]["question"], "answer": row["answer"]}
@@ -215,7 +220,8 @@ def assemble_runtime_views(*, store: Any, mission: Any, network: Any, world: Any
     result["evidence_predicates"] = [s.to_json() for s in world.predicates.signatures()
         if getattr(world, "observers", None) is not None
         and world.observers.observer_for(s.predicate_ref.id) is not None]
-    result.update(package_version="planner-package-hierarchical-v8" if h4 else FORMAL_PACKAGE_LABEL, views=formal.views_json(),
+    from ..runtime.role_templates import PLANNING_DECISION_PACKAGE_LABEL
+    result.update(package_version=PLANNING_DECISION_PACKAGE_LABEL if h4 else FORMAL_PACKAGE_LABEL, views=formal.views_json(),
                   visible_refs=list(formal.visible_refs), truncated=formal.truncated,
                   omitted_counts=dict(formal.omitted_counts or {}))
     # Count loss that already occurred in the compatibility collector as well as

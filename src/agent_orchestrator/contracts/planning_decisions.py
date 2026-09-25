@@ -26,7 +26,7 @@ rest of the contract package does.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -313,6 +313,63 @@ H4_DECISION_ENABLEMENT: Mapping[str, DecisionEnablement] = MappingProxyType({
     "REPAIR/ESCALATE": _EXECUTABLE,
     "REPAIR/REQUEST_COMPENSATION": _EXECUTABLE,
 })
+
+
+# --------------------------------------------------------------------------------------
+# Enablement keys vs. what the model sees (2026-09-25 主流程优化条目 2)
+# --------------------------------------------------------------------------------------
+# The matrices above are keyed the way *admission* and *authorization* key them:
+# ``REPAIR/<kind>``.  That key is not a decision type, and a model that copies it into
+# ``decision_type`` is refused with ``DECISION_TYPE_UNKNOWN`` (7 real-model rounds on
+# 2026-09-23 failed exactly so).  The request package therefore lists two things —
+# legal ``decision_type`` values and legal ``payload.repair_kind`` values — and the two
+# functions below are the only translation between the two spellings, in both
+# directions.
+
+REPAIR_ENABLEMENT_PREFIX = "REPAIR/"
+
+
+def exposed_enablement(
+    enablement: Mapping[str, DecisionEnablement],
+) -> tuple[list[str], list[str]]:
+    """Internal enablement keys -> ``(enabled_decision_types, enabled_repair_kinds)``.
+
+    Every value in the first list is a :class:`PlanningDecisionType`; every value in
+    the second is a :class:`RepairKind`.  Both are sorted, and ``REPAIR`` appears in
+    the first list exactly when at least one repair kind is executable.
+    """
+
+    types: set[str] = set()
+    kinds: set[str] = set()
+    for key, value in enablement.items():
+        if not value.executable:
+            continue
+        if key.startswith(REPAIR_ENABLEMENT_PREFIX):
+            kinds.add(str(RepairKind(key[len(REPAIR_ENABLEMENT_PREFIX):])))
+            types.add(str(PlanningDecisionType.REPAIR))
+        else:
+            types.add(str(PlanningDecisionType(key)))
+    return sorted(types), sorted(kinds)
+
+
+def internal_enablement_keys(
+    decision_types: Iterable[str], repair_kinds: Iterable[str]
+) -> frozenset[str]:
+    """``(enabled_decision_types, enabled_repair_kinds)`` -> internal enablement keys.
+
+    The inverse of :func:`exposed_enablement`: ``REPAIR`` expands to one
+    ``REPAIR/<kind>`` per listed kind, every other type is its own key.  A listed
+    kind without ``REPAIR`` in the types, or an unknown spelling, is a contract error
+    rather than a silently dropped row.
+    """
+
+    types = {str(PlanningDecisionType(item)) for item in decision_types}
+    kinds = [str(RepairKind(item)) for item in repair_kinds]
+    if kinds and str(PlanningDecisionType.REPAIR) not in types:
+        raise ContractError("enabled_repair_kinds listed without REPAIR in enabled_decision_types")
+    keys = {item for item in types if item != str(PlanningDecisionType.REPAIR)}
+    keys.update(f"{REPAIR_ENABLEMENT_PREFIX}{kind}" for kind in kinds)
+    return frozenset(keys)
 
 
 # --------------------------------------------------------------------------------------

@@ -29,6 +29,7 @@ import test_real_provider_hierarchical_smoke as real_smoke  # noqa: E402
 from agent_orchestrator.api.planning_authorization import PlanningAuthorizationApi  # noqa: E402
 from agent_orchestrator.api.operation_completion import OperationCompletionApi  # noqa: E402
 from agent_orchestrator.contracts import Budget  # noqa: E402
+from agent_orchestrator.contracts.models import ContractError  # noqa: E402
 from agent_orchestrator.contracts.obligations import Obligation  # noqa: E402
 from agent_orchestrator.contracts.planning_decisions import (  # noqa: E402
     PlanningDecisionEnvelopeV1,
@@ -53,7 +54,7 @@ from agent_orchestrator.planning.decision_codec import serialize_planning_decisi
 from agent_orchestrator.planning.htn.observers.code import code_observers  # noqa: E402
 from agent_orchestrator.planning.htn.world import build_planning_world  # noqa: E402
 from agent_orchestrator.runtime.assembly import OrchestratorConfig  # noqa: E402
-from agent_orchestrator.runtime.role_templates import PLANNER_HIERARCHICAL_V9, PLANNER_HIERARCHICAL_V10  # noqa: E402
+from agent_orchestrator.runtime.role_templates import PLANNER_HIERARCHICAL_V11, PLANNING_DECISION_PACKAGE_LABEL  # noqa: E402
 from agent_orchestrator.storage.htn_store import HtnStore  # noqa: E402
 from agent_orchestrator.storage.obligation_store import ObligationStore  # noqa: E402
 from agent_orchestrator.testing.fixtures import RoleScriptedProvider  # noqa: E402
@@ -105,13 +106,12 @@ def _approve_root_content_only_spec(commit, mission, binding, *, command_id: str
     return requirements
 
 
-def test_historical_planning_package_label_keeps_original_integer_binding() -> None:
+def test_only_the_current_planning_package_label_binds() -> None:
     assert Orchestrator._planning_decision_package_version(
-        {"package_version": "planner-package-hierarchical-v5"}
-    ) == 4
-    assert Orchestrator._planning_decision_package_version(
-        {"package_version": "planner-package-hierarchical-v6"}
-    ) == 5
+        {"package_version": PLANNING_DECISION_PACKAGE_LABEL}
+    ) == 8
+    with pytest.raises(ContractError):  # 2026-09-25: historical labels are no longer served
+        Orchestrator._planning_decision_package_version({"package_version": "planner-package-hierarchical-v8"})
 
 
 def _config(tmp_path: Path) -> OrchestratorConfig:
@@ -205,8 +205,8 @@ async def _open_planner_round(
     assert intent.mission_id == mission.id
     from agent_orchestrator.storage.planning_decision_store import PlanningDecisionStore
     frozen = PlanningDecisionStore(loop.store).get_mission_protocol(mission.id)
-    expected = {6: PLANNER_HIERARCHICAL_V9.prompt_version, 7: PLANNER_HIERARCHICAL_V10.prompt_version}
-    assert intent.config["prompt_version"] == expected[frozen["package_version"]]
+    assert frozen["package_version"] == 8
+    assert intent.config["prompt_version"] == PLANNER_HIERARCHICAL_V11.prompt_version
     assert intent.config["planning_package"]["planning_protocol"]["protocol"] == (
         "planning-decision-v1"
     )
@@ -259,9 +259,7 @@ def test_new_protocol_production_entry_selects_prompt_v10(tmp_path: Path) -> Non
         async with Orchestrator(_config(tmp_path), RoleScriptedProvider({"planner": []})) as loop:
             mission, _env, _contract, dispatch = _seed_new_protocol(loop, tmp_path, key="h1i-v10")
             intent = await _open_planner_round(loop, mission, dispatch, ordinal=1)
-            assert intent.config["planning_package"]["package_version"] == (
-                "planner-package-hierarchical-v8"
-            )
+            assert intent.config["planning_package"]["package_version"] == PLANNING_DECISION_PACKAGE_LABEL
             message = intent.config["message"]["content"]
             assert (
                 "rejected_method_instance and replacement_method_ref must each be JSON objects"

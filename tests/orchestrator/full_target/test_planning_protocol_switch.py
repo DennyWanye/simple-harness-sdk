@@ -32,7 +32,7 @@ from agent_orchestrator.orchestrator.planning_protocol_binding import (
     planning_protocol_replay_conflict,
 )
 from agent_orchestrator.runtime.role_templates import (
-    PLANNER_HIERARCHICAL_V10_VERSION,
+    PLANNING_DECISION_PROMPT_VERSION,
     PLANNING_DECISION_PACKAGE_VERSION,
 )
 from agent_orchestrator.storage.store import Store
@@ -125,11 +125,11 @@ def test_new_protocol_creation_writes_one_binding_with_frozen_hash(tmp_path) -> 
     assert binding is not None
     assert binding["protocol_version"] == PLANNING_DECISION_V1
     assert binding["package_version"] == PLANNING_DECISION_PACKAGE_VERSION
-    assert binding["prompt_version"] == PLANNER_HIERARCHICAL_V10_VERSION
+    assert binding["prompt_version"] == PLANNING_DECISION_PROMPT_VERSION
     expected = {
         "protocol_version": PLANNING_DECISION_V1,
         "package_version": PLANNING_DECISION_PACKAGE_VERSION,
-        "prompt_version": PLANNER_HIERARCHICAL_V10_VERSION,
+        "prompt_version": PLANNING_DECISION_PROMPT_VERSION,
     }
     assert (
         binding["binding_hash"]
@@ -532,7 +532,7 @@ def test_the_binding_hash_names_the_protocol_and_is_sensitive_to_it() -> None:
         document = {
             "protocol_version": protocol,
             "package_version": PLANNING_DECISION_PACKAGE_VERSION,
-            "prompt_version": PLANNER_HIERARCHICAL_V10_VERSION,
+            "prompt_version": PLANNING_DECISION_PROMPT_VERSION,
         }
         expected = hashlib.sha256(
             json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()

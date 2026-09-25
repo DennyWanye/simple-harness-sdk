@@ -575,14 +575,16 @@ def test_the_admission_context_reports_this_rounds_remaining_format_retries(
     assert len(read_connections) >= 2
     assert len({id(connection) for connection in read_connections}) == 1
 
-    # Current Views label maps to integer package 7; old pairings stay frozen.
-    from agent_orchestrator.runtime.role_templates import PLANNING_DECISION_PACKAGE_VERSION
+    # The current Views label maps to the current integer package version (one pairing).
+    from agent_orchestrator.runtime.role_templates import (
+        PLANNING_DECISION_PACKAGE_LABEL, PLANNING_DECISION_PACKAGE_VERSION,
+    )
 
-    assert package.package["package_version"] == "planner-package-hierarchical-v8"
-    assert context.package_version == PLANNING_DECISION_PACKAGE_VERSION == 7
+    assert package.package["package_version"] == PLANNING_DECISION_PACKAGE_LABEL
+    assert context.package_version == PLANNING_DECISION_PACKAGE_VERSION == 8
     binding_row = PlanningDecisionStore(world.store).get_planning_request(opener.intent_id)
     assert binding_row is not None
-    assert binding_row.package_version == 7
+    assert binding_row.package_version == PLANNING_DECISION_PACKAGE_VERSION
 
     # The retry: attempt ordinal 1, which is the last one §5.2 allows.  Its own request
     # row is written too, because the intent_id reassignment onto the opener's row is the

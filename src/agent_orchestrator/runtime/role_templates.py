@@ -812,6 +812,22 @@ PLANNER_HIERARCHICAL_V10 = RoleTemplate(
 )
 register_template(PLANNER_HIERARCHICAL_V10)
 
+#: 2026-09-25 主流程优化条目 2：v10 及之前的提示词用 ``REPAIR/某子类`` 描述修复动作，
+#: 而请求包又把内部启用键原样列进 ``enabled_decision_types``，9-23 有 7 局真实模型照抄
+#: ``"REPAIR/RETRY_SAME_METHOD"`` 进 decision_type 被判 ``DECISION_TYPE_UNKNOWN``。
+#: v11 配第 8 版包：包里 ``enabled_decision_types`` 只列 9 个合法类型，修复子类单列在
+#: ``enabled_repair_kinds``；提示词补一条硬规则。
+PLANNER_HIERARCHICAL_V11_VERSION = "planner-hierarchical-v11"
+PLANNER_HIERARCHICAL_V11 = RoleTemplate(
+    name="planner", prompt_version=PLANNER_HIERARCHICAL_V11_VERSION, tool_names=(),
+    instructions=PLANNER_HIERARCHICAL_V10.instructions + (
+        "\n输出格式硬规则：decision_type 只写 enabled_decision_types 里列出的值，这些值都不含斜杠。"
+        "上文所有 REPAIR/某子类 的写法，都表示 decision_type=REPAIR，并在 payload.repair_kind 写该子类；"
+        "子类只能取 enabled_repair_kinds 里列出的值。绝对不要把 REPAIR/某子类 整体写进 decision_type。"
+    ),
+)
+register_template(PLANNER_HIERARCHICAL_V11)
+
 #: Every registered prompt version that belongs to the *hierarchical* Planner.
 #: P2.3c part 2b: a deployment's frozen ``prompt_versions`` pins ``planner`` to a
 #: DAG-Planner version (``planner-v4``), and ``template_for`` honours that pin for
@@ -832,6 +848,7 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
         PLANNER_HIERARCHICAL_V8_VERSION,
         PLANNER_HIERARCHICAL_V9_VERSION,
         PLANNER_HIERARCHICAL_V10_VERSION,
+        PLANNER_HIERARCHICAL_V11_VERSION,
     }
 )
 
@@ -853,7 +870,12 @@ HIERARCHICAL_PLANNER_PACKAGE_VERSION = 3
 #: A new-protocol task selects package 5 explicitly, while a default task with no
 #: charter field keeps the old protocol on ``HIERARCHICAL_PLANNER_PACKAGE_VERSION``
 #: (still 3) with the same bytes as 0.12.2 (§8.1–§8.2).
-PLANNING_DECISION_PACKAGE_VERSION = 7
+PLANNING_DECISION_PACKAGE_VERSION = 8
+
+#: The in-package string label of the *current* planning-decision package.  Defined
+#: once here; the request assembler writes it and the request binder maps it back to
+#: ``PLANNING_DECISION_PACKAGE_VERSION``.  ``-v9`` is taken by ``planner_package_v1``.
+PLANNING_DECISION_PACKAGE_LABEL = "planner-package-hierarchical-v10"
 
 #: Which prompt versions were written against which package version.  A pin only
 #: applies among the versions of the package the branch actually builds.
@@ -884,8 +906,17 @@ HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE: Mapping[int, frozenset[str]] = {
     4: frozenset({PLANNER_HIERARCHICAL_V8_VERSION}),  # historical v5 frozen requests
     5: frozenset({PLANNER_HIERARCHICAL_V8_VERSION}),
     6: frozenset({PLANNER_HIERARCHICAL_V9_VERSION}),
-    PLANNING_DECISION_PACKAGE_VERSION: frozenset({PLANNER_HIERARCHICAL_V10_VERSION}),
+    7: frozenset({PLANNER_HIERARCHICAL_V10_VERSION}),
+    # package 8 (2026-09-25): ``enabled_decision_types`` holds only legal decision
+    # types and ``enabled_repair_kinds`` the repair sub-kinds; v11 says so.
+    PLANNING_DECISION_PACKAGE_VERSION: frozenset({PLANNER_HIERARCHICAL_V11_VERSION}),
 }
+
+#: The one prompt the current package pairs with.  Derived, never hand-written, so a
+#: package bump cannot leave the durable binding on the previous prompt.
+(PLANNING_DECISION_PROMPT_VERSION,) = tuple(
+    HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[PLANNING_DECISION_PACKAGE_VERSION]
+)
 
 
 def hierarchical_planner_versions(
@@ -1698,6 +1729,10 @@ __all__ = (
     "PLAN_REVISION_PROPOSAL_TAG",
     "HIERARCHICAL_PLANNER_PACKAGE_VERSION",
     "PLANNING_DECISION_PACKAGE_VERSION",
+    "PLANNING_DECISION_PACKAGE_LABEL",
+    "PLANNING_DECISION_PROMPT_VERSION",
+    "PLANNER_HIERARCHICAL_V11",
+    "PLANNER_HIERARCHICAL_V11_VERSION",
     "hierarchical_planner_pairing_is_valid",
     "HIERARCHICAL_PLANNER_VERSIONS",
     "HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE",

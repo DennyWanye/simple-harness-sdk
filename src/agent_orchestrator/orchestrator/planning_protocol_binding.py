@@ -16,9 +16,9 @@ from ..contracts.planning_decisions import (
     PLANNING_DECISION_V1,
 )
 from ..runtime.role_templates import (
-    PLANNER_HIERARCHICAL_V10_VERSION,
     hierarchical_planner_pairing_is_valid,
     PLANNING_DECISION_PACKAGE_VERSION,
+    PLANNING_DECISION_PROMPT_VERSION,
 )
 from ..storage.planning_decision_store import PlanningDecisionStore
 from ..storage.store import Store
@@ -29,7 +29,9 @@ from ..storage.store import Store
 #: document and no value here can be silently shadowed by an override.
 PLANNING_PROTOCOL_BINDING: dict[str, Any] = {
     "package_version": PLANNING_DECISION_PACKAGE_VERSION,
-    "prompt_version": PLANNER_HIERARCHICAL_V10_VERSION,
+    # derived from the pairing table, so the binding can never name a prompt the
+    # current package was not written for
+    "prompt_version": PLANNING_DECISION_PROMPT_VERSION,
 }
 
 

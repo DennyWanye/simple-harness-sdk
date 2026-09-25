@@ -4196,36 +4196,29 @@ class Orchestrator:
                 if not self._config.hierarchical_repair_enabled:
                     package["planning_protocol"]["enabled_decision_types"] = [
                         value for value in package["planning_protocol"]["enabled_decision_types"]
-                        if not value.startswith("REPAIR/")]
-            elif bound_version == 4:
-                package["package_version"] = "planner-package-hierarchical-v5"
-                for section in ("open_compound_goals", "committed_primitives"):
-                    for row in package["plan"][section]:
-                        for key in ("task_status", "task_version", "occurrence_outcome"):
-                            row.pop(key, None)
+                        if value != "REPAIR"]
+                    package["planning_protocol"]["enabled_repair_kinds"] = []
+            else:
+                raise ContractError(f"unsupported planning package version {bound_version}")
         return _seal(package)
 
     @staticmethod
     def _planning_decision_package_version(body: Mapping[str, Any]) -> int:
         """Translate the sealed package label to the durable H1 integer version.
 
-        The current v6 label maps to integer 5; historical v5 requests retain 4.
-        ``PlanningRequestBinding`` stores that explicit pairing. Refuse malformed
-        labels and booleans instead of letting ``int()`` coerce or crash at the store
+        Only the current label (``PLANNING_DECISION_PACKAGE_LABEL``) is recognised;
+        the pairing is defined once in ``role_templates``.  Refuse malformed labels
+        and booleans instead of letting ``int()`` coerce or crash at the store
         boundary.
         """
 
-        from ..planning.htn.planner_package import HIERARCHICAL_DECISION_PACKAGE_VERSION
-        from ..runtime.role_templates import PLANNING_DECISION_PACKAGE_VERSION
+        from ..runtime.role_templates import (
+            PLANNING_DECISION_PACKAGE_LABEL,
+            PLANNING_DECISION_PACKAGE_VERSION,
+        )
 
         raw = body.get("package_version")
-        if raw == "planner-package-hierarchical-v5":
-            return 4  # historical requests keep their original binding identity
-        if raw == HIERARCHICAL_DECISION_PACKAGE_VERSION:
-            return 5
-        if raw == "planner-package-hierarchical-v7":
-            return 6
-        if raw == "planner-package-hierarchical-v8":
+        if raw == PLANNING_DECISION_PACKAGE_LABEL:
             return PLANNING_DECISION_PACKAGE_VERSION
         if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
             raise ContractError(f"unpairable planning package_version: {raw!r}")
@@ -4681,8 +4674,13 @@ class Orchestrator:
             str(item.predicate_ref.id) for item in world.predicates.signatures()
         )
         protocol = body.get("planning_protocol")
+        # 2026-09-25: the package lists decision types and repair kinds separately;
+        # admission keys rows as ``REPAIR/<kind>``, so translate back here (once).
+        from ..contracts.planning_decisions import internal_enablement_keys
         enabled = (
-            frozenset(str(item) for item in protocol.get("enabled_decision_types", ()))
+            internal_enablement_keys(
+                protocol.get("enabled_decision_types", ()), protocol.get("enabled_repair_kinds", ())
+            )
             if isinstance(protocol, Mapping)
             else frozenset()
         )
@@ -4802,9 +4800,7 @@ class Orchestrator:
         from ..runtime.role_templates import (
             HIERARCHICAL_PLANNER_PACKAGE_VERSION,
             PLANNER_HIERARCHICAL_V7,
-            PLANNER_HIERARCHICAL_V8,
-            PLANNER_HIERARCHICAL_V9,
-            PLANNER_HIERARCHICAL_V10,
+            PLANNER_HIERARCHICAL_V11,
             PLANNING_DECISION_PACKAGE_VERSION,
             hierarchical_planner_versions,
         )
@@ -4820,11 +4816,11 @@ class Orchestrator:
         if candidate.prompt_version in hierarchical_planner_versions(package_version):
             return candidate
         if package_version == PLANNING_DECISION_PACKAGE_VERSION:
-            return PLANNER_HIERARCHICAL_V10
-        if package_version == 6:
-            return PLANNER_HIERARCHICAL_V9
-        if package_version in {4, 5}:
-            return PLANNER_HIERARCHICAL_V8
+            return PLANNER_HIERARCHICAL_V11
+        if package_version != HIERARCHICAL_PLANNER_PACKAGE_VERSION:
+            # 2026-09-25: no historical package/prompt pairings are served any more; a
+            # Mission bound to one fails loudly instead of running on a stale prompt.
+            raise ContractError(f"unsupported planning package version {package_version}")
         # P2.3c part 2c: v3 is the one whose read-set rule matches the package the
         # branch above builds (it carries a ``facts`` section; v2 tells the model there
         # is none).  The prompt and the package are chosen together or not at all.
@@ -5056,7 +5052,9 @@ class Orchestrator:
                     "into REPLACE_METHOD merely to match that example. "
                     "For RETRY_SAME_METHOD, failed_attempt_id is a JSON STRING copied from "
                     "failures[].attempt_review_ref.id, never the full reference object. "
-                    "method_instance_ref remains the full method_instance reference object."
+                    "method_instance_ref remains the full method_instance reference object. "
+                    "decision_type never contains a slash: write REPAIR and put the kind in "
+                    "payload.repair_kind, choosing only from planning_protocol.enabled_repair_kinds."
                 )
         from .planning_selection import local_decision, reserve_selection
         native_decision = local_decision(package.package) if new_mode is not None else None

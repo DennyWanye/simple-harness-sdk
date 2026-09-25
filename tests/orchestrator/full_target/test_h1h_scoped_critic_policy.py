@@ -89,7 +89,7 @@ def test_current_runtime_views_do_not_reintroduce_suspended_methods(tmp_path):
             registration = world.registry.suspend(reference, reason="source-library experiment")
             HtnStore(loop.store).set_method_registration(registration)
             sealed = loop._hierarchical_planner_package(dispatch, mission, ordinal=1)
-            assert sealed.package["package_version"] == "planner-package-hierarchical-v8"
+            assert sealed.package["package_version"] == __import__("agent_orchestrator.runtime.role_templates", fromlist=["x"]).PLANNING_DECISION_PACKAGE_LABEL
             rows = sealed.package["method_library"]
             assert rows and all(r["method_ref"] != reference.to_json() for r in rows)
             assert provider.calls == 0
