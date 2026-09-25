@@ -121,7 +121,7 @@ def test_unlinked_criterion_gets_a_concrete_repair_hint():
     projected = document_repair_feedback(record)
     [hint] = projected["repair_hints"]
     assert "criterion-e8b9" in hint and "criterion-ok" not in hint
-    assert "criterion_refs" in hint and "citations" in hint
+    assert "criterion_ids" in hint and "never both" in hint and "citations" in hint
     assert projected["record_sha256"] == sha256_hex(record)
 
 
