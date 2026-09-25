@@ -38,6 +38,13 @@ REVIEW_PURPOSES = frozenset(
 REVIEW_CODEC_VERSION = "assurance-review-reply-v2"
 
 
+#: Why the only permitted second review invocation exists: a malformed reply
+#: (FORMAT_REPAIR) or a turn that failed before committing, e.g. a transient
+#: provider error (TURN_RETRY, 2026-09-25 UI 全量点击 — one provider 5xx on the
+#: final review used to fail the whole Mission).
+SECOND_INVOCATION_REASONS = frozenset({"FORMAT_REPAIR", "TURN_RETRY"})
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewRecordBinding:
     """Authenticated interpretation sidecar; decoding alone confers no authority."""
@@ -311,7 +318,7 @@ class ReviewInvocation:
             row["subject_id"] != expected
             or row["creation_key"] != expected
             or row["input_id"] != "assurance-input:" + row["review_key"] + ":" + str(ordinal)
-            or row["reason"] != ("INITIAL" if ordinal == 1 else "FORMAT_REPAIR")
+            or row["reason"] not in ({"INITIAL"} if ordinal == 1 else SECOND_INVOCATION_REASONS)
         ):
             raise AssuranceError("REVIEW_INVOCATION_IDENTITY")
         prior = row["prior_failure_receipt_ref"]

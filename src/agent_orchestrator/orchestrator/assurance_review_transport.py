@@ -164,6 +164,7 @@ def ensure_review_invocation(
     reservation: Reservation,
     require_current_locked: Callable[[], None],
     prior_failure: AssuranceRef | None = None,
+    repair_reason: str = "FORMAT_REPAIR",
 ) -> ReviewInvocation:
     """Internal original-builder entry, not a Host command accepting a verdict.
 
@@ -390,7 +391,7 @@ def ensure_review_invocation(
                 "mission_id": mission_id,
                 "review_key": review_key,
                 "ordinal": ordinal,
-                "reason": "INITIAL" if ordinal == 1 else "FORMAT_REPAIR",
+                "reason": "INITIAL" if ordinal == 1 else repair_reason,
                 "prior_failure_receipt_ref": None
                 if prior_failure is None
                 else prior_failure.to_json(),
@@ -654,9 +655,18 @@ def require_review_handoff(commit: CommitService, intent: Any) -> None:
         validator.require_current_locked(intent, binding)
 
 
+#: The classified first-invocation outcomes that fund the one second invocation,
+#: with the receipt kind each is recorded under.
+_SECOND_INVOCATION_SOURCES = {
+    "FORMAT_INVALID": "AssuranceReviewFormatRejected",
+    "TURN_FAILED": "AssuranceReviewClassified",
+}
+
+
 def _require_format_repair(
     commit: CommitService, reader: AssuranceReader, review_key: str, prior: AssuranceRef
-) -> None:
+) -> str:
+    """Validate the first invocation's classified failure; return its classification."""
     if prior.kind != "commit_receipt":
         raise AssuranceError("REVIEW_REPAIR_SOURCE_INVALID")
     metadata = reader.read_exact_metadata(prior)
@@ -680,16 +690,18 @@ def _require_format_repair(
         or body.get("intent_id") != intent.intent_id
         or intent.state not in {"SETTLED", "FAILED"}
         or commit.ledger.has_unknown_usage(intent.subject_id)
-        or body.get("classification") != "FORMAT_INVALID"
+        or _SECOND_INVOCATION_SOURCES.get(str(body.get("classification"))) != row["kind"]
     ):
         raise AssuranceError("REVIEW_REPAIR_SOURCE_INVALID")
+    classification = str(body["classification"])
     turn_ref = AssuranceRef.from_json(body.get("turn_ref"), kinds={"agent_turn_receipt"})
     turn = decode(reader.read_exact_metadata(turn_ref).body_json)["payload"]
     if (
         turn.get("intent_id") != intent.intent_id
         or turn.get("turn_id") != intent.expected_turn_id
         or turn.get("agent_id") != intent.agent_id
-        or turn.get("state") != "COMMITTED"
+        # a malformed reply was a committed turn; a failed turn never committed
+        or (turn.get("state") == "COMMITTED") != (classification == "FORMAT_INVALID")
     ):
         raise AssuranceError("REVIEW_REPAIR_SOURCE_INVALID")
     if commit._assurance_settlement is None:
@@ -711,6 +723,7 @@ def _require_format_repair(
     ).fetchone()
     if profile is None or AssurancePolicy.from_json(decode(profile[0])).format_retries != 1:
         raise AssuranceError("REVIEW_FORMAT_REPAIR_DISABLED")
+    return classification
 
 
 def ensure_format_repair_invocation(
@@ -743,7 +756,9 @@ def ensure_format_repair_invocation(
             if invocation.to_json()["prior_failure_receipt_ref"] != prior_failure.to_json():
                 raise AssuranceError("REVIEW_REPAIR_SOURCE_INVALID")
             return invocation
-        _require_format_repair(commit, reader, original.get("review_key"), prior_failure)
+        classification = _require_format_repair(
+            commit, reader, original.get("review_key"), prior_failure
+        )
         invocation, binding = read_review_invocation_locked(
             commit, reader, original.get("intent_id")
         )
@@ -756,12 +771,14 @@ def ensure_format_repair_invocation(
         request = source["request"]
         package = HtnStore(commit.store).get_review_package(binding.to_json()["package_ref"]["id"])
         config = dict(old_intent.config)
-        message = decode(config["message"]["content"])
-        message["format_feedback"] = (
-            "Previous output failed strict ReviewReply v2 decoding: "
-            + text(original.get("error_code"))
-        )
-        config["message"] = user_message_json(canonical(message))
+        if classification == "FORMAT_INVALID":
+            message = decode(config["message"]["content"])
+            message["format_feedback"] = (
+                "Previous output failed strict ReviewReply v2 decoding: "
+                + text(original.get("error_code"))
+            )
+            config["message"] = user_message_json(canonical(message))
+        # TURN_FAILED: the same frozen request is asked again, unchanged.
 
     def require_current() -> None:
         validator = commit._assurance_review_handoff
@@ -782,4 +799,5 @@ def ensure_format_repair_invocation(
         ),
         require_current_locked=require_current,
         prior_failure=prior_failure,
+        repair_reason="FORMAT_REPAIR" if classification == "FORMAT_INVALID" else "TURN_RETRY",
     )

@@ -79,12 +79,12 @@ class AssuranceReviewConsumer:
                 for row in rows
             )
         expected = {
-            "AssuranceReviewClassified": "READY_FOR_CURRENT_REVIEW",
-            "AssuranceReviewFormatRejected": "FORMAT_INVALID",
+            "AssuranceReviewClassified": {"READY_FOR_CURRENT_REVIEW", "TURN_FAILED"},
+            "AssuranceReviewFormatRejected": {"FORMAT_INVALID"},
         }
         if (
             event.type not in expected
-            or event.payload.get("classification") != expected[event.type]
+            or event.payload.get("classification") not in expected[event.type]
         ):
             return ()
         ref = AssuranceRef.from_json(
@@ -129,7 +129,8 @@ class AssuranceReviewConsumer:
                     raise AssuranceError("REVIEW_WORK_SOURCE_MISSING")
                 event = _event_from_row(sources[0])
             ref = AssuranceRef.from_json(event.payload["classification_receipt_ref"])
-            if event.type == "AssuranceReviewFormatRejected":
+            if (event.type == "AssuranceReviewFormatRejected"
+                    or event.payload.get("classification") == "TURN_FAILED"):
                 return self._prepare_format_repair(reader, ref)
             imported = read_imported_review_locked(self.commit, reader, ref)
             body = imported.binding.to_json()
@@ -377,9 +378,10 @@ class AssuranceReviewConsumer:
             self.commit, reader, source.get("intent_id")
         )
         value = invocation.to_json()
+        second_sources = {"FORMAT_INVALID": "AssuranceReviewFormatRejected",
+                          "TURN_FAILED": "AssuranceReviewClassified"}
         if (
-            source.get("classification") != "FORMAT_INVALID"
-            or row["kind"] != "AssuranceReviewFormatRejected"
+            second_sources.get(str(source.get("classification"))) != row["kind"]
             or row["subject_id"] != source.get("intent_id")
             or row["base_version"] != 0
             or row["proposal_hash"] != fingerprint(source)
@@ -408,7 +410,9 @@ class AssuranceReviewConsumer:
                 "mission_id": reader.mission_id,
                 "review_key": value["review_key"],
                 "classification_ref": ref.to_json(),
-                "reason": "REVIEW_FORMAT_REPAIR_EXHAUSTED",
+                "reason": ("REVIEW_FORMAT_REPAIR_EXHAUSTED"
+                           if source.get("classification") == "FORMAT_INVALID"
+                           else "REVIEW_TURN_RETRY_EXHAUSTED"),
             }
             receipt_id = "assurance-review-format-exhausted:" + binding.to_json()["review_key"]
             old = self.store.get_receipt(receipt_id)
