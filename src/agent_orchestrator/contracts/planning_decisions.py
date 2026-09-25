@@ -329,6 +329,13 @@ H4_DECISION_ENABLEMENT: Mapping[str, DecisionEnablement] = MappingProxyType({
 REPAIR_ENABLEMENT_PREFIX = "REPAIR/"
 
 
+class UnsupportedPlanningPackage(ContractError):
+    """A Mission is bound to (or a request names) a planning package this build no
+    longer serves.  2026-09-25: historical pairings are gone on purpose (development
+    phase, no old-data compatibility), so the answer is a loud stop of *that Mission*,
+    never a silent fallback and never the whole orchestrator loop."""
+
+
 def exposed_enablement(
     enablement: Mapping[str, DecisionEnablement],
 ) -> tuple[list[str], list[str]]:
@@ -363,8 +370,11 @@ def internal_enablement_keys(
     rather than a silently dropped row.
     """
 
-    types = {str(PlanningDecisionType(item)) for item in decision_types}
-    kinds = [str(RepairKind(item)) for item in repair_kinds]
+    try:
+        types = {str(PlanningDecisionType(item)) for item in decision_types}
+        kinds = [str(RepairKind(item)) for item in repair_kinds]
+    except ValueError as error:  # a historical package spelling such as ``REPAIR/X``
+        raise UnsupportedPlanningPackage(f"unsupported enablement spelling: {error}") from error
     if kinds and str(PlanningDecisionType.REPAIR) not in types:
         raise ContractError("enabled_repair_kinds listed without REPAIR in enabled_decision_types")
     keys = {item for item in types if item != str(PlanningDecisionType.REPAIR)}

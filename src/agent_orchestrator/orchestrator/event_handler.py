@@ -106,6 +106,7 @@ from ..contracts.planning_decisions import (
     PlanningRefKind,
     PlanningRefV1,
     PlanningRequestBinding,
+    UnsupportedPlanningPackage,
 )
 from ..contracts.resolution import DeliveryStage, ReviewAccount
 from ..contracts.semantic_base import content_hash_of
@@ -3534,6 +3535,19 @@ class Orchestrator:
             return False
         try:
             await self._create_planner_intent(mission_id, ordinal=ordinal)
+        except UnsupportedPlanningPackage as error:
+            # 2026-09-25: a Mission bound to a package this build no longer serves stops
+            # here, by itself — it must not take the orchestrator loop (and every other
+            # Mission in the library) down with it.
+            self._deferred_planning.pop(mission_id, None)
+            self._stop_planning_round(
+                mission_id,
+                reason="unsupported_planning_package",
+                detail={"error": str(error)[:300], "ordinal": ordinal},
+                stop_reason=MissionStopReason.PLANNING_FAILED,
+            )
+            self._note(f"mission {mission_id}: {error} → stopped")
+            return False
         except GraphIntegrityError as error:
             # P2.3c part 2: the hierarchical package is built from the plan, so a
             # damaged plan is now noticed *before* a model call rather than after one.
@@ -4199,7 +4213,7 @@ class Orchestrator:
                         if value != "REPAIR"]
                     package["planning_protocol"]["enabled_repair_kinds"] = []
             else:
-                raise ContractError(f"unsupported planning package version {bound_version}")
+                raise UnsupportedPlanningPackage(f"unsupported planning package version {bound_version}")
         return _seal(package)
 
     @staticmethod
@@ -4820,7 +4834,7 @@ class Orchestrator:
         if package_version != HIERARCHICAL_PLANNER_PACKAGE_VERSION:
             # 2026-09-25: no historical package/prompt pairings are served any more; a
             # Mission bound to one fails loudly instead of running on a stale prompt.
-            raise ContractError(f"unsupported planning package version {package_version}")
+            raise UnsupportedPlanningPackage(f"unsupported planning package version {package_version}")
         # P2.3c part 2c: v3 is the one whose read-set rule matches the package the
         # branch above builds (it carries a ``facts`` section; v2 tells the model there
         # is none).  The prompt and the package are chosen together or not at all.

@@ -45,7 +45,7 @@ def test_exposed_and_internal_are_inverses() -> None:
 def test_internal_keys_refuse_kinds_without_repair() -> None:
     with pytest.raises(ContractError):
         internal_enablement_keys(["REFINE"], ["RETRY_SAME_METHOD"])
-    with pytest.raises(ValueError):
+    with pytest.raises(ContractError):
         internal_enablement_keys(["REPAIR/RETRY_SAME_METHOD"], [])
 
 
@@ -86,5 +86,17 @@ def test_mission_bound_to_a_historical_package_fails_loudly(tmp_path: Path) -> N
             assert store.get_mission_protocol(mission.id)["package_version"] == 7
             with pytest.raises(ContractError, match="unsupported planning package version"):
                 loop._hierarchical_planner_template(mission.id)
+            # ...and the orchestrator stops *that* Mission instead of raising out of the loop
+            # (a stale library must not take every other Mission down with it).
+            assert await loop._try_planner_intent(mission.id, ordinal=1) is False
+            stopped = loop.store.get_mission(mission.id)
+            assert stopped is not None and str(stopped.status) in {"FAILED", "MissionStatus.FAILED"}, stopped.status
 
     asyncio.run(case())
+
+
+def test_historical_enablement_spelling_is_a_contract_error() -> None:
+    from agent_orchestrator.contracts.planning_decisions import UnsupportedPlanningPackage
+
+    with pytest.raises(UnsupportedPlanningPackage):
+        internal_enablement_keys(["REPAIR/RETRY_SAME_METHOD"], [])
