@@ -493,7 +493,11 @@ class AssuranceReviewRuntime:
         failed = self.store.connection.execute(
             "SELECT json_extract(receipt_json,'$.classification') FROM commit_receipts "
             "WHERE kind='AssuranceReviewClassified' AND json_extract(receipt_json,'$.review_key')=? "
-            "AND json_extract(receipt_json,'$.classification')<>'READY_FOR_CURRENT_REVIEW' LIMIT 1",
+            "AND json_extract(receipt_json,'$.classification')<>'READY_FOR_CURRENT_REVIEW' "
+            # A first turn that failed to commit is retried once (TURN_RETRY); only a
+            # failed second turn is final — it ends as AssuranceReviewFormatExhausted.
+            "AND NOT (json_extract(receipt_json,'$.classification')='TURN_FAILED' "
+            "AND json_extract(receipt_json,'$.invocation_ordinal')=1) LIMIT 1",
             (review_key,),
         ).fetchone()
         if failed is not None:

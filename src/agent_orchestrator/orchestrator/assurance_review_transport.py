@@ -22,6 +22,7 @@ from ..storage.assurance_reads import AssuranceReader
 from ..storage.assurance_store import AssuranceStore
 from ..storage.assurance_work import atomic
 from ..storage.htn_store import HtnStore
+from ..governance.budgets import BudgetError
 from ..storage.store import StoreError
 
 if TYPE_CHECKING:
@@ -681,7 +682,6 @@ def _require_format_repair(
     intent = commit.store.get_intent(invocation["dispatch_intent_id"])
     if (
         intent is None
-        or row["kind"] != "AssuranceReviewFormatRejected"
         or row["subject_id"] != intent.intent_id
         or row["proposal_hash"] != fingerprint(body)
         or row["base_version"] != 0
@@ -689,7 +689,6 @@ def _require_format_repair(
         or body.get("invocation_ordinal") != 1
         or body.get("intent_id") != intent.intent_id
         or intent.state not in {"SETTLED", "FAILED"}
-        or commit.ledger.has_unknown_usage(intent.subject_id)
         or _SECOND_INVOCATION_SOURCES.get(str(body.get("classification"))) != row["kind"]
     ):
         raise AssuranceError("REVIEW_REPAIR_SOURCE_INVALID")
@@ -709,7 +708,19 @@ def _require_format_repair(
     # Absence of imported UNKNOWN is insufficient: an invocation or effect may
     # still be missing from that ledger. Read the complete original inventories
     # before funding the only permitted second invocation.
-    commit._assurance_settlement.require_settled_locked(intent.subject_id, reader.mission_id)
+    try:
+        if commit.ledger.has_unknown_usage(intent.subject_id):
+            raise BudgetError("unknown provider charge on the first review invocation")
+        commit._assurance_settlement.require_settled_locked(intent.subject_id, reader.mission_id)
+    except BudgetError:
+        # Count rule (user, 2026-09-24): overcount, never undercount, never freeze.
+        # A turn that failed before committing (e.g. provider 5xx, no usage fact)
+        # keeps its whole reservation held — counted at its upper bound, visible —
+        # and the one second invocation is funded by its own reservation.  A
+        # malformed reply was a completed call: it must settle first, as before.
+        reservation = commit.ledger.reservation(intent.subject_id)
+        if classification != "TURN_FAILED" or reservation is None or reservation.get("state") != "RESERVED":
+            raise
     package = commit.store.connection.execute(
         "SELECT package_id FROM assurance_review_bindings WHERE review_key=?", (review_key,)
     ).fetchone()
