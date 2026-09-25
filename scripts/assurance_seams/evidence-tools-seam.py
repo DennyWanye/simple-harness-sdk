@@ -182,7 +182,7 @@ async def task_content_complete(root, report):
 async def task_content_partial(root, report):
     """A partial page (complete=false) never discloses: citing it is UNEXPOSED_EVIDENCE."""
     script = [('assurance_find_evidence', {}),
-              lambda req: ('assurance_read_evidence', {'label': find_label(req, EXTRA_PATH), 'max_chars': 4}),
+              lambda req: ('assurance_read_evidence', {'label': find_label(req, EXTRA_PATH), 'offset': 2, 'max_chars': 4}),
               lambda req: reply(['criterion-report'], read_label(req))]
     async with AssuredRuntime(root, [], provider_class=ToolScriptProvider) as rt:
         rt.provider.script[:] = script
@@ -198,8 +198,8 @@ async def task_content_partial(root, report):
         reads = [json.loads(m.content)['value'] for m in rt.provider.requests[-1].messages
                  if m.role is MessageRole.TOOL and m.name == 'assurance_read_evidence']
         assert reads and reads[0]['complete'] is False and reads[0]['disclosure'] == 'PARTIAL_NOT_CITABLE', reads
-        assert reads[0]['next_offset'] == 4 and reads[0]['content'] == EXTRA_BODY.decode()[:4], reads
-        assert f"max_chars={len(EXTRA_BODY.decode())}" in reads[0]['complete_read_hint'], reads
+        assert reads[0]['next_offset'] == 6 and reads[0]['content'] == EXTRA_BODY.decode()[2:6], reads
+        assert 'offset=0' in reads[0]['complete_read_hint'], reads
         assert [b['batch_no'] for b in batches(rt, review_key)] == [0], 'partial read must not be disclosed'
         reason = store.connection.execute(
             "SELECT json_extract(receipt_json,'$.reason') FROM commit_receipts WHERE kind='AssuranceReviewImportRejected' AND subject_id=?",
