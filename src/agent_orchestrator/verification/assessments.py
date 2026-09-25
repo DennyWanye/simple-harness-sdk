@@ -865,6 +865,14 @@ def citation_integrity(
         )
 
 
+
+#: Transport fields the recorder adds after the producer returns; they are not part
+#: of the recomputed assessment.  ``assurance_local_check_ref`` is attached by the
+#: Assurance local-check recorder (its truth is bound by AssuranceCheckBound).
+#: 2026-09-25 UI 全量点击: leaving it out made every assured document Task fail this
+#: comparison on every loop round (the Mission never reached acceptance).
+_RECORDER_FIELDS = frozenset({"summary", "verifier_version", "assurance_local_check_ref"})
+
 def validated_assessments(
     layer: LayerResult | Mapping[str, Any], *, binding: AssessmentBindingV1
 ) -> tuple[CriterionAssessmentV1, ...]:
@@ -893,16 +901,15 @@ def validated_assessments(
         expected = _evaluation_v2(binding, resolutions, structural, external)
     else:
         expected = _evaluation(binding, resolutions, structural)
-    # The recorder adds these two transport fields after the producer returns.
     compared = {
         key: value
         for key, value in recorded.detail.items()
-        if key not in {"summary", "verifier_version"}
+        if key not in _RECORDER_FIELDS
     }
     expected_detail = {
         key: value
         for key, value in expected.detail.items()
-        if key not in {"summary", "verifier_version"}
+        if key not in _RECORDER_FIELDS
     }
     if expected.status != recorded.status or compared != expected_detail:
         raise ContractError("assessment receipt, scope, references or criterion catalogue mismatch")
@@ -929,9 +936,9 @@ def inconclusive_retryable(
         if not isinstance(resolutions, (list, tuple)) or not isinstance(external, Mapping):
             return False
         expected = _evaluation_v2(binding, resolutions, structural, external)
-        compared = {k: v for k, v in detail.items() if k not in {"summary", "verifier_version"}}
+        compared = {k: v for k, v in detail.items() if k not in _RECORDER_FIELDS}
         expected_detail = {
-            k: v for k, v in expected.detail.items() if k not in {"summary", "verifier_version"}
+            k: v for k, v in expected.detail.items() if k not in _RECORDER_FIELDS
         }
         return (
             expected.status == FAIL

@@ -352,6 +352,18 @@ def test_reuse_and_accept_apply_the_same_complete_validation(scene, damage):
     assert not doc_rule_reusable(raw, binding=bound)
 
 
+def test_assurance_local_check_ref_is_a_recorder_field_not_a_mismatch(scene):
+    # 2026-09-25 UI 全量点击：Assurance 本地检查记录器在明细里加 assurance_local_check_ref，
+    # 以前被当成"明细不一致"，文档任务每轮都在这里失败、永远到不了验收。
+    env, bound = scene.bind()
+    raw = copy.deepcopy(produce(scene, env, bound).to_json())
+    raw["detail"]["assurance_local_check_ref"] = {"kind": "assurance_local_check", "id": "x"}
+    validated_assessments(raw, binding=bound)
+    raw["detail"]["some_other_field"] = 1
+    with pytest.raises(ContractError):
+        validated_assessments(raw, binding=bound)
+
+
 @pytest.mark.parametrize("damage", ["unknown", "bool_revision", "null_claim", "empty_refs"])
 def test_assessment_contract_rejects_invalid_shapes(scene, damage):
     env, bound = scene.bind()
