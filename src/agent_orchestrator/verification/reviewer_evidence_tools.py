@@ -41,7 +41,10 @@ from ..storage.assurance_work import atomic
 MAX_EVIDENCE_TOOL_CALLS = 32
 MAX_READ_BYTES = 256 * 1024
 DEFAULT_PAGE_CHARS = 4096
-MAX_PAGE_CHARS = 8192
+# 2026-09-26 真机文档任务: a document rule_check receipt is ~17-19K chars; with an
+# 8192 cap no read could ever be complete, so the required check could never be
+# cited and every TASK_CONTENT review ended INCONCLUSIVE.
+MAX_PAGE_CHARS = 32768
 MAX_UNIVERSE_ROWS = 4096
 DEFAULT_FIND_LIMIT = 20
 
@@ -350,7 +353,7 @@ class ReviewerEvidenceTools:
         page = content[offset : offset + max_chars]
         complete = offset == 0 and len(page) == len(content)
         next_offset = offset + len(page) if offset + len(page) < len(content) else None
-        return {
+        result = {
             "schema": EVIDENCE_READ_SCHEMA,
             "review_key": review_key,
             "label": label,
@@ -366,6 +369,11 @@ class ReviewerEvidenceTools:
             "complete": complete,
             "disclosure": "COMPLETE_IN_MODEL_INPUT_ONLY" if complete else "PARTIAL_NOT_CITABLE",
         }
+        if not complete and len(content) <= MAX_PAGE_CHARS:
+            result["complete_read_hint"] = (
+                f"re-read with offset=0 and max_chars={len(content)} for a complete, citable read"
+            )
+        return result
 
 
 # ------------------------------------------------------------ exposure import

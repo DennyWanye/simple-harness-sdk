@@ -143,7 +143,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "integer", "minimum": 0, "description": "Unicode 代码点偏移，默认 0",
             },
             "max_chars": {
-                "type": "integer", "minimum": 1, "maximum": 8192, "description": "默认 4096",
+                "type": "integer", "minimum": 1, "maximum": 32768,
+                "description": "默认 4096；材料不超过 32768 字符时，用 offset=0、max_chars=total_chars 一次完整读取才可引用",
             },
         },
         "required": ["label"],

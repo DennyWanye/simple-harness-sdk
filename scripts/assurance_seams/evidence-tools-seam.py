@@ -199,6 +199,7 @@ async def task_content_partial(root, report):
                  if m.role is MessageRole.TOOL and m.name == 'assurance_read_evidence']
         assert reads and reads[0]['complete'] is False and reads[0]['disclosure'] == 'PARTIAL_NOT_CITABLE', reads
         assert reads[0]['next_offset'] == 4 and reads[0]['content'] == EXTRA_BODY.decode()[:4], reads
+        assert f"max_chars={len(EXTRA_BODY.decode())}" in reads[0]['complete_read_hint'], reads
         assert [b['batch_no'] for b in batches(rt, review_key)] == [0], 'partial read must not be disclosed'
         reason = store.connection.execute(
             "SELECT json_extract(receipt_json,'$.reason') FROM commit_receipts WHERE kind='AssuranceReviewImportRejected' AND subject_id=?",
