@@ -650,17 +650,31 @@ class SessionLifecycleService:
 
     # ---- tick integration --------------------------------------------------------------------
 
-    def drive_draining(self, *, limit: int = 8) -> int:
+    def drive_draining(self, *, limit: int = 8, on_error: Callable[[str, BaseException], None] | None = None) -> int:
         """Every DRAINING Session gets one proof attempt per pass (no job row yet: the PURGE
-        job is created by the seal itself)."""
+        job is created by the seal itself).
+
+        ``on_error`` receives a Session whose proof attempt failed with anything but
+        FILE_BUSY (2026-09-25 主流程优化条目 6); the pass then continues with the next
+        Session instead of starving every later one.  Without a handler the error is
+        raised as before.
+        """
 
         driven = 0
         for session in store.list_sessions_in_state(self.connection, ["DRAINING"], limit=limit):
             try:
                 self.advance(session.session_id)
             except ArpError as error:
-                if error.code != "FILE_BUSY":
+                if error.code == "FILE_BUSY":
+                    continue
+                if on_error is None:
                     raise
+                on_error(session.session_id, error)
+                continue
+            except Exception as error:  # noqa: BLE001
+                if on_error is None:
+                    raise
+                on_error(session.session_id, error)
                 continue
             driven += 1
         return driven

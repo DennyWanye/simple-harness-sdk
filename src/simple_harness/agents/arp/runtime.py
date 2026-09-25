@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from simple_harness.agents.background_health import BackgroundHealthBook
 from simple_harness.agents.ports import AgentRuntimePorts
 from simple_harness.agents.runtime import AgentRuntime, agent_id_for, build_agent_runtime, start_input_for
 from simple_harness.execution.sqlite.database import Database
@@ -67,6 +68,7 @@ class ArpRuntime:
     lifecycle: SkillLifecycleService | None = None
     skill_use: SkillUseService | None = None
     sessions: SessionLifecycleService | None = None
+    health: BackgroundHealthBook = field(default_factory=BackgroundHealthBook)
     _services: dict[str, SessionSearchService] = field(default_factory=dict)
 
     @property
@@ -120,11 +122,27 @@ class ArpRuntime:
         return self._tick_after(await self.index.process_due_async())
 
     def _tick_after(self, jobs: tuple[Any, ...]) -> dict[str, int]:
-        draining = 0 if self.sessions is None else self.sessions.drive_draining()
+        # 2026-09-25 主流程优化条目 6: every stage of the pass is isolated per item.  A
+        # coordinator defect on one Session is recorded in ``health`` (and logged) and
+        # the pass moves on, instead of aborting the whole tick — every tick — silently.
+        health = self.health
+        draining = 0
+        if self.sessions is not None:
+            try:
+                draining = self.sessions.drive_draining(
+                    on_error=lambda session_id, error: health.fail("draining", error, item=session_id))
+                if draining:
+                    health.ok("draining")
+            except Exception as error:  # noqa: BLE001 - listing itself failed
+                health.fail("draining", error)
         probed = False
         if self.catalogue is not None and self.bootstrap is not None and self.catalogue_caller is not None:
-            probed = refresh_builtin_health(self.catalogue, self.bootstrap.deployment_ref, caller=self.catalogue_caller)
-        resumed = blocked = deferred = 0
+            try:
+                probed = refresh_builtin_health(self.catalogue, self.bootstrap.deployment_ref, caller=self.catalogue_caller)
+                health.ok("tool_probe")
+            except Exception as error:  # noqa: BLE001
+                health.fail("tool_probe", error)
+        resumed = blocked = deferred = failed = 0
         connection = self.index.uow.database.connection
         for row in store.list_pending_recalls(connection):
             session = store.read_session(connection, row.session_id)
@@ -139,10 +157,20 @@ class ArpRuntime:
                     deferred += 1  # another holder of the Session file; retried next tick
                     continue
                 if error.code != "RECALL_PREPARE_BLOCKED":
-                    raise  # anything else is a coordinator defect, not a recorded outcome
+                    # a coordinator defect, not a recorded outcome: visible, and isolated
+                    failed += 1
+                    health.fail("recall", error, item=row.recall_key)
+                    continue
                 blocked += 1  # the row itself carries the named BLOCKED/STALE code
+            except Exception as error:  # noqa: BLE001
+                failed += 1
+                health.fail("recall", error, item=row.recall_key)
+                continue
             resumed += 1
-        return {"jobs": len(jobs), "draining": draining, "recalls": resumed, "blocked": blocked, "deferred": deferred, "health_probed": int(probed)}
+        if resumed or blocked:
+            health.ok("recall")
+        return {"jobs": len(jobs), "draining": draining, "recalls": resumed, "blocked": blocked, "deferred": deferred,
+                "failed": failed, "health_probed": int(probed)}
 
     def close(self) -> None:
         self.index.close()

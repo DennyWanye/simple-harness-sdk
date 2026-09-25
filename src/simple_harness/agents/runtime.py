@@ -28,6 +28,7 @@ from simple_harness.contracts import (
     canonical_json,
     thaw_json,
 )
+from simple_harness.agents.background_health import BackgroundHealth, BackgroundHealthBook
 from simple_harness.execution.base_agent import BASE_AGENT_API_MODE, AgentBindingRecord
 from simple_harness.execution.budget import FrozenPriceEstimator
 from simple_harness.execution.delivery import DeliveryDispatcher
@@ -452,6 +453,7 @@ class AgentRuntime:
         self._ports = ports
         self._owner_scope = owner_scope
         self._index_task: asyncio.Task[None] | None = None
+        self._background_health = BackgroundHealthBook()
 
     @property
     def kernel(self) -> Runtime:
@@ -492,12 +494,17 @@ class AgentRuntime:
         await self.shutdown()
 
     async def _index_pump(self) -> None:
+        # 2026-09-25 主流程优化条目 6: the pump survives every defect, but none of them
+        # is silent any more — each is counted in ``background_health()`` and logged.
+        health = self._background_health
         try:
             while True:
                 try:
                     settled = await self.indexer.run_once()
-                except Exception:  # noqa: BLE001 - the pump must survive a bad batch
+                    health.ok("index")
+                except Exception as error:  # noqa: BLE001 - the pump must survive a bad batch
                     settled = 0
+                    health.fail("index", error)
                 arp = getattr(self, "arp", None)
                 if arp is not None:
                     # Native plane tick: due INDEX jobs (embedding outside every lock) and
@@ -506,11 +513,27 @@ class AgentRuntime:
                         tick_async = getattr(arp, "tick_async", None)
                         outcome = await tick_async() if tick_async is not None else arp.tick()
                         settled = settled or bool(outcome.get("jobs") or outcome.get("recalls"))
-                    except Exception:  # noqa: BLE001 - a tick defect must not kill the pump
-                        pass
+                    except Exception as error:  # noqa: BLE001 - a tick defect must not kill the pump
+                        book = getattr(arp, "health", health)
+                        book.fail("index", error)
                 await asyncio.sleep(0.05 if settled else 0.25)
         except asyncio.CancelledError:
             return
+
+    def background_health(self) -> tuple[BackgroundHealth, ...]:
+        """Per-loop health of this process' background work (index pump plus, when the
+        native plane is attached, its draining / recall / tool-probe stages)."""
+
+        arp = getattr(self, "arp", None)
+        book = getattr(arp, "health", None)
+        if book is None:
+            return self._background_health.snapshot()
+        own = {row.loop: row for row in self._background_health.snapshot()}
+        merged = []
+        for row in book.snapshot():
+            mine = own[row.loop]
+            merged.append(row if row.consecutive_failures or mine.consecutive_failures == 0 else mine)
+        return tuple(merged)
 
     async def shutdown(self) -> None:
         """Stop this process' execution and release control; logical Agents stay durable."""
