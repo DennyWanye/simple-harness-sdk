@@ -40,8 +40,14 @@ def retry_binding(store: Any, mission_id: str, task_id: str,
             or str(latest.status) in {"CANCELLED", "SUPERSEDED"} or not latest.failure
             or any(a.status not in TERMINAL_ATTEMPT for a in attempts)):
         raise ContractError("retry must name the latest failed Attempt with no open sibling")
-    from ..governance.budgets import BudgetLedger
-    if latest.failure.get("reason") == "provider_outcome_unknown" or BudgetLedger(store).has_unknown_usage(latest.id):
+    # An unknown *outcome* (did the call happen at all?) must be reconciled first.
+    # An unknown *charge* on a call that definitely failed is not a reason to freeze:
+    # user count rule (2026-09-24) — overcount, never undercount, never freeze.  Its
+    # reservation stays held at the upper bound (ReservationHeld) and the retry is a
+    # new Attempt with its own reservation.  2026-09-25 UI 全量点击: a worker turn that
+    # failed on a malformed tool call left an unknown charge and the document Mission
+    # stalled because every RETRY_SAME_METHOD was refused here.
+    if latest.failure.get("reason") == "provider_outcome_unknown":
         raise ContractError("unknown provider outcome cannot be retried by a planning decision")
     if latest.failure.get("reason") == "runtime_unavailable":
         # Runtime failure is not permanently unrepairable. An explicit retry may

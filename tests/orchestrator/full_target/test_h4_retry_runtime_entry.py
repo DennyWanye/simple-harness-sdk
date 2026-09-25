@@ -197,3 +197,29 @@ def test_a_spent_repair_ladder_ends_the_mission_by_name(tmp_path):
             final = loop.store.get_mission(mission.id)
             assert final.status.value == "FAILED", final.status
     asyncio.run(case())
+
+
+def test_a_failed_attempt_with_an_unknown_charge_can_still_be_retried(tmp_path):
+    # 2026-09-25 UI 全量点击：工人一轮因工具参数 JSON 不合法失败，这次调用的用量
+    # 记为未知；以前 RETRY_SAME_METHOD 一律被拒，文档任务停滞失败。按记账硬规则
+    # （多算不少算、不冻结），未知费用留在原预留上，重试另开一次 Attempt。
+    async def case():
+        async with Orchestrator(_config(tmp_path), RoleScriptedProvider({"planner": []})) as loop:
+            mission, dispatch, task_id = await refined(loop, tmp_path, "h4-retry-unknown-charge")
+            first, first_intent = attempt(loop, task_id)
+            loop.commit.claim_intent(first_intent.intent_id, owner=loop._owner, lease_seconds=60)
+            loop.commit.record_agent_created(first_intent.intent_id, agent_id="fixture", expected_turn_id="turn-1")
+            loop.commit.record_submitted(first_intent.intent_id, receipt={"turn_id": "turn-1", "seq": 1})
+            loop.commit.mark_attempt_timed_out(first.id, reason="stalled", detail={})
+            with loop.store.transaction():
+                loop.store.connection.execute(
+                    "INSERT INTO imported_usage(usage_ref,subject_id,mission_id,input_tokens,output_tokens,"
+                    "cost_micros,unpriced,unknown,imported_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    ("usage-unknown-1", first.id, mission.id, 0, 0, None, 1, 1, 1.0))
+            assert loop.commit.ledger.has_unknown_usage(first.id)
+            def payload(package):
+                return retry_payload(dispatch, mission, task_id, first.id, package)
+            _, row = await repair(loop, mission, dispatch, task_id, payload)
+            assert row["status"] == "COMMITTED", row["detail_json"]
+            assert pending_retry_permit(loop.store, mission.id, task_id) is not None
+    asyncio.run(case())
