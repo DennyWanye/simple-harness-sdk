@@ -63,6 +63,63 @@ _NESTED = frozenset(
 )
 
 
+# 2026-09-26 真机文档任务: a repair Worker saw only the bare code
+# "no_content_binding_or_candidate" and resubmitted the same unlinked claims twice.
+# Each hard-failure code now carries one concrete instruction naming the fields to fix.
+_CODE_HINTS = {
+    "no_content_binding_or_candidate": (
+        "No claim is linked to criterion {criteria}. On the claim that supports it, set "
+        "criterion_refs to that criterion's ordinal in doc_assessment.criteria (or "
+        "criterion_ids to its real id) and give that claim citations quoted from sources."
+    ),
+    "missing_citation": (
+        "A claim linked to criterion {criteria} has no citations; add citations with "
+        "path, version, start_line, end_line and a verbatim quote from the source."
+    ),
+    "citation_not_resolved": (
+        "A citation could not be located in its source; re-read the source and quote the "
+        "cited lines verbatim with the current version."
+    ),
+    "missing_limitations": (
+        "Each pair in limitations_check.missing needs a top-level limitations item "
+        "{{criterion_id, claim_id, missing}} describing the actual evidence gap."
+    ),
+}
+
+
+def _hard_failures(item: Any) -> list[tuple[str, list[str]]]:
+    """(code, failing criterion ids) for every hard failure in the record."""
+    found: list[tuple[str, list[str]]] = []
+    if isinstance(item, Mapping):
+        codes = item.get("hard_failures")
+        if isinstance(codes, (list, tuple)):
+            verdicts = item.get("criterion_verdicts") or []
+            for code in codes:
+                criteria = [
+                    str(v.get("criterion_id")) for v in verdicts
+                    if isinstance(v, Mapping) and code in (v.get("reasons") or [])
+                ]
+                found.append((str(code), criteria))
+        for child in item.values():
+            found.extend(_hard_failures(child))
+    elif isinstance(item, (list, tuple)):
+        for child in item:
+            found.extend(_hard_failures(child))
+    return found
+
+
+def repair_hints(value: Mapping[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for code, criteria in _hard_failures(value):
+        template = _CODE_HINTS.get(code)
+        if template is None:
+            continue
+        hint = template.format(criteria=", ".join(criteria) or "(see criterion_verdicts)")
+        if hint not in hints:
+            hints.append(hint)
+    return hints
+
+
 def document_repair_feedback(value: Mapping[str, Any]) -> dict[str, Any]:
     def project(item: Any) -> Any:
         if isinstance(item, Mapping):
@@ -79,7 +136,7 @@ def document_repair_feedback(value: Mapping[str, Any]) -> dict[str, Any]:
             return [project(x) for x in item]
         return item if isinstance(item, (str, int, float, bool, type(None))) else None
 
-    return {
+    feedback = {
         "schema": "document-repair-feedback-v1",
         "data_not_instruction": True,
         "record_sha256": sha256_hex(dict(value)),
@@ -95,3 +152,7 @@ def document_repair_feedback(value: Mapping[str, Any]) -> dict[str, Any]:
             "Read registered source files again when needed; a prior FAIL is not evidence."
         ),
     }
+    hints = repair_hints(value)
+    if hints:
+        feedback["repair_hints"] = hints
+    return feedback

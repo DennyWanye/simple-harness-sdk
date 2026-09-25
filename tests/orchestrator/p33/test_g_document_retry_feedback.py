@@ -55,6 +55,7 @@ def test_retry_keeps_actionable_ids_without_reinlining_all_source_blocks(tmp_pat
         assert feedback["record_sha256"] == sha256_hex(detail)
         assert feedback["diagnostic"]["detail"]["limitations_check"]["missing"] == pairs
         assert "missing_limitations" in current.text
+        assert "limitations_check.missing needs a top-level limitations item" in current.text
         assert current.package["source_versions"] == kwargs["source_versions"]
         for old in (CODE_PROFILE, DOC_PROFILE_V5):
             package = build_worker_package(mission, task, attempt, domain=old, **kwargs).package
@@ -100,3 +101,29 @@ def test_citation_repair_retains_failed_unit_identity_without_source_body():
     }
     assert "HUGE_SOURCE_BODY" not in str(projected)
     assert projected["record_sha256"] == sha256_hex(record)
+
+
+def test_unlinked_criterion_gets_a_concrete_repair_hint():
+    # 2026-09-26 真机文档任务: the Worker saw only the bare code and resubmitted
+    # unlinked claims twice; the hint names the failing criterion and the fields.
+    record = {
+        "layer": "rule_check",
+        "status": "FAIL",
+        "detail": {
+            "hard_failures": ["no_content_binding_or_candidate"],
+            "criterion_verdicts": [
+                {"criterion_id": "criterion-ok", "reasons": [], "verdict": "PASS"},
+                {"criterion_id": "criterion-e8b9", "verdict": "FAIL",
+                 "reasons": ["no_content_binding_or_candidate"]},
+            ],
+        },
+    }
+    projected = document_repair_feedback(record)
+    [hint] = projected["repair_hints"]
+    assert "criterion-e8b9" in hint and "criterion-ok" not in hint
+    assert "criterion_refs" in hint and "citations" in hint
+    assert projected["record_sha256"] == sha256_hex(record)
+
+
+def test_record_without_known_codes_has_no_repair_hints():
+    assert "repair_hints" not in document_repair_feedback({"detail": {"hard_failures": ["x"]}})
