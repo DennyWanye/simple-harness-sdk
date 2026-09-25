@@ -105,7 +105,11 @@ def _domain_section(package: dict[str, Any], domain: DomainProfileV1, mission: M
     }
     # An independently versioned document contract enters new context hashes. Frozen
     # prompts/intents and the global code context version are deliberately unchanged.
-    from ..verification.assessments import criterion_id, task_contract_revision
+    from ..verification.assessments import (
+        criterion_id,
+        task_contract_revision,
+        task_criterion_text,
+    )
 
     document: dict[str, Any] = {
         "version": "doc-assessment-v1",
@@ -128,9 +132,13 @@ def _domain_section(package: dict[str, Any], domain: DomainProfileV1, mission: M
     if isinstance(contract, Mapping) and contract.get("task_id"):
         revision = task_contract_revision(contract)
         document["task_contract_revision"] = revision
+        texts = [
+            task_criterion_text(text, mission.success_criteria)
+            for text in contract["success_criteria"]
+        ]
         document["criteria"] = [
             {"criterion_id": criterion_id(revision, index, text), "ordinal": index, "text": text}
-            for index, text in enumerate(contract["success_criteria"], 1)
+            for index, text in enumerate(texts, 1)
         ]
     if supports_document_assessments(domain):
         from ..verification.assessments import mission_contract_revision, mission_criterion_catalog

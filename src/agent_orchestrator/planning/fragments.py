@@ -24,6 +24,7 @@ from ..verification.assessments import (
     criterion_id,
     mission_contract_revision,
     task_contract_revision,
+    task_criterion_text,
 )
 from ..verification.evidence_resolver import EvidenceResolver, _safe_path
 
@@ -215,7 +216,11 @@ def _revision(store: Store, intent: DispatchIntent) -> TaskRevisionV1:
                 "text": text,
                 "kind": text.split(":", 1)[0] if ":" in text else "free",
             }
-            for ordinal, text in enumerate(contract["success_criteria"], 1)
+            for ordinal, text in enumerate(
+                (task_criterion_text(t, mission.success_criteria)
+                 for t in contract["success_criteria"]),
+                1,
+            )
         ),
     )
 

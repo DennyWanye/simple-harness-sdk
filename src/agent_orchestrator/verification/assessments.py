@@ -80,6 +80,26 @@ def task_contract_revision(contract: Mapping[str, Any]) -> str:
     return sha256_hex(_contract(contract))
 
 
+_USER_REQUIREMENT_ID = re.compile(r"c-user-([1-9][0-9]*)")
+
+
+def task_criterion_text(text: str, mission_texts: Sequence[str]) -> str:
+    """The wording a document criterion is shown and literally bound by.
+
+    2026-09-26 真机文档任务: a hierarchical occurrence carries requirement ids on
+    ``Task.success_criteria`` (``c-user-<n>``: the factory's fixed name of the n-th
+    original success criterion, see ``mission_spec_requirements``).  Used as the
+    criterion text, the Worker saw only "c-user-1" and no claim could ever match it
+    literally, so a document Mission could never be delivered.  Other strings are
+    kept exactly (``file:``/``cite:``/free text of legacy Tasks).
+    """
+
+    match = _USER_REQUIREMENT_ID.fullmatch(text)
+    if match is not None and int(match[1]) <= len(mission_texts):
+        return mission_texts[int(match[1]) - 1]
+    return text
+
+
 def criterion_id(revision: str, ordinal: int, text: str) -> str:
     content_hash(revision, "task_contract_revision")
     if type(ordinal) is not int or ordinal < 1:
@@ -149,6 +169,11 @@ class AssessmentBindingV1:
     @property
     def criteria(self) -> tuple[Mapping[str, Any], ...]:
         revision = self.task_contract_revision
+        mission_texts = [str(item["text"]) for item in self.mission_criteria]
+        texts = (
+            task_criterion_text(text, mission_texts)
+            for text in self.task_contract["success_criteria"]
+        )
         return tuple(
             freeze_json(
                 {
@@ -158,7 +183,7 @@ class AssessmentBindingV1:
                     "kind": criterion_kind(text),
                 }
             )
-            for ordinal, text in enumerate(self.task_contract["success_criteria"], 1)
+            for ordinal, text in enumerate(texts, 1)
         )
 
     def to_json(self) -> dict[str, Any]:

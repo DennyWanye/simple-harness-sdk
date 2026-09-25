@@ -68,9 +68,11 @@ _NESTED = frozenset(
 # Each hard-failure code now carries one concrete instruction naming the fields to fix.
 _CODE_HINTS = {
     "no_content_binding_or_candidate": (
-        "No claim is linked to criterion {criteria}. On the claim that supports it, put "
-        "that exact id in criterion_ids (use criterion_ids or criterion_refs on one claim, "
-        "never both) and give that claim citations quoted from sources."
+        "No claim is linked to criterion {criteria}. For a free-text criterion, add a claim "
+        "whose content is exactly that criterion's text in doc_assessment.criteria, with "
+        "citations quoted from sources: that literal binding can pass. Putting the id in "
+        "criterion_ids (never together with criterion_refs) is only a candidate link, "
+        "which stays inconclusive and needs a limitations item."
     ),
     "missing_citation": (
         "A claim linked to criterion {criteria} has no citations; add citations with "
