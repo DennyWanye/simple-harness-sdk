@@ -39,7 +39,8 @@ class PlanningAdmissionStore:
         value["allowed_decisions"] = tuple(json.loads(value.pop("allowed_decisions_json")))
         value["planner_principal_id"] = value["grantee_id"]
         value["grant_hash"] = value["content_hash"]
-        value.update({key: payload[key] for key in ("command_hash", "reason") if key in payload})
+        value.update({key: payload[key] for key in ("command_hash", "reason", "approval_source",
+                                                   "on_behalf_of_principal_id") if key in payload})
         value["created_at"] = payload.get("created_at", 0.0)
         return value
 
@@ -141,6 +142,8 @@ class PlanningAdmissionStore:
         payload = {
             "command_hash": command_hash,
             "reason": str(grant.get("reason", "")),
+            **{key: str(grant[key]) for key in ("approval_source", "on_behalf_of_principal_id")
+               if key in grant},
             "created_at": float(grant.get("created_at", self._store.now)),
         }
         values = (

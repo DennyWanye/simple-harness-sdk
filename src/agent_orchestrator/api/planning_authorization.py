@@ -119,7 +119,14 @@ class PlanningAuthorizationApi:
         request_id: str | None = None,
         scope_id: str = "mission",
         planner_principal_id: str | None = None,
+        approval_source: str = "HUMAN",
     ) -> PlanningGrantReceipt:
+        """``approval_source`` is recorded on the grant, outside the command hash:
+        ``HUMAN`` (a person clicked) or ``HOST_AUTO_PERMISSION`` (the Host issued on
+        the principal's behalf because their permission mode is auto).  An automatic
+        grant is never written down as a person's decision."""
+        if approval_source not in ("HUMAN", "HOST_AUTO_PERMISSION"):
+            raise ValueError("approval_source must be HUMAN or HOST_AUTO_PERMISSION")
         mission = self._mission(mission_id)
         if request_id is not None:
             request = PlanningDecisionStore(self._store).get_planning_request(request_id)
@@ -192,6 +199,8 @@ class PlanningAuthorizationApi:
             "grant_hash": grant_hash,
             "command_hash": command_hash,
             "reason": "issue",
+            "approval_source": approval_source,
+            "on_behalf_of_principal_id": self._principal.principal_id,
             "created_at": self._store.now,
         }
         binding = None

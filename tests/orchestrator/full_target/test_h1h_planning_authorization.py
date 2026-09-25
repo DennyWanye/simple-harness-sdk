@@ -114,3 +114,19 @@ def test_revoke_command_replay_includes_human_reason(store):
     api.revoke(issued.grant_id, expected_revision=1, command_id="cmd-revoke", reason="stop")
     with pytest.raises(StoreConflict):
         api.revoke(issued.grant_id, expected_revision=1, command_id="cmd-revoke", reason="retry")
+
+
+def test_issue_records_who_approved_outside_the_command_hash(store):
+    # 2026-09-25 UI 全量点击：自动模式下 Host 代签规划授权，必须如实记成自动，不冒充人。
+    api = PlanningAuthorizationApi(store, tenant_id="tenant-a", principal=Principal("host"))
+    auto = api.issue("m-auth", command_id="cmd-auto", approval_source="HOST_AUTO_PERMISSION")
+    admission = PlanningAdmissionStore(store)
+    row = admission.get_grant(auto.grant_id)
+    assert row["approval_source"] == "HOST_AUTO_PERMISSION"
+    assert row["on_behalf_of_principal_id"] == "host"
+    # Replay of the same command keeps its identity even if the source label differs.
+    assert api.issue("m-auth", command_id="cmd-auto") == auto
+    human = api.issue("m-auth", command_id="cmd-human")
+    assert admission.get_grant(human.grant_id)["approval_source"] == "HUMAN"
+    with pytest.raises(ValueError):
+        api.issue("m-auth", command_id="cmd-bad", approval_source="MODEL")

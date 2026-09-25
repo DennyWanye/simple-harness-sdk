@@ -107,3 +107,4 @@ def test_first_epoch_invalidation_and_notification_share_rollback_boundary(tmp_p
             source = events[0].payload['source_ref']
             assert (source['kind'], source['id'], source['revision']) == ('validity_epoch', scope, 1)
     asyncio.run(case())
+

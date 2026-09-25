@@ -93,6 +93,10 @@ TAKEOVER_ACTIONS = ("stop", "retry_with_note")
 NOT_FOUND = "no such object for this caller"
 
 
+
+#: Who issued a planning grant (2026-09-25): a person, or the Host under auto mode.
+PLANNING_APPROVAL_SOURCES = frozenset({"HUMAN", "HOST_AUTO_PERMISSION"})
+
 class FacadeError(ValueError):
     """A refused request; ``code`` is stable for products to map."""
 
@@ -272,8 +276,16 @@ class MissionControlV1:
             "renew": {"grant_id", "expected_revision", "command_id"},
             "revoke": {"grant_id", "expected_revision", "command_id", "reason"},
         }
-        if not isinstance(operation, str) or operation not in fields or set(command) != fields[operation] | {"operation"}:
+        # 2026-09-25: ``approval_source`` says who issues -- a person (default) or the
+        # Host acting under the principal's auto permission mode.  Recorded, never
+        # part of the command hash, so a replay keeps its identity.
+        optional = {"approval_source"} if operation == "issue" else set()
+        if (not isinstance(operation, str) or operation not in fields
+                or not fields[operation] | {"operation"} <= set(command) <= fields[operation] | {"operation"} | optional):
             raise FacadeError("invalid_request", "unknown planning authorization command or fields")
+        approval_source = command.get("approval_source", "HUMAN")
+        if approval_source not in PLANNING_APPROVAL_SOURCES:
+            raise FacadeError("invalid_request", "approval_source must be HUMAN or HOST_AUTO_PERMISSION")
         body = {key: command[key] for key in fields[operation]}
         for key, value in body.items():
             if key == "expected_revision":
@@ -287,10 +299,42 @@ class MissionControlV1:
         try:
             if operation == "bind":
                 return api.bind_request(**body)
+            if operation == "issue":
+                body["approval_source"] = approval_source
             receipt = getattr(api, operation)(**body)
             return receipt.to_json()
         except (ContractError, ValueError, StoreError) as error:
             raise FacadeError("refused", str(error)) from error
+
+    def pending_planning_authorizations(self) -> list[dict[str, Any]]:
+        """Every planning request of this caller's Missions still awaiting authority.
+
+        Read-only; the same rows the Mission snapshot shows as
+        ``planning_authorization_requests``.  Lets the Host issue for them under its
+        auto permission mode without reading storage itself.
+        """
+        from ..orchestrator.planning_selection import awaits_authority
+        from ..storage.planning_decision_store import PlanningDecisionStore
+        store = self._store
+        rows: list[dict[str, Any]] = []
+        with store.read_view():
+            planning = PlanningDecisionStore(store)
+            owned: dict[str, bool] = {}
+            for intent in store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED"):
+                mid = intent.mission_id
+                if mid not in owned:
+                    try:
+                        self._mission(mid)
+                        owned[mid] = True
+                    except FacadeError:
+                        owned[mid] = False
+                if not owned[mid] or not awaits_authority(store, intent):
+                    continue
+                request = planning.get_planning_request_for_intent(intent.intent_id)
+                if request is not None:
+                    rows.append({"mission_id": mid, "request_id": request.request_id,
+                                 "intent_id": intent.intent_id, "state": "AUTHORIZATION_REQUIRED"})
+        return rows
 
     @_native_root
     def answer_planning_question(self, command: Mapping[str, Any]) -> dict[str, Any]:

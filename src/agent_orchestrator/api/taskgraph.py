@@ -144,6 +144,18 @@ class TaskGraphReadApi:
             return "WAITING_FORMAL_CONTENT_REVIEW", details
         return fallback, details
 
+    def _require_enabled(self, mission_id: str) -> None:
+        """A Mission that never enabled the TaskGraph kernel has no graph to read.
+
+        2026-09-25 UI 全量点击: reading one used to fail as POLICY_UNAVAILABLE /
+        HISTORY_INTEGRITY (an operator-repair corruption signal) although nothing
+        was wrong.  Say so plainly instead; once enabled, the strict integrity
+        checks below still apply unchanged.
+        """
+        from ..orchestrator.taskgraph_dispatch import taskgraph_enabled
+        if not taskgraph_enabled(self._store, mission_id):
+            _fail("NOT_ENABLED", "此任务未启用执行图")
+
     def snapshot(self, mission_id: str, *, revision: int | None = None) -> dict[str, Any]:
         return self._snapshot(mission_id, revision=revision)[0]
 
@@ -151,6 +163,7 @@ class TaskGraphReadApi:
         explanation_sources: dict[str, Any] = {}
         with self._store.read_view() as connection:
             self._mission(mission_id)
+            self._require_enabled(mission_id)
             historical = revision is not None
             seed = None
             if revision is None:
@@ -316,6 +329,7 @@ class TaskGraphReadApi:
     def diff(self, mission_id: str, from_revision: int, to_revision: int) -> dict[str, Any]:
         with self._store.read_view():
             self._mission(mission_id)
+            self._require_enabled(mission_id)
             before = self._history.read_revision(mission_id, from_revision).record.document
             after = self._history.read_revision(mission_id, to_revision).record.document
             return diff_documents(before, after).to_json()
@@ -323,6 +337,7 @@ class TaskGraphReadApi:
     def convergence(self, mission_id: str) -> dict[str, Any]:
         with self._store.read_view() as connection:
             self._mission(mission_id)
+            self._require_enabled(mission_id)
             through = int(connection.execute("SELECT COALESCE(MAX(seq),0) FROM events WHERE mission_id=?",
                                              (mission_id,)).fetchone()[0])
             jobs = []
