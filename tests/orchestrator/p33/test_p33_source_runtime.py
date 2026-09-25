@@ -418,3 +418,43 @@ def test_source_case_alias_reads_keep_the_untrusted_marker(tmp_path, view):
         assert gateway.calls[-1]["trust"] == "untrusted_external"
 
     asyncio.run(case())
+
+
+def test_dispatch_freezes_only_sources_inside_the_domain_roots(tmp_path):
+    # 2026-09-25 UI 全量点击：Assurance 把审阅原始输出登记为 .assurance/review-output/…
+    # 来源；派活时连它一起冻结，读取时不在 sources/ 下 → not_found，文档任务在审阅
+    # 之后的第一次派活就失败（被标成 artifact_conflict）。
+    from doc5_helpers import node
+
+    from agent_orchestrator.api.facade import MissionControlV1
+    from agent_orchestrator.governance.permissions import Principal
+    from agent_orchestrator.graph.task_graph import TaskGraphProposal
+
+    async def case():
+        config = OrchestratorConfig(evidence_root=tmp_path, max_concurrency=2)
+        async with Orchestrator(config, RoleScriptedProvider({})) as loop:
+            mission = await loop.submit_mission(spec(domain=DOC_DOMAIN))
+            control = MissionControlV1(loop, tenant_id=mission.tenant_id, principal=Principal("importer"))
+            control.register_source({"mission_id": mission.id, "path": "sources/notes.md",
+                                     "content": "来源原文。\n", "kind": "text/markdown",
+                                     "idempotency_key": "register"})
+            loop.store.put_source({
+                "mission_id": mission.id, "tenant_id": mission.tenant_id,
+                "path": ".assurance/review-output/" + "a" * 64, "version_hash": "b" * 64,
+                "kind": "assurance-review-output", "trust": "untrusted_external",
+                "registered_at": 1.0, "superseded_by": None, "revoked": False, "revision": 1,
+            })
+            planning = loop.commit.begin_planning(mission.id)
+            tasks, _ = loop.commit.commit_task_graph(
+                mission.id, TaskGraphProposal.from_json({"tasks": [node("A")]}),
+                base_version=planning.version, source={"planner": "fixture"},
+            )
+            mission = loop.store.get_mission(mission.id)
+            assert await loop._next_attempt(mission, tasks[0], [])
+            [attempt] = loop.store.list_attempts(tasks[0].id)
+            intent = loop.store.get_intent_for_subject(attempt.id)
+            assert list(intent.config["source_versions"]) == ["sources/notes.md"]
+            loop._bind_workspace(attempt)
+            assert list(loop._source_files(attempt)) == ["sources/notes.md"]
+
+    asyncio.run(case())

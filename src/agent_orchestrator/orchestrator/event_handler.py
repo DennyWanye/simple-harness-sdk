@@ -5605,10 +5605,14 @@ class Orchestrator:
         domain = self.commit.domain_for(mission_id)
         if not domain.source_roots:
             return {}
+        from ..verification.evidence_resolver import in_source_roots
+        # Only what the reader will accept is frozen: registered rows outside the
+        # domain's source roots (e.g. Assurance review output) are not Mission sources.
         return {
             "source_versions": {
                 row["path"]: row["version_hash"]
                 for row in self.store.list_sources(mission_id, active_only=True)
+                if in_source_roots(row["path"], domain.source_roots)
             },
             "source_roots": list(domain.source_roots),
         }

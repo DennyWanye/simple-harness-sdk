@@ -144,6 +144,19 @@ class EvidenceResolutionV1:
         }
 
 
+def in_source_roots(path: str, source_roots: Sequence[str]) -> bool:
+    """The one rule for "is this registered source readable as Mission source".
+
+    Shared by the reader and by dispatch freezing (2026-09-25 UI 全量点击: the
+    Assurance review output is registered as a source outside ``sources/``; freezing
+    every active row made the next document dispatch fail on an unreadable path).
+    """
+    roots = tuple(root.rstrip("/") for root in source_roots)
+    return _safe_path(path) and any(
+        _safe_path(root) and (path == root or path.startswith(root + "/")) for root in roots
+    )
+
+
 def _safe_path(value: str) -> bool:
     # Registry names are workspace-relative POSIX paths. Reject aliases rather than
     # accidentally widening a root or changing the key used for exact-version lookup.
@@ -175,10 +188,7 @@ class EvidenceResolver:
         Pass versions from the frozen map when materializing. No filesystem path or
         storage_uri supplied by a source is followed. Database faults remain faults.
         """
-        roots = tuple(root.rstrip("/") for root in source_roots)
-        if not _safe_path(path) or not any(
-            _safe_path(root) and (path == root or path.startswith(root + "/")) for root in roots
-        ):
+        if not in_source_roots(path, source_roots):
             return SourceRead("not_found")
         row = self.store.get_source(mission_id, path, version)
         if row is None or any(
@@ -535,6 +545,7 @@ class _Document:
 
 
 __all__ = (
+    "in_source_roots",
     "DISPLAY_PREVIEW_CHARS",
     "EVIDENCE_RESOLUTION_SCHEMA_VERSION",
     "DisplayBlock",
