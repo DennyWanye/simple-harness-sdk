@@ -9950,6 +9950,16 @@ class Orchestrator:
                 protected[path] = content
         return protected
 
+    def _revises_its_inputs(self, mission_id: str, task_id: str) -> bool:
+        """Every declared input port is also an output port of the same schema."""
+        from ..storage.htn_store import HtnStore
+
+        binding = HtnStore(self.store).task_semantics_of(mission_id, task_id)
+        if binding is None or not binding.input_ports:
+            return False
+        outputs = {(port.port_key, port.schema_ref) for port in binding.output_ports}
+        return all((port.port_key, port.schema_ref) in outputs for port in binding.input_ports)
+
     def _protected_files(
         self, mission: Mission, task: Task, attempt: Attempt
     ) -> dict[str, str | bytes]:
@@ -9960,8 +9970,17 @@ class Orchestrator:
         protected: dict[str, str | bytes] = dict(self._protected_seed(mission, task))
         declared = set(task.outputs)
         seed_paths = set((mission.final_report or {}).get("workspace_seed", {}))
+        revises_inputs = self._revises_its_inputs(mission.id, task.id)
         for item in self._upstream_inputs(attempt):
             if item.path in declared:  # the Task declared it will rewrite this path
+                continue
+            if revises_inputs:
+                # 2026-09-25 UI 全量点击: a revise-in-place Task (every input port is
+                # also one of its output ports, e.g. desktop.continue-delivery) exists
+                # to deliver the next version of what it received.  Protecting those
+                # paths made it impossible — the document continuation could never
+                # write summary.md and failed until its attempts ran out.  The upstream
+                # artifact itself stays immutable (content-addressed).
                 continue
             # P2.3o: a seed path overlaid from a bound producer is the consumer's
             # baseline (so ``code_test`` runs on the accepted patch), not a
