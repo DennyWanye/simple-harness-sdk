@@ -13227,21 +13227,7 @@ class Orchestrator:
         )
         if selection_decision is not None:
             previous = None
-        feedback: list[str] = []
-        verifier_feedback: list[Mapping[str, Any]] = []
-        if previous is not None and previous.failure is not None:
-            failure = previous.failure
-            reason = str(failure.get("reason"))
-            # 2026-09-25 UI 全量点击: an "inconclusive" failure (e.g. one claim's missing
-            # limitation) carries the same verifier failures; the repair Attempt used to
-            # get only "inconclusive: " and could not know which pair to fix.
-            if reason in {"verification_failed", "inconclusive"}:
-                for item in failure.get("failures", []):
-                    if isinstance(item, Mapping):
-                        feedback.append(f"{item.get('layer')}: {item.get('summary')}")
-                        verifier_feedback.append(dict(item))
-            else:
-                feedback.append(f"{reason}: {failure.get('error', '')}")
+        feedback, verifier_feedback = retry_feedback(attempts, previous)
         for event in self.store.list_events(mission.id):  # D7-9': a person's notes, as data
             if event.type == "HumanCommentAdded" and event.payload.get("target_id") in {
                 task.id,
@@ -14455,3 +14441,39 @@ def sha256_hex_text(content: str | bytes) -> str:
 
 
 __all__ = ("FAULT_POINTS", "InjectedCrash", "Orchestrator")
+
+
+def retry_feedback(
+    attempts: Sequence[Attempt], previous: Attempt | None
+) -> tuple[list[str], list[Mapping[str, Any]]]:
+    """What the repair Attempt is told about the failures before it.
+
+    2026-09-26 真机文档任务: a provider turn failure in between hid the earlier
+    content rejection, so the next Attempt repeated the rejected mistake.  Walk back
+    past turn failures to the most recent failure that judged the content.
+    """
+    feedback: list[str] = []
+    verifier_feedback: list[Mapping[str, Any]] = []
+    if previous is None:
+        return feedback, verifier_feedback
+    chain: list[Attempt] = []
+    for earlier in reversed(attempts[: list(attempts).index(previous) + 1]):
+        if earlier.status not in TERMINAL_ATTEMPT or not earlier.failure:
+            continue
+        chain.append(earlier)
+        if earlier.failure.get("reason") != "turn_failed":
+            break
+    for failed in chain:
+        failure = failed.failure or {}
+        reason = str(failure.get("reason"))
+        # 2026-09-25 UI 全量点击: an "inconclusive" failure (e.g. one claim's missing
+        # limitation) carries the same verifier failures; the repair Attempt used to
+        # get only "inconclusive: " and could not know which pair to fix.
+        if reason in {"verification_failed", "inconclusive"}:
+            for item in failure.get("failures", []):
+                if isinstance(item, Mapping):
+                    feedback.append(f"{item.get('layer')}: {item.get('summary')}")
+                    verifier_feedback.append(dict(item))
+        else:
+            feedback.append(f"{reason}: {failure.get('error', '')}")
+    return feedback, verifier_feedback
