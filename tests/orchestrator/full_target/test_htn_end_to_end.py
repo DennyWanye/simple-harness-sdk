@@ -1307,17 +1307,22 @@ def test_a_pin_from_an_older_package_version_does_not_apply_to_this_package() ->
     assert HIERARCHICAL_PLANNER_PACKAGE_VERSION in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE
 
 
-def test_new_planning_decision_mission_selects_v8_even_when_legacy_pin_is_frozen() -> None:
-    """A package-4 Mission must never receive the legacy proposal wire prompt."""
+def test_new_planning_decision_mission_selects_the_current_prompt_even_when_legacy_pin_is_frozen() -> None:
+    """A planning-decision Mission must never receive the legacy proposal wire prompt;
+    2026-09-25: only the current package is served, a historical one is refused loudly."""
 
+    from agent_orchestrator.contracts.planning_decisions import UnsupportedPlanningPackage
     from agent_orchestrator.runtime.role_templates import (
-        PLANNER_HIERARCHICAL_V8,
+        PLANNER_HIERARCHICAL_V11,
         PLANNER_HIERARCHICAL_V7,
+        PLANNING_DECISION_PACKAGE_VERSION,
     )
 
-    assert _Pinned(PLANNER_HIERARCHICAL_V7.prompt_version, package_version=4).choose() is (
-        PLANNER_HIERARCHICAL_V8
+    assert _Pinned(PLANNER_HIERARCHICAL_V7.prompt_version, package_version=PLANNING_DECISION_PACKAGE_VERSION).choose() is (
+        PLANNER_HIERARCHICAL_V11
     )
+    with pytest.raises(UnsupportedPlanningPackage):
+        _Pinned(PLANNER_HIERARCHICAL_V7.prompt_version, package_version=4).choose()
 
 
 # ======================================================================================
