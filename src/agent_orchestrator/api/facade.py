@@ -148,10 +148,14 @@ class MissionControlV1:
 
         try:
             body = fields(dict(command), {"mission_id", "command_id", "requirements_ref",
-                "completion_scope", "candidate_mapping"}, {"result_ref", "purpose"})
+                "completion_scope", "candidate_mapping"}, {"result_ref", "purpose", "approval_source"})
             purpose = body.get("purpose", "CONTENT")
             if purpose not in ("CONTENT", "MISSION_FINAL"):
                 raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID", str(purpose))
+            # 2026-09-25: the Host says when it is the one approving (recorded as system)
+            approval_source = body.get("approval_source", "HUMAN")
+            if approval_source not in ("HUMAN", "HOST_LOSSLESS_AUTO"):
+                raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID", str(approval_source))
             self._mission(body["mission_id"])
             ref = self._orchestrator.commit.approve_assurance_check_policy(
                 tenant_id=self._tenant, principal=self._principal,
@@ -163,6 +167,7 @@ class MissionControlV1:
                 result_ref=None if body.get("result_ref") is None else
                     AssuranceRef.from_json(body["result_ref"], kinds={"result"}),
                 purpose=purpose,
+                approval_source=approval_source,
             )
             return {"check_policy_ref": ref.to_json()}
         except AssuranceError as error:

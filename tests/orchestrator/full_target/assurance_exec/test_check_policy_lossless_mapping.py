@@ -10,6 +10,8 @@ caller; this pins what that projection is and that the approval it feeds succeed
 
 from __future__ import annotations
 
+import json
+
 import sys
 from pathlib import Path
 
@@ -49,6 +51,43 @@ def test_lossless_mapping_spells_out_the_original_and_its_approval_succeeds(tmp_
         principal=Principal("host-authenticated-user"), requirements_ref=requirements_ref,
         completion_scope=derived_scope_ref, candidate_mapping=mapping)
     assert again == ref
+
+
+def test_host_auto_approval_is_recorded_as_system_not_human(tmp_path):
+    """2026-09-25 主流程优化条目 4: the Host projecting the lossless mapping is not a person."""
+    from _assured_fixture import build_world
+
+    world, task, stored, artifact, scope_ref = build_world(tmp_path / "w", approve_policy=False)
+    commit, mission_id = world.service, world.mission.id
+    requirements_ref, derived_scope_ref, mapping = lossless_scope_mapping(
+        commit, mission_id=mission_id, scope_id=scope_ref.pin.id)
+    ref = commit.approve_assurance_check_policy(
+        tenant_id=world.mission.tenant_id, mission_id=mission_id, command_id="host-check-policy:" + scope_ref.pin.id,
+        principal=Principal("host-authenticated-user"), requirements_ref=requirements_ref,
+        completion_scope=derived_scope_ref, candidate_mapping=mapping, approval_source="HOST_LOSSLESS_AUTO")
+    row = commit.store.connection.execute(
+        "SELECT actor_type, actor_id, payload_json FROM events WHERE mission_id=? AND type='AssuranceCheckPolicyApproved'",
+        (mission_id,)).fetchone()
+    assert row is not None
+    payload = json.loads(row[2])
+    assert row[0] == "system" and row[1] == "host:assurance-check-policy-projector"
+    assert payload["approval_source"] == "HOST_LOSSLESS_AUTO"
+    assert payload["on_behalf_of_principal_id"] == "host-authenticated-user"
+    # replay with the same command is the same approval: the source is not in the receipt body
+    again = commit.approve_assurance_check_policy(
+        tenant_id=world.mission.tenant_id, mission_id=mission_id, command_id="host-check-policy:" + scope_ref.pin.id,
+        principal=Principal("host-authenticated-user"), requirements_ref=requirements_ref,
+        completion_scope=derived_scope_ref, candidate_mapping=mapping, approval_source="HOST_LOSSLESS_AUTO")
+    assert again == ref
+    try:
+        commit.approve_assurance_check_policy(
+            tenant_id=world.mission.tenant_id, mission_id=mission_id, command_id="x",
+            principal=Principal("host-authenticated-user"), requirements_ref=requirements_ref,
+            completion_scope=derived_scope_ref, candidate_mapping=mapping, approval_source="ROBOT")
+    except AssuranceError as error:
+        assert error.code == "CHECK_POLICY_APPROVAL_INVALID"
+    else:  # pragma: no cover
+        raise AssertionError("unknown approval_source accepted")
 
 
 def test_unknown_scope_is_unresolved_never_invented(tmp_path):

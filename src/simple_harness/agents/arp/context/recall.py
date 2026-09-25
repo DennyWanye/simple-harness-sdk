@@ -373,6 +373,13 @@ class ContextRecallCoordinator:
             if len(pages) != len(point["page_refs"]):
                 pages[:] = self._reload_pages(service, point)
             return self._ready(row, point, access, snapshot, pages)
+        if (point["phase"] == "FETCHING_RESULTS" and point["cursor_token"] is not None
+                and int(point["result_pages_committed"]) >= MAX_RESULT_PAGES):
+            # 2026-09-25 主流程优化条目 5: the frozen query still has RESULTS pages but the
+            # recall's page budget is spent.  Stop here as SKIPPED/PARTIAL with the reason
+            # recorded, instead of tripping the row's structural cap on the next commit
+            # and failing the whole model request (CONTEXT-RECALL.md: 说明原因后停下).
+            return self._skipped(row, point, "RECALL_AGGREGATE_LIMIT", access)
         with guard.held():
             snapshot = service.snapshot_extras(snapshot_id)
             if int(snapshot["index_generation"]) != generation.index_generation:

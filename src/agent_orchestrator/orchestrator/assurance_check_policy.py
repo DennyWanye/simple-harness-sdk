@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from .commit_service import CommitService
 
 ADAPTER_VERSION = "assurance-check-policy-v1"
+APPROVAL_SOURCES = frozenset({"HUMAN", "HOST_LOSSLESS_AUTO"})
+#: The actor recorded when the Host projects the lossless mapping itself.
+HOST_AUTO_APPROVER_ID = "host:assurance-check-policy-projector"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,8 +51,16 @@ def approve_check_policy(
     planning_subject: AssuranceRef | None = None,
     purpose: str = "CONTENT",
     effect_key: str | None = None,
+    approval_source: str = "HUMAN",
 ) -> AssuranceRef:
-    """Human caller explicitly approves the exact mapping; no inferred authorization.
+    """The caller explicitly approves the exact mapping; no inferred authorization.
+
+    ``approval_source`` says who did the approving and is recorded as such
+    (2026-09-25 主流程优化条目 4): ``"HUMAN"`` is a person acting through the verb,
+    ``"HOST_LOSSLESS_AUTO"`` is the Host projecting the lossless mapping on the
+    principal's behalf — that event is written with ``actor_type="system"``, never
+    disguised as a human decision.  The source is *not* part of the approval receipt
+    body, so a replayed command keeps its identity.
 
     Alternative check groups require this new approval. Every retained group must
     preserve original mandatory checks; missing deployments are never removed.
@@ -88,6 +99,8 @@ def approve_check_policy(
     text(tenant_id)
     text(mission_id)
     text(command_id)
+    if approval_source not in APPROVAL_SOURCES:
+        raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID", str(approval_source))
     if (
         not 1 <= len(candidate_mapping) <= 256
         or any(not isinstance(row, CriterionPolicy) for row in candidate_mapping)
@@ -282,13 +295,16 @@ def approve_check_policy(
             adapter_version=ADAPTER_VERSION,
         )
         if old is None:
+            human = approval_source == "HUMAN"
             commit._emit(
                 "AssuranceCheckPolicyApproved",
                 mission_id,
                 key=receipt_id,
-                actor_type="human",
-                actor_id=principal.principal_id,
-                payload={"check_policy_ref": ref.to_json(), "approval_receipt_id": receipt_id},
+                actor_type="human" if human else "system",
+                actor_id=principal.principal_id if human else HOST_AUTO_APPROVER_ID,
+                payload={"check_policy_ref": ref.to_json(), "approval_receipt_id": receipt_id,
+                         "approval_source": approval_source,
+                         "on_behalf_of_principal_id": principal.principal_id},
             )
         return ref
 
