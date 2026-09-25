@@ -530,6 +530,8 @@ class Orchestrator:
         # host support 0.9.8: the verification layers this deployment can run
         self._deployed = deployed_layers(config.deployment_policy)
         self._critic_verdicts: dict[str, CriticVerdict] = {}
+        # result id -> (refusal signature, consecutive count); see _verdict_refused
+        self._verdict_refusals: dict[str, tuple[str, int]] = {}
         #: result id → the output-port claims that arrived with that envelope
         #: (P2.3c part 2d, decision 4).  ``ResultEnvelope`` is a frozen contract with
         #: ``additionalProperties`` refused, so the claims are parsed out of the block
@@ -6611,6 +6613,40 @@ class Orchestrator:
                 raise
             self._note(f"{subject_id}: physical settlement pending, reservation held")
 
+    #: The same result refused for the same reason this many rounds in a row is a
+    #: deterministic refusal, not a race with another Commit.
+    VERDICT_REFUSAL_LIMIT = 3
+
+    def _verdict_refused(self, result_id: str, error: Exception) -> bool:
+        """A dropped verdict is normally a race (the Attempt was closed / taken over,
+        a source moved) and the next round decides again.  2026-09-25 UI 全量点击: a
+        gate that refuses the same result for the same reason every round re-verified
+        it every 2-3 s forever while the UI said "running".  After
+        ``VERDICT_REFUSAL_LIMIT`` identical refusals the result fails with the reason
+        recorded, so the ordinary retry / Manager / stall path takes over, visibly."""
+
+        signature = f"{type(error).__name__}:{error}"
+        previous = self._verdict_refusals.get(result_id)
+        count = previous[1] + 1 if previous is not None and previous[0] == signature else 1
+        if count < self.VERDICT_REFUSAL_LIMIT:
+            self._verdict_refusals[result_id] = (signature, count)
+            return True
+        self._verdict_refusals.pop(result_id, None)
+        failure = {
+            "layer": "acceptance",
+            "status": "FAIL",
+            "summary": "acceptance refused repeatedly for the same reason",
+            "detail": {"reason": "acceptance_refused", "error_type": type(error).__name__,
+                       "error": str(error)[:2000], "refusals": count},
+        }
+        try:
+            self.commit.fail_result(result_id, failures=[failure], owner=self._owner)
+        except (CommitRejected, IllegalTransition) as late:
+            self._note(f"result {result_id}: refusal fail dropped ({late})")
+            return True
+        self._note(f"result {result_id}: acceptance refused {count}x ({error}) -> FAIL")
+        return True
+
     def _settle_if_known(self, attempt: Attempt) -> None:
         """Settle the Attempt's reservation unless an UNKNOWN charge keeps it occupied (ORCH §12.2)."""
 
@@ -9543,7 +9579,8 @@ class Orchestrator:
             # every round is a stuck Mission, not progress.
             logger.warning("orchestrator.verdict_dropped result=%s mission=%s error=%s: %s",
                            result_id, mission.id, type(error).__name__, error)
-            return True
+            return self._verdict_refused(result_id, error)
+        self._verdict_refusals.pop(result_id, None)
         if self.commit.selection_policy_for(task.id) is not None:
             return True
         from .scoped_content_review import uses_completion_protocol
@@ -13172,7 +13209,10 @@ class Orchestrator:
         if previous is not None and previous.failure is not None:
             failure = previous.failure
             reason = str(failure.get("reason"))
-            if reason == "verification_failed":
+            # 2026-09-25 UI 全量点击: an "inconclusive" failure (e.g. one claim's missing
+            # limitation) carries the same verifier failures; the repair Attempt used to
+            # get only "inconclusive: " and could not know which pair to fix.
+            if reason in {"verification_failed", "inconclusive"}:
                 for item in failure.get("failures", []):
                     if isinstance(item, Mapping):
                         feedback.append(f"{item.get('layer')}: {item.get('summary')}")
