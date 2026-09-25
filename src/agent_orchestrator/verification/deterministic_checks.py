@@ -218,9 +218,15 @@ async def code_test(
              "workspace_hash": sha256_hex(manifest), "checker": "pytest",
              "criteria": list(task.success_criteria)}
     targets: list[str | None] = []
+    # 2026-09-25 主流程优化条目 3: a bare ``pytest:`` criterion (no path) is still a
+    # criterion *asking* for tests, so it is a requested whole-tree run and must
+    # collect at least one test.  Only the courtesy run nobody asked for may be vacuous.
+    requested_whole_tree = False
     for criterion in (*task.success_criteria, *mission_criteria):
         if criterion.startswith("pytest:"):
             target = criterion.removeprefix("pytest:").strip() or None
+            if target is None:
+                requested_whole_tree = True
             if target not in targets:
                 targets.append(target)
     if not targets:
@@ -244,10 +250,12 @@ async def code_test(
         )
         # Assurance 1.1 default-ON (2026-09-23): the courtesy whole-tree run that no
         # ``pytest:`` criterion asked for, on a workspace pytest collects nothing from
-        # (exit 5), attests nothing and fails nothing.  A *named* target that collects
-        # nothing is still a criterion nobody checks, and stays FAIL.
+        # (exit 5), attests nothing and fails nothing.  Any run a criterion asked for —
+        # a named target or a bare ``pytest:`` — that collects nothing is a criterion
+        # nobody checked, and stays FAIL.
         no_tests_collected = (
             target is None
+            and not requested_whole_tree
             and run.returncode == 5
             and not run.timed_out
             and (run.receipt is None or run.receipt.status == "ok")

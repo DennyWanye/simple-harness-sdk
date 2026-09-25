@@ -46,6 +46,19 @@ def test_default_run_that_collects_no_tests_is_not_a_failure(tmp_path):
     assert ran_test_targets([layer.to_json()]) == {"": True}
 
 
+def test_bare_pytest_criterion_that_collects_no_tests_fails(tmp_path):
+    # 2026-09-25 主流程优化条目 3: ``pytest:`` with no path still *asks* for tests, so a
+    # workspace with none is an unchecked criterion, not "nothing to attest".
+    workspace = Workspace(tmp_path / "verify", "task-1:attempt-1", True)
+    workspace.root.mkdir()
+    workspace.write_text("NOTES.md", "- 一\n")
+    layer = asyncio.run(code_test(_task(("pytest:",)), verification_copy=workspace, timeout=120))
+    assert layer.status == "FAIL", layer
+    [run] = layer.detail["runs"]
+    assert run["target"] is None and run["returncode"] == 5 and "no_tests_collected" not in run
+    assert run["passed"] is False
+
+
 def test_named_target_that_collects_no_tests_still_fails(tmp_path):
     workspace = Workspace(tmp_path / "verify", "task-1:attempt-1", True)
     workspace.root.mkdir()
