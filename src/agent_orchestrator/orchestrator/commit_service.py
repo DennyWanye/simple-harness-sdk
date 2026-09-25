@@ -4895,7 +4895,14 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                     return self.fail_result(result_id, failures=hard_failures, owner=owner)
             if supports_document_assessments(domain):
                 rows = self._store.list_verifications(result_id)
-                if requires_document_critic_proof(domain):
+                # 2026-09-25 UI 全量点击: under Assurance 1.1 the review proof is the
+                # official review record plus the use certificate locked below; the legacy
+                # same-result Critic proof never exists there (its review intent is the
+                # assurance content review), so demanding it refused every assured document
+                # acceptance and the result was re-verified every loop round.
+                from ..storage.assurance_store import AssuranceStore
+                if (requires_document_critic_proof(domain)
+                        and AssuranceStore(self._store).lane(mission.id) != "ASSURANCE_1_1"):
                     self._require_doc5_critic_pass(stored, task, attempt, domain, rows)
                 self._require_document_human_pass(stored, task, rows)
                 conflicts = document_uncertainty_conflicts(

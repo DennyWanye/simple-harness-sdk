@@ -9539,6 +9539,10 @@ class Orchestrator:
             # dropped; the library's state is whatever the other Commit made it. An
             # assured acceptance refused by its current use certificate lands here too.
             self._note(f"result {result_id}: verdict dropped ({error})")
+            # Visible in the Host log (progress notes are not): a refusal that repeats
+            # every round is a stuck Mission, not progress.
+            logger.warning("orchestrator.verdict_dropped result=%s mission=%s error=%s: %s",
+                           result_id, mission.id, type(error).__name__, error)
             return True
         if self.commit.selection_policy_for(task.id) is not None:
             return True
