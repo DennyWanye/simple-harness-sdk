@@ -133,7 +133,17 @@ def executor_run_facts(
                 reason = "run not bound to this Result's unchanged workspace snapshot"
             else:
                 grade = Grade.PASS
-                reason = "no pytest target named; the executor collected no tests (exit 5), nothing to attest"
+                # 2026-09-26 Host run: "nothing to attest" read to the Critic as a
+                # required check that proved nothing, so a document step whose every
+                # content criterion it passed came back INCONCLUSIVE twice and spent
+                # its whole budget.  Say what the rule is (user decision 2026-09-24).
+                reason = (
+                    "NOT APPLICABLE, counts as satisfied: no pytest target was named and the "
+                    "workspace has no tests (exit 5). A deliverable without tests does not "
+                    "need code_test; this check neither supports nor weakens any criterion "
+                    "and is not a reason for UNKNOWN or INCONCLUSIVE. Judge the content on "
+                    "its own evidence."
+                )
         elif any(int(run.get("returncode")) != 0 or not run.get("passed") for run in runs):
             grade, reason = Grade.FAIL, "a pytest target exited non-zero"
         elif not isinstance(scope, Mapping):

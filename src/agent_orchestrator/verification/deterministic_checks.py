@@ -267,8 +267,8 @@ async def code_test(
         failed = failed or not row["passed"]
     summary = (
         (
-            "no pytest: criterion names a target and pytest collected no tests (exit 5); "
-            "nothing to attest"
+            "not applicable, counts as satisfied: no pytest target was named and the "
+            "workspace has no tests (exit 5)"
             if any(r.get("no_tests_collected") for r in runs)
             else "all pytest targets passed"
         )

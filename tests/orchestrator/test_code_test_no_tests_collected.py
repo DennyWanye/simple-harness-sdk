@@ -40,7 +40,7 @@ def test_default_run_that_collects_no_tests_is_not_a_failure(tmp_path):
     [run] = layer.detail["runs"]
     assert run["target"] is None and run["returncode"] == 5 and run["no_tests_collected"] is True
     assert run["passed"] is True
-    assert "collected no tests" in layer.summary
+    assert "not applicable, counts as satisfied" in layer.summary
     # The audited claim grader (a4aae8c bytes, never edited) keys the default run
     # under "": a claim naming a real ``pytest:<target>`` is still unverified by it.
     assert ran_test_targets([layer.to_json()]) == {"": True}
@@ -91,7 +91,7 @@ def _facts(*, flagged: bool, scope: bool = True) -> dict:
 def test_executor_facts_grade_the_vacuous_run_pass_only_when_bound():
     state, grade, document = executor_run_facts(_facts(flagged=True), layer="code_test")
     assert (state, grade) == ("SUCCEEDED", Grade.PASS)
-    assert "collected no tests" in document["reason"]
+    assert "NOT APPLICABLE, counts as satisfied" in document["reason"] and "INCONCLUSIVE" in document["reason"]
     assert document["runs"][0]["no_tests_collected"] is True
     state, grade, document = executor_run_facts(_facts(flagged=True, scope=False), layer="code_test")
     assert (state, grade) == ("SUCCEEDED", Grade.UNKNOWN)
