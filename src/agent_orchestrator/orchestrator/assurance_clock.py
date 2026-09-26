@@ -16,22 +16,11 @@ if TYPE_CHECKING:
     from .commit_service import CommitService
 
 
-# 2026-09-26 (Host 真机): the high-water mark moves on every observation, so "one
-# receipt per changed observation" wrote a receipt on every tick — 475k rows in two
-# days, and every root check scans that table, pinning the event loop at 100% CPU.
-# A STABLE observation that only advances the high-water mark is persisted at most
-# once per interval; generation/state changes are always persisted at once.
-CLOCK_PERSIST_INTERVAL_MS = 60_000
-
-
 def observe_assurance_clock(commit: CommitService, *, now_ms: int) -> ClockState:
-    """One receipt per meaningful change; one discontinuity per generation.
+    """One receipt per changed observation; one discontinuity per generation.
 
     Events are diagnostic wakeups. They never assert source validity or cancel
-    physical work. A rollback does not move any expiry or work deadline.  The
-    returned state always reflects ``now_ms``; only its persistence is coarse
-    (see :data:`CLOCK_PERSIST_INTERVAL_MS`), so a rollback shorter than that
-    interval against the persisted mark is not recorded as a discontinuity.
+    physical work. A rollback does not move any expiry or work deadline.
     """
     integer(now_ms)
     store = commit.store
@@ -44,12 +33,6 @@ def observe_assurance_clock(commit: CommitService, *, now_ms: int) -> ClockState
         previous = ClockState(row["clock_generation"], row["wall_high_ms"], row["clock_state"])
         current = previous.observe(now_ms)
         if current == previous:
-            return current
-        if (
-            current.state == previous.state == "STABLE"
-            and current.generation == previous.generation
-            and current.wall_high_ms - previous.wall_high_ms < CLOCK_PERSIST_INTERVAL_MS
-        ):
             return current
         receipt_id = "assurance-clock:" + uuid4().hex
         body = {

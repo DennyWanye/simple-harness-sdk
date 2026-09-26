@@ -658,7 +658,7 @@ def test_the_synthesizer_prompt_v7_forbids_verify_writes_and_v6_is_frozen() -> N
     )
 
     assert METHOD_SYNTHESIZER.prompt_version == METHOD_SYNTHESIZER_VERSION
-    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v7"
+    assert METHOD_SYNTHESIZER_VERSION == "method-synthesizer-v8"  # 2026-09-26: v8 beside v7
     assert METHOD_SYNTHESIZER_V6.prompt_version == METHOD_SYNTHESIZER_V6_VERSION
     assert METHOD_SYNTHESIZER_V6_VERSION == "method-synthesizer-v6"
     text = METHOD_SYNTHESIZER.instructions

@@ -3237,8 +3237,8 @@ class Orchestrator:
             if mission.status is MissionStatus.CREATED:
                 if self._assembly_missing(mission, at="start_planning"):
                     continue
-                await self._start_planning(mission)
-                progressed = True
+                if await self._start_planning(mission):
+                    progressed = True
             elif await self._refine_open_compounds(mission):
                 # P2.3d / defect D5-B: a Mission used to be planned exactly once.  A
                 # Planner that proposed a *nested* compound left it at
@@ -3913,12 +3913,17 @@ class Orchestrator:
             "evidence is saturated and no applicable method remains"
         )
 
-    async def _start_planning(self, mission: Mission) -> None:
+    async def _start_planning(self, mission: Mission) -> bool:
+        """``False`` when nothing could start (assembly missing, or the start gate is
+        still waiting for a person).  2026-09-26 (Host 真机): the caller counted such a
+        no-op as progress, and a progressing cycle does not sleep, so one Mission
+        waiting for its completion mapping spun the loop at 100% CPU and starved the
+        Host's event loop."""
         if self._assembly_missing(mission, at="start_planning"):
-            return
+            return False
         if (is_hierarchical(mission) and self._planning_start_gate is not None
                 and not self._planning_start_gate(mission)):
-            return
+            return False
         self.commit.begin_planning(mission.id)
         # P2.3q: skip the doomed empty Planner when evidence is saturated and
         # nothing applies.  Uses ``is_hierarchical`` + the installed assembly so
@@ -3931,7 +3936,7 @@ class Orchestrator:
         if should_skip and new_mode is not None:
             self._record_planner_skipped(mission, new_mode, phase="initial")
             await self._request_method_synthesis(mission)
-            return
+            return True
         try:
             await self._try_planner_intent(mission.id, ordinal=1)
         except BudgetExhausted as error:
@@ -3955,6 +3960,7 @@ class Orchestrator:
             self._note(
                 f"mission {mission.id} stopped in planning: budget_exhausted ({error.dimension})"
             )
+        return True
 
     async def _refine_open_compounds(self, mission: Mission) -> bool:
         """Ask the Planner for a method for a compound this plan has not refined yet.

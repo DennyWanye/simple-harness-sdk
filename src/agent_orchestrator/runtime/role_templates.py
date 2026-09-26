@@ -1387,6 +1387,31 @@ METHOD_SYNTHESIZER = _revise(
     ),
 )
 register_template(METHOD_SYNTHESIZER)
+METHOD_SYNTHESIZER_V7 = METHOD_SYNTHESIZER
+
+#: 2026-09-26 (Host 真机).  Every desktop Mission was planned as two steps —
+#: "prepare everything" then "deliver" — even when the goal named four separate
+#: deliverables with dependencies, so the plan showed no process and one leaf carried
+#: every criterion.  v8 asks for one step per independent deliverable, readable step
+#: names and the dependency order.  v7 keeps its bytes.
+METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v8"
+METHOD_SYNTHESIZER = _revise(
+    METHOD_SYNTHESIZER_V7,
+    METHOD_SYNTHESIZER_VERSION,
+    (
+        "verify 只运行测试并绑定该端口；不要让 verify / inspect 自己写 tests/ 下的文件。",
+        "verify 只运行测试并绑定该端口；不要让 verify / inspect 自己写 tests/ 下的文件。"
+        "拆分粒度：目标或成功条件列出多个独立交付物（多个文件、多个部分、多个章节）时，"
+        "每个交付物单独成一个步骤——同一个 task type 可以在多个步骤里重复使用——"
+        "不要把几个交付物塞进同一个步骤；每条目标准则的 criterion_link 指向真正产出它的那一步。"
+        "步骤的 local_id 用能看懂这一步职责的英文短名（例如 positioning、menu、promotion、summary），"
+        "不要用 step1、prepare 这类看不出内容的名字。"
+        "某一步要用到另一步的结论时，在 ordering 里写明先后；互不依赖的步骤不加顺序，可以并行。"
+        "汇总、总结或最终交付放在最后一步，并排在它所依赖的全部步骤之后。"
+        "只有一个交付物的简单目标，保持一到两步即可，不要为了拆而拆。",
+    ),
+)
+register_template(METHOD_SYNTHESIZER)
 
 ROOT_REVIEWER_V1_VERSION = "root-reviewer-v1"
 

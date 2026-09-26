@@ -256,9 +256,14 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
     ),
     # P2.3t: v7 = v6 plus "read-only verify must not write files; added tests
     # come from a write-step tests port".
-    "METHOD_SYNTHESIZER": (
+    "METHOD_SYNTHESIZER_V7": (
         "method-synthesizer-v7",
         "4aa25e682ede38479a09a2a8d00da023aaed617e32384e7da85c44641a4e2f9b",
+    ),
+    # 2026-09-26: v8 asks for one step per independent deliverable.
+    "METHOD_SYNTHESIZER": (
+        "method-synthesizer-v8",
+        "f239da18fa85a82ce99e70c58802a83df4db78917eab299b69f2d18f8b7eacf7",
     ),
     "PLANNER_HIERARCHICAL_V3": (
         "planner-hierarchical-v3",
