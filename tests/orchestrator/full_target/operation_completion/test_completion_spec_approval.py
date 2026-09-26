@@ -729,3 +729,46 @@ def test_occ02_real_migration_installs_completion_tables_and_immutability_trigge
         ).fetchone()[0]
         == original
     )
+
+
+# --------------------------------------------------------------------------------------
+# User decision 2026-09-26: in auto permission mode the Host confirms content-only
+# requirements itself.  The receipt is the same; the event says the Host did it.
+# --------------------------------------------------------------------------------------
+
+
+def _content_only(requirements: RequirementsRevision, **fields: object) -> dict[str, object]:
+    command = _command(requirements, command_id="host-auto-completion-1")
+    proposal = dict(command["proposal"])  # type: ignore[arg-type]
+    proposal.update(mode="CONTENT_ONLY", effects=[],
+                    content_criterion_ids=["criterion-report", "criterion-delivered"])
+    return {**command, "proposal": proposal, **fields}
+
+
+def test_host_auto_confirmation_is_recorded_as_the_system(tmp_path) -> None:
+    world, requirements = _approval_world(tmp_path)
+    receipt = _api(world).approve(_content_only(requirements, approval_source="HOST_AUTO_PERMISSION"))
+    assert receipt.authority.kind == "USER_CONFIRMED"
+    event = world.store.list_events(world.mission.id)[-1]
+    assert event.type == "OperationCompletionSpecApproved"
+    assert event.actor_type == "system" and event.actor_id == "host:auto-permission-completion"
+    assert event.payload["approval_source"] == "HOST_AUTO_PERMISSION"
+    assert event.payload["on_behalf_of_principal_id"] == "human-confirming"
+
+
+def test_a_person_confirming_is_still_recorded_as_the_person(tmp_path) -> None:
+    world, requirements = _approval_world(tmp_path)
+    _api(world).approve(_content_only(requirements))
+    event = world.store.list_events(world.mission.id)[-1]
+    assert event.actor_type == "human" and event.actor_id == "human-confirming"
+    assert "approval_source" not in event.payload
+
+
+def test_the_host_never_confirms_an_operation_effect(tmp_path) -> None:
+    world, requirements = _approval_world(tmp_path)
+    with pytest.raises(OperationCompletionError) as refused:
+        _api(world).approve({**_command(requirements), "approval_source": "HOST_AUTO_PERMISSION"})
+    assert refused.value.code == "OP_REQUIREMENT_MAPPING_UNAPPROVED"
+    with pytest.raises(OperationCompletionError) as unknown:
+        _api(world).approve(_content_only(requirements, approval_source="MODEL"))
+    assert unknown.value.code == "invalid_request"

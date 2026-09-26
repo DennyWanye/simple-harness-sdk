@@ -29,6 +29,10 @@ from ..storage.operation_completion_store import OperationCompletionStore
 from ..storage.store import Store, StoreError
 
 
+
+#: The actor recorded when the Host confirms content-only requirements in auto mode.
+HOST_AUTO_COMPLETION_CONFIRMER_ID = "host:auto-permission-completion"
+
 class OperationCompletionError(ContractError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -169,8 +173,15 @@ class OperationCompletionCommitsMixin:
         proposal: OperationCompletionRequirementsV1,
         requirement_authority: ApprovedRequirementAuthority,
         principal: Principal,
+        approval_source: str = "HUMAN",
     ) -> CompletionSpecReceipt:
         mission_id = identifier(mission_id, "mission_id")
+        if approval_source not in {"HUMAN", "HOST_AUTO_PERMISSION"}:
+            raise OperationCompletionError("invalid_request", "unknown approval source")
+        if approval_source == "HOST_AUTO_PERMISSION" and proposal.to_json().get("effects"):
+            # Only content-only requirements are ever confirmed without a person.
+            raise OperationCompletionError(
+                "OP_REQUIREMENT_MAPPING_UNAPPROVED", "an operation effect needs a person's confirmation")
         command_id = identifier(command_id, "command_id")
         if not isinstance(principal, Principal) or not isinstance(
             requirement_authority, ApprovedRequirementAuthority
@@ -270,13 +281,17 @@ class OperationCompletionCommitsMixin:
                 approval_receipt_id=command_id,
             )
             self._store.fault("completion_spec_after_spec", "operation_completion")
+            human = approval_source == "HUMAN"
             self._emit(
                 "OperationCompletionSpecApproved",
                 mission_id,
                 key=command_id,
-                payload=receipt.to_json(),
-                actor_type="human",
-                actor_id=principal.principal_id,
+                # The receipt is the same either way; the event says who confirmed.
+                payload=receipt.to_json() if human else {
+                    **receipt.to_json(), "approval_source": approval_source,
+                    "on_behalf_of_principal_id": principal.principal_id},
+                actor_type="human" if human else "system",
+                actor_id=principal.principal_id if human else HOST_AUTO_COMPLETION_CONFIRMER_ID,
             )
             self._store.fault("completion_spec_after_event", "operation_completion")
         return receipt

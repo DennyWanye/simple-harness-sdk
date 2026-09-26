@@ -55,6 +55,11 @@ def bind_requirement_authority(
     )
 
 
+#: Who confirmed: a person (default) or the Host in auto permission mode, for
+#: requirements that are content only (no operation effect).
+COMPLETION_APPROVAL_SOURCES = frozenset({"HUMAN", "HOST_AUTO_PERMISSION"})
+
+
 class OperationCompletionApi:
     def __init__(self, commit: Any, *, tenant_id: str, principal: Principal) -> None:
         if not isinstance(principal, Principal):
@@ -77,7 +82,14 @@ class OperationCompletionApi:
                 "expected_requirements_ref",
                 "proposal",
             ),
+            # 2026-09-26 (user decision): the Host confirms content-only requirements
+            # itself in auto mode and says so; the default is a person's click.
+            optional=("approval_source",),
         )
+        approval_source = value.get("approval_source", "HUMAN")
+        if approval_source not in COMPLETION_APPROVAL_SOURCES:
+            raise OperationCompletionError(
+                "invalid_request", "approval_source must be HUMAN or HOST_AUTO_PERMISSION")
         mission_id = identifier(value["mission_id"], "mission_id")
         command_id = identifier(value["command_id"], "command_id")
         mission = self._commit.store.get_mission(mission_id)
@@ -102,4 +114,5 @@ class OperationCompletionApi:
             proposal=proposal,
             requirement_authority=authority,
             principal=self._principal,
+            approval_source=approval_source,
         )
