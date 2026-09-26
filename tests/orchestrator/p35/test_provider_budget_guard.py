@@ -342,3 +342,35 @@ def test_an_unknown_outcome_frees_its_slot_but_keeps_its_charge(tmp_path):
 
     asyncio.run(exercise())
 
+
+
+def test_a_call_left_on_the_wire_by_a_dead_process_frees_its_slot(tmp_path):
+    """Desktop 2026-09-27: the app quit while a review call was on the wire.  After the
+    restart that grant still held the only slot, so the next Mission's first request
+    waited for it until its own deadline and the Mission failed.  A handed-off grant
+    whose process no longer holds the run is a dead connection: slot freed, charge kept."""
+
+    async def exercise():
+        async with setup_runtime(tmp_path, blocked=True) as (
+            commit, _, task, guard, provider, runtime,
+        ):
+            first = await create_bound(commit, task, guard, runtime, "one")
+            second = await create_bound(commit, task, guard, runtime, "two")
+            running = asyncio.create_task(first[0].ask("request", input_id=first[2], timeout=5))
+            await asyncio.wait_for(provider.entered.wait(), 3)
+            with commit.store.transaction():
+                commit.store.connection.execute(
+                    "UPDATE provider_token_grants SET sdk_owner='previous-process'")
+            waiting = asyncio.create_task(second[0].ask("request", input_id=second[2], timeout=5))
+            for _ in range(300):
+                if provider.calls >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert provider.calls == 2, "the dead call's slot was never freed"
+            marked = commit.store.connection.execute(
+                "SELECT COUNT(*) FROM provider_grant_wire_terminal_v1").fetchone()[0]
+            assert marked == 1
+            provider.allow.set()
+            await asyncio.gather(running, waiting, return_exceptions=True)
+
+    asyncio.run(exercise())

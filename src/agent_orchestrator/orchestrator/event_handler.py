@@ -7176,6 +7176,20 @@ class Orchestrator:
 
         except (ContractError, BlockError, StoreError) as error:
             admitted, problems, method_ref, verdict = False, (str(error),), "", "UNREADABLE"
+            if result.state is not AgentTurnState.COMMITTED:
+                # Desktop 2026-09-27: the provider hung past its deadline and the
+                # Mission failed on the spot.  A turn that never delivered a reply is
+                # not an answer either — the same question is asked once more.
+                feedback = ("上一次请求没有得到模型回复（请求失败或超时），请重新完整回答同一个问题。",)
+
+                def record_first_ask() -> None:
+                    new_mode.record_synthesis_reply_unreadable(
+                        mission.id,
+                        goal_task_id=goal_task_id,
+                        ordinal=ordinal,
+                        problems=problems,
+                        block_defect="turn_failed",
+                    )
 
         retry_refused = ""
         exhausted: BudgetExhausted | None = None

@@ -827,3 +827,48 @@ def test_v2_keeps_its_bytes_stays_registered_and_is_still_pinnable():
     request = synth.synthesizer(env).build_request(synth.goal(env), env.capabilities())
     assert isinstance(request, SynthesisRequest)
     assert request.to_json()["role_prompt_version"] == "method-synthesizer-v9"
+
+
+def test_a_synthesizer_turn_that_never_replied_is_asked_once_more(tmp_path):
+    """Desktop 2026-09-27: the first ask waited for a provider slot past its turn
+    deadline and the Mission failed on the spot (``method_synthesis_refused``, zero
+    attempts).  A turn that delivered no reply is not an answer; it is asked once more.
+
+    **Mutation**: drop the turn-failed branch → red (one ask, round refused)."""
+
+    from dataclasses import replace as _replace
+
+    from simple_harness.agents.contracts import AgentTurnState
+
+    def fail_first_turn(loop):
+        original = loop._collect_synthesizer
+        seen = {"n": 0}
+
+        async def collect(intent, result, mission, text):
+            seen["n"] += 1
+            if seen["n"] == 1:
+                result = _replace(result, state=AgentTurnState.FAILED, public_output=None,
+                                  error={"reason_code": "deadline"})
+                text = ""
+            return await original(intent, result, mission, text)
+
+        loop._collect_synthesizer = collect
+
+    outcome = _run(
+        tmp_path,
+        key="synth-turn-failed-reask",
+        synthesizer_steps=[
+            method_proposal_step(_corrected().to_json()),
+            method_proposal_step(_corrected().to_json()),
+        ],
+        planner_steps=[
+            "nothing to propose",
+            "still nothing",
+            saturation._adopt(_corrected().method_ref()),
+        ],
+        tweak=fail_first_turn,
+    )
+    assert [item["block_defect"] for item in outcome["unreadable"]] == ["turn_failed"], outcome["synthesis"]
+    assert outcome["synthesis"][0]["admitted"] is True and outcome["synthesis"][0]["asks"] == 2
+    assert "没有得到模型回复" in outcome["synth_requests"][1]["schema_feedback"][0]
+    assert outcome["committed"], outcome["types"]

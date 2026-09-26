@@ -928,6 +928,17 @@ class ProviderBudgetGuard:
                 released += 1
         return released
 
+    def _owner_gone(self, uow, binding, row) -> bool:
+        """The process that handed this grant off no longer holds the run it ran in."""
+
+        lease = uow.read_provider_runtime_lease(binding.run_id)
+        return (
+            lease is None
+            or lease.owner_id != row["sdk_owner"]
+            or lease.epoch != row["sdk_epoch"]
+            or lease.expires_at <= self._clock()
+        )
+
     def recover(self, uow) -> None:
         # Read and fence in Orch -> SDK order; no remote reconciliation under this lock.
         overrun = False
@@ -1009,6 +1020,13 @@ class ProviderBudgetGuard:
                             self._update(ticket, "UNKNOWN")
                         if str(record.state) == "unknown" and record.handoff_attempt == row["handoff_ordinal"]:
                             # Older libraries: an unknown call already ended on the wire.
+                            self._mark_wire_terminal(ticket)
+                        elif self._owner_gone(uow, binding, row):
+                            # Desktop 2026-09-27: the app quit with a call on the wire;
+                            # its connection died with the process that held the run.
+                            # The charge stays unknown (counted at its bound); only the
+                            # physical slot is freed — before, the next Mission's first
+                            # request waited for it until its own deadline.
                             self._mark_wire_terminal(ticket)
                 elif row["state"] == "RESERVED":
                     # Do not release a live competing owner's pre-handoff grant.
