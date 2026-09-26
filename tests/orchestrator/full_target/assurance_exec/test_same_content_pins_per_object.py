@@ -97,6 +97,6 @@ def test_the_live_guard_is_keyed_on_the_object_in_the_schema(tmp_path):
             "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='assurance_blob_pins'")}
         assert "assurance_blob_pin_live_uq" not in indexes
         assert "object_ref_json" in indexes["assurance_blob_pin_object_live_uq"]
-        assert schema.SCHEMA_VERSION == 27
+        assert schema.SCHEMA_VERSION >= 27  # 28 adds the commit_receipts kind index (2026-09-26)
     finally:
         store.close()

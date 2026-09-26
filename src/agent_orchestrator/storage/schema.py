@@ -544,6 +544,12 @@ CREATE TABLE selection_candidates (
 ) STRICT;
 """
 
+# 2026-09-26: the Assurance root check looks up the latest root receipt by kind
+# on every orchestration cycle; without an index it scanned every commit receipt.
+DDL_V28 = """
+CREATE INDEX commit_receipts_kind_idx ON commit_receipts(kind);
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
@@ -572,6 +578,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(25, "orchestrator-taskgraph-execution-v2", DDL_V25),
     Migration(26, "orchestrator-assurance-exec-v1.1", DDL_V26),
     Migration(27, "orchestrator-assurance-pin-per-object", DDL_V27),
+    Migration(28, "orchestrator-commit-receipts-kind-index", DDL_V28),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -600,6 +607,7 @@ __all__ = (
     "DDL_V19",
     "DDL_V20",
     "DDL_V27",
+    "DDL_V28",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",
