@@ -7322,11 +7322,22 @@ class Orchestrator:
         )
 
     def _planning_attempts(self, mission_id: str) -> int:
-        return sum(
-            1
-            for event in self.store.list_events(mission_id)
-            if event.type in {"TaskGraphRejected", "PlanningRejected"}
-        )
+        """Refused rounds since the Planner last had a decision committed.
+
+        2026-09-26 Host run: counted over the Mission's whole life, two provider
+        hiccups in one repair round and one misspelt reply in a later, unrelated
+        round ended a Mission whose every earlier round had been answered.  The
+        bound is how many times the Planner may be wrong about the *same*
+        question; a committed decision answers it and the next question starts
+        its own count.  Before the first commit this is the old count."""
+
+        count = 0
+        for event in self.store.list_events(mission_id):
+            if event.type in {"TaskGraphRejected", "PlanningRejected"}:
+                count += 1
+            elif event.type == "PlanningDecisionEvaluated" and event.payload.get("status") == "COMMITTED":
+                count = 0
+        return count
 
     def _awaiting_retry_decision(self, mission_id: str, task: Any) -> bool:
         """An ACTIVE leaf whose latest attempt ended failed and that waits for the

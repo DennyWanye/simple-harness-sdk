@@ -3,7 +3,9 @@
 """Real HTTP adapter -> BaseAgent -> SQLite failure/usage, with no model/network.
 
 The transport returns malformed tool arguments. Parsing must still fail and no
-tool may run; accounting is independent of that execution failure. Commit-created
+tool may run; accounting is independent of that execution failure.  With valid
+usage the same request is sampled again (2026-09-26: a slip, not truncation), each
+sample a separate, fully accounted invocation; without it nothing is resampled. Commit-created
 subjects bind the real Provider admission guard. This is not a Host adapter test
 or a substitute for Orchestrator automatic late-accounting recovery.
 """
@@ -77,6 +79,7 @@ def test_protocol_failure_keeps_only_valid_usage_without_resampling_or_tools(
 ):
     async def exercise():
         calls = []
+        n = 3 if known else 1  # the original plus empty_response_retries resamples
 
         def transport(request):
             # Do not record headers/credentials or make any real HTTP connection.
@@ -234,16 +237,19 @@ def test_protocol_failure_keeps_only_valid_usage_without_resampling_or_tools(
                     result = await agent.wait_turn(receipt.turn_id, timeout=5)
                     # Distinguish a broken admission fixture from the intended
                     # protocol red: the actual HTTP adapter must have been reached.
-                    assert calls == ["/v1/chat/completions"], result.error
+                    assert calls == ["/v1/chat/completions"] * n, result.error
                     assert str(result.state) == "failed"
                     assert result.error["error_code"] == ProviderProtocolError.error_code
-                    [original] = runtime.uow.list_provider_invocations(RunId(agent.run_id))
+                    original, *resampled = runtime.uow.list_provider_invocations(RunId(agent.run_id))
+                    assert len(resampled) == n - 1
                     assert str(original.state) == "failed" and original.handoff_attempt == 1
                     assert original.error_code == "provider_protocol_error"
                     assert original.response_json is None
                     assert original.estimator_digest == price.snapshot_digest
-                    assert tools.calls == [] and calls == ["/v1/chat/completions"]
-                    [grant] = list(store.connection.execute("SELECT * FROM provider_token_grants"))
+                    assert tools.calls == [] and calls == ["/v1/chat/completions"] * n
+                    grants = list(store.connection.execute("SELECT * FROM provider_token_grants ORDER BY rowid"))
+                    grant = grants[0]
+                    assert len(grants) == n
                     facts = AgentBridge(runtime, unpriced=False).usage_facts(
                         agent_id=agent.agent_id
                     )
@@ -259,14 +265,13 @@ def test_protocol_failure_keeps_only_valid_usage_without_resampling_or_tools(
                         assert original.budget_charge.amount_micros == 200
                         assert (
                             runtime.uow.read_provider_budget(original.run_id).committed_micros
-                            == 200
+                            == 200 * n
                         )
-                        assert grant["state"] == "SETTLED"
-                        assert grant["actual_tokens"] == 150 and grant["actual_cost_micros"] == 200
-                        assert (
-                            len(facts) == 1
-                            and facts[0].tokens == 150
-                            and facts[0].cost_micros == 200
+                        for grant in grants:
+                            assert grant["state"] == "SETTLED"
+                            assert grant["actual_tokens"] == 150 and grant["actual_cost_micros"] == 200
+                        assert len(facts) == n and all(
+                            fact.tokens == 150 and fact.cost_micros == 200 for fact in facts
                         )
                     else:
                         assert original.usage_json.get("usage") is None
@@ -285,8 +290,8 @@ def test_protocol_failure_keeps_only_valid_usage_without_resampling_or_tools(
                     assert await agent.wait_turn(repeated.turn_id, timeout=5) == result
                     await runtime.kernel.reconcile()
                     assert runtime.uow.read_provider_invocation(original.invocation_id) == original
-                    assert len(runtime.uow.list_provider_invocations(original.run_id)) == 1
-                    assert tools.calls == [] and calls == ["/v1/chat/completions"]
+                    assert len(runtime.uow.list_provider_invocations(original.run_id)) == n
+                    assert tools.calls == [] and calls == ["/v1/chat/completions"] * n
         finally:
             store.close()
 

@@ -23,7 +23,7 @@ from ..assurance.checks import (
     decide_review,
     evaluate_check_gate,
 )
-from ..assurance.codec import AssuranceError, canonical, decode, fingerprint
+from ..assurance.codec import MAX_RECORD_BYTES, AssuranceError, canonical, decode, fingerprint
 from ..assurance.disclosure import DisclosureBatch, disclosed_to_turn
 from ..assurance.evidence import CatalogueEntry, ReadItem, resolve_evidence_ids
 from ..assurance.refs import AssuranceRef, Pin
@@ -216,7 +216,7 @@ def read_imported_review_locked(
     manifest = reader.read_exact_metadata(
         AssuranceRef.from_json(payload.get("provider_manifest_ref"), kinds={"input_manifest"})
     )
-    provider = decode(manifest.body_json)
+    provider = decode(manifest.body_json, limit=MAX_RECORD_BYTES)
     batches = AssuranceStore(reader.store).disclosure_chain(reader.mission_id, bound["review_key"])
     exposed = disclosed_to_turn(
         batches,
@@ -394,7 +394,7 @@ def raw_package(imported: ImportedReview) -> str:
     # checked by the original invocation writer. No latest reconstruction.
     from ..assurance.review_input import read_initial_materials
 
-    provider = decode(imported.provider_manifest.body_json)
+    provider = decode(imported.provider_manifest.body_json, limit=MAX_RECORD_BYTES)
     matches = []
     for row in provider["messages"]:
         if row["kind"] != "user_input":

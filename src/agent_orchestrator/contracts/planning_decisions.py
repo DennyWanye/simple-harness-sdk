@@ -35,8 +35,8 @@ from typing import Any
 from simple_harness.contracts import canonical_json
 
 from .models import ContractError
+from .semantic_base import enum_of as _strict_enum_of
 from .semantic_base import (
-    enum_of,
     fields_of,
     flag,
     hash_hex,
@@ -48,6 +48,18 @@ from .semantic_base import (
     sequence_of,
     text,
 )
+
+def enum_of(kind: Any, value: object, name: str) -> Any:
+    """Planner replies are model-authored (2026-09-26 Host run: ``"high"`` for
+    ``HIGH`` cost a whole planning round): a value that names a member in another
+    case is that member; anything else is refused exactly as before."""
+
+    if isinstance(value, str) and not isinstance(value, kind):
+        for member in kind:
+            if str(member.value).casefold() == value.casefold():
+                return member
+    return _strict_enum_of(kind, value, name)
+
 
 # --------------------------------------------------------------------------------------
 # Protocol identity (§13, §35) and limits (§16)

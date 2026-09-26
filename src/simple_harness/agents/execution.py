@@ -512,7 +512,21 @@ class AgentExecutionDriver:
                     else:
                         code = str(getattr(error, "code", "provider_rejected"))
                     detail = getattr(error, "detail", None)
-                    if (
+                    # 2026-09-26 Host run: DeepSeek ends about one tool response in a
+                    # hundred with ``finish_reason=tool_calls`` and arguments that are not
+                    # JSON.  Nothing was cut off, so a larger cap buys nothing; the same
+                    # request sampled again almost always parses.  Failing the turn instead
+                    # sent every one of them through a Planner repair round.
+                    resample = (
+                        isinstance(detail, Mapping)
+                        and code == "provider_protocol_error"
+                        and detail.get("finish_reason") == "tool_calls"
+                        and detail.get("parse_stage") == "tool_parse"
+                        and detail.get("tool_parse_reason") == "arguments_json"
+                        and isinstance(detail.get("usage"), Mapping)
+                        and attempt < self._empty_response_retries
+                    )
+                    if resample or (
                         isinstance(detail, Mapping)
                         and detail.get("finish_reason") == "length"
                         and (
@@ -533,8 +547,9 @@ class AgentExecutionDriver:
                         # a new provider-turn identity; the original failure stays settled.
                         self._settle_failed_turn(invocation, run_id)
                         attempt += 1
-                        output_cap = min(output_cap * 2, self._max_output_tokens_ceiling)
-                        escalations.append({"attempt": attempt, "max_output_tokens": output_cap})
+                        if not resample:
+                            output_cap = min(output_cap * 2, self._max_output_tokens_ceiling)
+                            escalations.append({"attempt": attempt, "max_output_tokens": output_cap})
                         # Re-check the durable cancel intent, the in-process token and the
                         # turn deadline before spending another provider call (review E1).
                         if token.cancelled or (

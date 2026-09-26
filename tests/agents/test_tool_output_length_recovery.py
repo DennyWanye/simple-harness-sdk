@@ -279,12 +279,24 @@ def test_failed_invocation_still_counts_toward_turn_model_limit(tmp_path):
     assert records[0].usage_json["usage"]["total_tokens"] == 8292
 
 
+def test_malformed_tool_json_resamples_at_the_same_cap(tmp_path):
+    # 2026-09-26 Host run: a tool response that ended normally with arguments that
+    # are not JSON is a sampling slip, not truncation — ask again, same cap.
+    result, caps, records, admission = asyncio.run(exercise(tmp_path, reason="tool_calls"))
+    assert result.state is AgentTurnState.COMMITTED, result.error
+    assert caps == [8192, 8192]
+    assert admission.caps == caps
+    assert [str(r.state) for r in records] == ["failed", "succeeded"]
+    assert records[0].usage_json["usage"]["total_tokens"] == 8292
+    assert "output_cap_escalations" not in (result.error or {})
+
+
 def test_non_length_tool_reason_survives_failed_turn_and_cold_read(tmp_path):
-    result, caps, records, _ = asyncio.run(exercise(tmp_path, reason="tool_calls"))
+    result, caps, records, _ = asyncio.run(exercise(tmp_path, reason="tool_calls", fail_times=10))
     assert result.state is AgentTurnState.FAILED
-    assert caps == [8192]
+    assert caps == [8192, 8192, 8192]
     assert result.error["detail"]["finish_reason"] == "tool_calls"
     assert result.error["detail"]["parse_stage"] == "tool_parse"
     assert result.error["detail"]["tool_parse_reason"] == "arguments_json"
     assert records[0].usage_json["usage"]["total_tokens"] == 8292
-    assert records[0].rehandoff_count == 0
+    assert all(r.rehandoff_count == 0 for r in records)
