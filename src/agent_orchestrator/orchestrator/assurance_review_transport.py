@@ -661,6 +661,21 @@ def require_review_handoff(commit: CommitService, intent: Any) -> None:
 _SECOND_INVOCATION_SOURCES = {
     "FORMAT_INVALID": "AssuranceReviewFormatRejected",
     "TURN_FAILED": "AssuranceReviewClassified",
+    # A committed reply that decodes but cannot be imported as given (2026-09-26).
+    "INTERPRETATION_INVALID": "AssuranceReviewInterpretationRejected",
+}
+
+#: What the reviewer is told when its first reply could not be imported.
+_INTERPRETATION_FEEDBACK = {
+    "UNEXPOSED_EVIDENCE": (
+        "evidence_ids cited a label that was never disclosed to you. Cite only ev- labels "
+        "given in the initial evidence or returned by assurance_read_evidence with "
+        "complete=true; a label seen only in a find/list result or a partial page is not "
+        "evidence — read it in full first, or leave it out."
+    ),
+    "DUPLICATE_CRITERION": "a criterion_id appears more than once in assessments; give each exactly once.",
+    "FINDING_SCOPE": "a finding names a criterion_id outside this review's criterion_ids.",
+    "MANDATORY_CRITERIA_INVALID": "assessments must cover exactly the given criterion_ids, no more and no fewer.",
 }
 
 
@@ -700,7 +715,8 @@ def _require_format_repair(
         or turn.get("turn_id") != intent.expected_turn_id
         or turn.get("agent_id") != intent.agent_id
         # a malformed reply was a committed turn; a failed turn never committed
-        or (turn.get("state") == "COMMITTED") != (classification == "FORMAT_INVALID")
+        or (turn.get("state") == "COMMITTED")
+        != (classification in {"FORMAT_INVALID", "INTERPRETATION_INVALID"})
     ):
         raise AssuranceError("REVIEW_REPAIR_SOURCE_INVALID")
     if commit._assurance_settlement is None:
@@ -789,6 +805,14 @@ def ensure_format_repair_invocation(
                 + text(original.get("error_code"))
             )
             config["message"] = user_message_json(canonical(message))
+        elif classification == "INTERPRETATION_INVALID":
+            code = text(original.get("error_code"))
+            message = decode(config["message"]["content"])
+            message["format_feedback"] = (
+                "Previous reply could not be imported (" + code + "): "
+                + _INTERPRETATION_FEEDBACK.get(code, "fix the reply and answer again.")
+            )
+            config["message"] = user_message_json(canonical(message))
         # TURN_FAILED: the same frozen request is asked again, unchanged.
 
     def require_current() -> None:
@@ -810,5 +834,5 @@ def ensure_format_repair_invocation(
         ),
         require_current_locked=require_current,
         prior_failure=prior_failure,
-        repair_reason="FORMAT_REPAIR" if classification == "FORMAT_INVALID" else "TURN_RETRY",
+        repair_reason="TURN_RETRY" if classification == "TURN_FAILED" else "FORMAT_REPAIR",
     )

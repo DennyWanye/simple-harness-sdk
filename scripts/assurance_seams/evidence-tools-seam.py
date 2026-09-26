@@ -74,6 +74,11 @@ def read_label(request):
     return reads[-1]['label']
 
 
+ACCEPT_NO_EVIDENCE = {'schema_version': 2, 'verdict': 'ACCEPT', 'assessments': [
+    {'criterion_id': 'criterion-report', 'verdict': 'PASS', 'evidence_ids': [], 'reason': 'initial materials',
+     'limitations': []}], 'findings': []}
+
+
 def reply(criteria, label):
     return json.dumps({'schema_version': 2, 'verdict': 'ACCEPT', 'assessments': [
         {'criterion_id': c, 'verdict': 'PASS', 'evidence_ids': [label], 'reason': 'cites appended evidence',
@@ -179,37 +184,68 @@ async def task_content_complete(root, report):
             'replay_added_batch': False}
 
 
-async def task_content_partial(root, report):
-    """A partial page (complete=false) never discloses: citing it is UNEXPOSED_EVIDENCE."""
+async def task_content_partial(root, report, *, second_reply_fixed=False):
+    """A partial page (complete=false) never discloses: citing it is UNEXPOSED_EVIDENCE.
+
+    2026-09-26: that is the reviewer's own mistake in its reply, so the first one gets
+    the single second invocation a malformed reply gets, told what was wrong.  A
+    second reply that cites it again is final; one that fixes it is imported.
+    """
+    seen = {}
+
+    def cite_partial(req):
+        seen['label'] = read_label(req)
+        return reply(['criterion-report'], seen['label'])
+
     script = [('assurance_find_evidence', {}),
               lambda req: ('assurance_read_evidence', {'label': find_label(req, EXTRA_PATH), 'offset': 2, 'max_chars': 4}),
-              lambda req: reply(['criterion-report'], read_label(req))]
+              cite_partial,
+              (lambda req: json.dumps(ACCEPT_NO_EVIDENCE, ensure_ascii=False)) if second_reply_fixed
+              else (lambda req: reply(['criterion-report'], seen['label']))]
     async with AssuredRuntime(root, [], provider_class=ToolScriptProvider) as rt:
         rt.provider.script[:] = script
         register_sources(rt)
         store = rt.store
+        outcome = None
         try:
-            await rt.run_critic()
+            verdict, record = await rt.run_critic()
         except Exception as error:  # the runner reports the durable rejection
             outcome = str(error)
-        else:
-            raise AssertionError('a partial page must not be citable')
         review_key = review_key_of(rt, 'TASK_CONTENT')
-        reads = [json.loads(m.content)['value'] for m in rt.provider.requests[-1].messages
+        reads = [json.loads(m.content)['value'] for request in rt.provider.requests for m in request.messages
                  if m.role is MessageRole.TOOL and m.name == 'assurance_read_evidence']
         assert reads and reads[0]['complete'] is False and reads[0]['disclosure'] == 'PARTIAL_NOT_CITABLE', reads
         assert reads[0]['next_offset'] == 6 and reads[0]['content'] == EXTRA_BODY.decode()[2:6], reads
         assert 'offset=0' in reads[0]['complete_read_hint'], reads
-        assert [b['batch_no'] for b in batches(rt, review_key)] == [0], 'partial read must not be disclosed'
+        assert all(e['label'] != seen['label'] for b in batches(rt, review_key) for e in b['entries']), \
+            'partial read must not be disclosed'
+        repair = store.connection.execute(
+            "SELECT json_extract(receipt_json,'$.error_code') FROM commit_receipts "
+            "WHERE kind='AssuranceReviewInterpretationRejected' AND json_extract(receipt_json,'$.review_key')=?",
+            (review_key,)).fetchone()
+        assert repair is not None and repair[0] == 'UNEXPOSED_EVIDENCE', repair
+        ordinals = [r[0] for r in store.connection.execute(
+            'SELECT ordinal FROM assurance_review_invocations WHERE review_key=? ORDER BY ordinal', (review_key,))]
+        assert ordinals == [1, 2], ordinals
+        told = [m.content for request in rt.provider.requests for m in request.messages
+                if m.role is MessageRole.USER and 'format_feedback' in m.content]
+        assert told and 'UNEXPOSED_EVIDENCE' in told[-1] and 'complete=true' in told[-1], told
         reason = store.connection.execute(
             "SELECT json_extract(receipt_json,'$.reason') FROM commit_receipts WHERE kind='AssuranceReviewImportRejected' AND subject_id=?",
             (review_key,)).fetchone()
+        if second_reply_fixed:
+            assert outcome is None and reason is None, (outcome, reason)
+            assert verdict.passed and record.verdict is ReviewVerdict.ACCEPT, (verdict, record)
+            report['task_content_partial_then_fixed'] = {'review_key': review_key, 'invocations': ordinals,
+                                                         'verdict': str(record.verdict)}
+            return
         assert reason is not None and reason[0] == 'UNEXPOSED_EVIDENCE', (reason, outcome)
-        assert 'AssuranceReviewImportRejected' in outcome, outcome
+        assert outcome is not None and 'AssuranceReviewImportRejected' in outcome, outcome
         with store.read_view():
             assert rt.runner.task_record(rt.mission.id, rt.stored.envelope.attempt_id) is None
         report['task_content_partial_read'] = {'review_key': review_key, 'batches': [0], 'rejection': reason[0],
-                                               'runner_outcome': outcome, 'page': reads[0]['content']}
+                                               'invocations': ordinals, 'runner_outcome': outcome,
+                                               'page': reads[0]['content']}
 
 
 async def mission_final_no_attempt(root, report):
@@ -277,6 +313,7 @@ async def main():
         root = Path(temp).resolve()
         await task_content_complete(root / 'complete', report)
         await task_content_partial(root / 'partial', report)
+        await task_content_partial(root / 'partial-fixed', report, second_reply_fixed=True)
         await mission_final_no_attempt(root / 'final', report)
     report['sources_sha256'] = source_sha256(['verification/reviewer_evidence_tools.py', 'runtime/tool_gateway.py',
                                               'assurance/review_input.py', 'orchestrator/assurance_review_collect.py',

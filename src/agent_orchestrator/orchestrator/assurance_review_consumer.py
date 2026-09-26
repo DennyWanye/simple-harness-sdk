@@ -287,6 +287,18 @@ class AssuranceReviewConsumer:
             # Immutable interpretation failure is an explicit original receipt,
             # not a dropped inbox item or a fabricated ReviewRecord.
             error_code = error.code
+            if (
+                error_code in REPAIRABLE_INTERPRETATION_ERRORS
+                and imported.invocation.to_json()["ordinal"] == 1
+                and _format_retries(self.store, claim.mission_id) == 1
+            ):
+                # 2026-09-26 Host run: the root's final review answered ACCEPT but
+                # cited one label it had only seen in a listing.  Rejecting that as
+                # final left a Mission whose six steps were all accepted with no
+                # review and nothing to do.  It is the reviewer's mistake in the
+                # reply, so it gets the one second invocation a malformed reply gets,
+                # told exactly what was wrong; the second reply is judged as strictly.
+                return self._prepare_interpretation_repair(reader, imported, event, error_code)
 
             def rejected() -> AssuranceRef:
                 self.commit._assurance_root_gate.require_execution()
@@ -367,6 +379,51 @@ class AssuranceReviewConsumer:
 
         return PreparedAssuranceWork(late)
 
+    def _prepare_interpretation_repair(
+        self, reader: AssuranceReader, imported: Any, event: Event, error_code: str
+    ) -> PreparedAssuranceWork:
+        invocation = imported.invocation.to_json()
+        body = {
+            "mission_id": reader.mission_id,
+            "review_key": invocation["review_key"],
+            "intent_id": invocation["dispatch_intent_id"],
+            "invocation_ordinal": 1,
+            "classification": "INTERPRETATION_INVALID",
+            "error_code": error_code,
+            "classification_ref": ref_from_event(event).to_json(),
+            "turn_ref": imported.turn.ref.to_json(),
+        }
+        digest = fingerprint(body)
+        receipt_id = "assurance-review-interpretation:" + digest
+
+        def repair() -> AssuranceRef:
+            self.commit._assurance_root_gate.require_execution()
+            if read_imported_review_locked(self.commit, reader, ref_from_event(event)) != imported:
+                raise AssuranceError("RECHECK_REQUIRED")
+            old = self.store.get_receipt(receipt_id)
+            if old is not None and dict(old) != body:
+                raise AssuranceError("IMMUTABLE_IDENTITY_CONFLICT")
+            if old is None:
+                self.store.insert_receipt(
+                    commit_id=receipt_id,
+                    kind=INTERPRETATION_REJECTED,
+                    subject_id=body["intent_id"],
+                    base_version=0,
+                    proposal_hash=digest,
+                    receipt=body,
+                )
+                self.commit._emit(INTERPRETATION_REJECTED, reader.mission_id, key=receipt_id,
+                                  payload=body)
+            repaired = self.commit.ensure_assurance_format_repair(
+                tenant_id=self.tenant_id,
+                prior_failure=AssuranceRef("commit_receipt", Pin(receipt_id, 0, digest)),
+            )
+            return AssuranceRef.from_json(
+                repaired.to_json()["source_receipt_ref"], kinds={"commit_receipt"}
+            )
+
+        return PreparedAssuranceWork(repair)
+
     def _prepare_format_repair(
         self, reader: AssuranceReader, ref: AssuranceRef
     ) -> PreparedAssuranceWork:
@@ -436,6 +493,24 @@ class AssuranceReviewConsumer:
             return AssuranceRef("commit_receipt", Pin(receipt_id, 0, fingerprint(body)))
 
         return PreparedAssuranceWork(exhausted, rejected=True)
+
+
+#: A reply the reviewer committed that decodes but cannot be imported as given —
+#: its own mistake, not a missing source.  POLICY_CATALOGUE_MISMATCH is the
+#: package's, not the reply's, and stays final.
+REPAIRABLE_INTERPRETATION_ERRORS = frozenset(
+    {"UNEXPOSED_EVIDENCE", "DUPLICATE_CRITERION", "FINDING_SCOPE", "MANDATORY_CRITERIA_INVALID"}
+)
+INTERPRETATION_REJECTED = "AssuranceReviewInterpretationRejected"
+
+
+def _format_retries(store: Any, mission_id: str) -> int | None:
+    from ..assurance.policy import AssurancePolicy
+
+    row = store.connection.execute(
+        "SELECT policy_json FROM assurance_mission_bindings WHERE mission_id=?", (mission_id,)
+    ).fetchone()
+    return None if row is None else AssurancePolicy.from_json(decode(row[0])).format_retries
 
 
 def ref_from_event(event: Event) -> AssuranceRef:
