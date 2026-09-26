@@ -261,9 +261,14 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
         "4aa25e682ede38479a09a2a8d00da023aaed617e32384e7da85c44641a4e2f9b",
     ),
     # 2026-09-26: v8 asks for one step per independent deliverable.
-    "METHOD_SYNTHESIZER": (
+    "METHOD_SYNTHESIZER_V8": (
         "method-synthesizer-v8",
         "f239da18fa85a82ce99e70c58802a83df4db78917eab299b69f2d18f8b7eacf7",
+    ),
+    # 2026-09-26: v9 — a dependency orders steps, it never merges them; one step per file.
+    "METHOD_SYNTHESIZER": (
+        "method-synthesizer-v9",
+        "fa9f72c402b21221e60498813a257f064b6a6243a445cf18c47500c35163f74a",
     ),
     "PLANNER_HIERARCHICAL_V3": (
         "planner-hierarchical-v3",

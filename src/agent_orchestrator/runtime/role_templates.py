@@ -1412,6 +1412,26 @@ METHOD_SYNTHESIZER = _revise(
     ),
 )
 register_template(METHOD_SYNTHESIZER)
+METHOD_SYNTHESIZER_V8 = METHOD_SYNTHESIZER
+
+#: 2026-09-26 (Host 真机，保温杯任务).  v8 said "independent deliverables", and the
+#: model read four chained deliverables (persona → selling points → schedule →
+#: budget) as one: two steps again, no visible process.  v9 says a dependency is an
+#: ordering, never a reason to merge.  v8 keeps its bytes.
+METHOD_SYNTHESIZER_VERSION = "method-synthesizer-v9"
+METHOD_SYNTHESIZER = _revise(
+    METHOD_SYNTHESIZER_V8,
+    METHOD_SYNTHESIZER_VERSION,
+    (
+        "只有一个交付物的简单目标，保持一到两步即可，不要为了拆而拆。",
+        "只有一个交付物的简单目标，保持一到两步即可，不要为了拆而拆。"
+        "交付物之间有依赖（后一个要用到前一个的结论）时同样各成一步，用 ordering 串起先后——"
+        "“有依赖”只决定顺序，不是把它们合并成一步的理由。"
+        "成功条件里每个要求写出的文件（file: 开头的条件）由且只由一个步骤产出，"
+        "两个以上这样的文件就至少拆成同样多的步骤。",
+    ),
+)
+register_template(METHOD_SYNTHESIZER)
 
 ROOT_REVIEWER_V1_VERSION = "root-reviewer-v1"
 
