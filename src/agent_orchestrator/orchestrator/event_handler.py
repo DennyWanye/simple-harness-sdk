@@ -2391,6 +2391,28 @@ class Orchestrator:
         # out of cycles is the caller's bound, not a statement about the Mission.
         await self._record_hierarchical_stall()
 
+    def _has_pending_assurance_work(self, mission_id: str) -> bool:
+        """Assurance work still queued for this Mission is progress in waiting.
+
+        2026-09-26 Host run: all six steps accepted, the root's final review answered
+        with malformed JSON, and its one format repair sat in the REVIEW queue.  The
+        stall check ran in the same idle cycle, before the Assurance tick took that
+        work, and failed the Mission as NO_DISPATCHABLE_WORK.  Work that ran out of
+        rechecks and waits for a person (MANUAL_REQUIRED) is a real stall and does
+        not count.
+        """
+
+        try:
+            row = self.store.connection.execute(
+                "SELECT 1 FROM assurance_pending_work WHERE mission_id=? "
+                "AND state NOT IN ('DONE','REJECTED') "
+                "AND (wait_reason IS NULL OR wait_reason<>'MANUAL_REQUIRED') LIMIT 1",
+                (mission_id,),
+            ).fetchone()
+        except sqlite3.Error:
+            return False
+        return row is not None
+
     def _has_pending_operation_completion(self, mission: Mission) -> bool:
         """Accepted preparation with real unmet effects is work, not an idle failure."""
         from .scoped_content_review import uses_completion_protocol
@@ -2472,7 +2494,7 @@ class Orchestrator:
                 # An external WAIT is a deliberate suspension, not a scheduling
                 # stall.  Keep the Mission ACTIVE until its target state is observed.
                 continue
-            if self._has_pending_operation_completion(mission):
+            if self._has_pending_operation_completion(mission) or self._has_pending_assurance_work(mission.id):
                 continue
             new_mode = self._new_mode(mission)
             if new_mode is None:
@@ -2643,7 +2665,7 @@ class Orchestrator:
                 and self._taskgraph_notifications.awaiting_sources(mission.id)
             ):
                 continue
-            if self._has_pending_operation_completion(mission):
+            if self._has_pending_operation_completion(mission) or self._has_pending_assurance_work(mission.id):
                 self._stalled_at.pop(mission.id, None)
                 continue
             before = self._stalled_at.pop(mission.id, None)
