@@ -53,6 +53,7 @@ from ..contracts.planning_decisions import (
 )
 from ..runtime.output_blocks import BlockError, extract_block
 from .htn.registry import MethodProposal
+from .unknown_fields import decode_dropping_unknown
 
 #: §13 / §58: the tag, the codec version string and the two foreign tags the
 #: mixed-protocol guard watches for.  They live here (not in ``role_templates``,
@@ -249,7 +250,7 @@ def _validate_method_proposal(payload: object) -> None:
 
     inner = payload.get("method_proposal") if isinstance(payload, Mapping) else None
     try:
-        MethodProposal.from_json(inner)
+        decode_dropping_unknown(MethodProposal.from_json, inner, root_names=("method_proposal",))
     except ContractError as error:
         raise PlanningDecisionCodecError(
             PlanningDecisionRejectionCode.MALFORMED_DECISION,
@@ -296,11 +297,18 @@ def parse_planning_decision(
             f"the decision block is a {type(raw).__name__}, not an object",
         )
     _scan_structural_system_fields(raw)
+    # User decision 2026-09-26: an envelope key the protocol does not name is dropped
+    # (after the scan above, so a system field is still refused by name), and so is
+    # any unknown key a nested contract refuses — see ``unknown_fields``.
+    raw = {key: value for key, value in raw.items() if key in ENVELOPE_FIELDS or key in SYSTEM_FIELD_KEYS}
     _refuse_unknown_keys(raw)
 
     # 5. The envelope decodes through the contract; its refusals map by table.
     try:
-        decision = PlanningDecisionEnvelopeV1.from_json(raw)
+        decision = decode_dropping_unknown(
+            PlanningDecisionEnvelopeV1.from_json, raw, root_names=("planning_decision",)
+        )
+        raw = decision.to_json()
     except ContractError as error:
         raise PlanningDecisionCodecError(_map_contract_error(error), str(error)) from error
 

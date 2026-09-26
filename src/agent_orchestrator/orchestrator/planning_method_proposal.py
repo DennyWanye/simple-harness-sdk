@@ -8,12 +8,14 @@ from simple_harness.contracts import canonical_json
 from ..contracts.models import ContractError
 from ..contracts.htn import TaskRef
 from ..planning.htn.registry import MethodProposal
+from ..planning.unknown_fields import decode_dropping_unknown
 from ..planning.htn.synthesis import MethodSynthesizer
 
 
 def prepare_method(dispatch: Any, mission_id: str, payload: Any, subject: Any) -> tuple[Any, Any, Any]:
     world = dispatch.require_planning_world()
-    proposal = MethodProposal.from_json(dict(payload.method_proposal))
+    proposal = decode_dropping_unknown(  # planner-authored (user decision 2026-09-26)
+        MethodProposal.from_json, dict(payload.method_proposal), root_names=("method_proposal",))
     binding = dispatch.network(mission_id).binding_for_task(TaskRef(subject["task_id"]))
     goal_type = world.catalog.resolve(proposal.method.goal_type_ref)
     if goal_type is None or goal_type.goal_signature != binding.goal_signature:

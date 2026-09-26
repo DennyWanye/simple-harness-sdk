@@ -284,9 +284,21 @@ def test_an_unmapped_block_error_falls_back_to_malformed(monkeypatch: pytest.Mon
 # --------------------------------------------------------------------------------------
 
 
-def test_an_unknown_top_level_key_is_unknown_field() -> None:
-    # C-N6: a key that is neither a Core field nor a system field.
-    assert _code_of(_block(_envelope(model_says_approved=True))) == REJECTION.UNKNOWN_FIELD
+def test_an_unknown_top_level_key_is_dropped() -> None:
+    # C-N6, revised by the user's decision of 2026-09-26: a key that is neither a Core
+    # field nor a system field is dropped, not refused — it reaches no contract
+    # object, so it can claim nothing.  System fields are still refused by name below.
+    decision = parse_planning_decision(_block(_envelope(model_says_approved=True)))
+    assert "model_says_approved" not in decision.to_json()
+    assert decision.to_json() == parse_planning_decision(_block(_envelope())).to_json()
+
+
+def test_an_unknown_payload_key_is_dropped() -> None:
+    raw = _envelope()
+    raw.update(payload={"method_ref": _ref(), "bindings": {}, "bogus": 1})
+    clean = _envelope()
+    clean.update(payload={"method_ref": _ref(), "bindings": {}})
+    assert parse_planning_decision(_block(raw)).to_json() == parse_planning_decision(_block(clean)).to_json()
 
 
 def test_the_system_field_keys_are_exactly_section_32() -> None:
@@ -405,10 +417,6 @@ def test_the_mapping_table_only_names_decision_type_unknown_plus_a_fallback() ->
         pytest.param(
             lambda raw: raw.update(payload={"wait_for": [], "reason": "x"}),
             id="payload-mismatch",
-        ),
-        pytest.param(
-            lambda raw: raw.update(payload={"method_ref": _ref(), "bindings": {}, "bogus": 1}),
-            id="unknown-payload-key",
         ),
         pytest.param(lambda raw: raw.update(reason_refs=[_ref("fact", "f-1")]), id="fact-ref"),
     ],

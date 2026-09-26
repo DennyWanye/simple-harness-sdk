@@ -18,6 +18,7 @@ from ..graph.task_graph import TaskGraphProposal
 from ..orchestrator.commit_service import TaskProposal
 from ..planning.htn.registry import MethodProposal
 from ..runtime.output_blocks import BlockError, extract_block
+from .unknown_fields import decode_dropping_unknown
 from ..runtime.role_templates import (
     METHOD_PROPOSAL_TAG,
     PLAN_REVISION_PROPOSAL_TAG,
@@ -180,7 +181,8 @@ def parse_method_proposal(text: str) -> MethodProposal:
         raw = extract_block(text, METHOD_PROPOSAL_TAG)
     except BlockError as error:
         raise ContractError(f"method proposal unreadable: {error}") from error
-    return MethodProposal.from_json(raw)
+    # User decision 2026-09-26: keys the contract does not name are dropped.
+    return decode_dropping_unknown(MethodProposal.from_json, raw, root_names=("method_proposal",))
 
 
 __all__ = (
