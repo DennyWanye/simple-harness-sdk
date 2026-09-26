@@ -4028,7 +4028,7 @@ class HierarchicalDispatch:
         return any(event.idempotency_key == key for event in self.store.list_events(mission_id))
 
     def apply_synthesizer_reply(
-        self, mission_id: str, text: str, *, policy: Any = None
+        self, mission_id: str, text: str, *, policy: Any = None, enforce_granularity: bool = False
     ) -> AdmissionReceipt:
         """``<method_proposal>`` from the synthesiser → §7.3, author fixed at MODEL.
 
@@ -4066,10 +4066,45 @@ class HierarchicalDispatch:
             raise SynthesisReplyUnreadable(ContractError(
                 f"method {proposed.method_id}@{proposed.method_version} already has a different "
                 f"immutable definition or another Mission trial scope; use method_version={next_version} or a new method_id"))
+        if enforce_granularity:
+            coarse = self._coarse_file_steps(mission_id, proposed)
+            if coarse:
+                # User decision 2026-09-26 ("强制但留余地"): on the first ask only, a
+                # step that must write three or more of the Mission's file criteria
+                # goes back once through the bounded synthesis retry; the second
+                # reply is admitted as written even if it still merges them.
+                listed = "；".join(f"{step} 承担了 {len(files)} 个文件（{'、'.join(files)}）"
+                                  for step, files in coarse)
+                raise SynthesisReplyUnreadable(ContractError(
+                    "拆分过粗：" + listed + "。每个要求写出的文件（file: 条件）单独成一个步骤，"
+                    "有依赖的用 ordering 串起先后，汇总文件放最后一步；其余保持不变，重新输出方法。"))
         receipt = synthesizer.accept_response(text, policy=resolved)
         if receipt.admitted:
             self._publish_admitted_method(world, receipt.method_ref)
         return receipt
+
+    def _coarse_file_steps(self, mission_id: str, method: Any) -> list[tuple[str, list[str]]]:
+        """Steps linked to three or more of the Mission's ``file:`` criteria.
+
+        ``c-user-<n>`` names the Mission's n-th success criterion (assurance
+        assembly); two files in one step (code + its test) are never flagged.
+        """
+        import re
+        from collections import defaultdict
+
+        mission = self.store.get_mission(mission_id)
+        if mission is None:
+            return []
+        criteria = [str(item).strip() for item in mission.success_criteria]
+        per_step: dict[str, set[str]] = defaultdict(set)
+        for link in getattr(method.composition, "criterion_links", ()) or ():
+            found = re.fullmatch(r"c-user-(\d+)", str(link.parent_criterion_id))
+            if found is None or link.child_step is None:
+                continue
+            index = int(found.group(1)) - 1
+            if 0 <= index < len(criteria) and criteria[index].startswith("file:"):
+                per_step[str(link.child_step)].add(criteria[index][len("file:"):].strip())
+        return [(step, sorted(files)) for step, files in sorted(per_step.items()) if len(files) >= 3]
 
     def _publish_admitted_method(self, world: Any, reference: Any) -> None:
         """A just-admitted method goes into the **library**, not only into memory.

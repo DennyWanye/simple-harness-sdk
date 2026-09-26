@@ -30,6 +30,7 @@ from .assurance_tick import AssuranceWait, PreparedAssuranceWork
 NOTIFICATION_EVENT = "AssuranceStatusNotificationRequested"
 VALIDITY_CHECKED_EVENT = "AssuranceUseValidityChecked"
 CLOSEOUT_EVENT = "AssuranceCloseoutEvaluated"
+UPPER_BOUND_EVENT = "ReservationCountedAtUpperBound"  # 2026-09-26 user decision
 NOTIFIED_EVENT = "AssuranceStatusNotified"
 ACTIVATION_EVENT = "AssuranceProfileActivated"
 
@@ -486,10 +487,23 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
             usage_fully_known=bool(usage["usage_fully_known"]),
             budget_conserved=bool(usage["budget_conserved"]),
         )
+        # User decision 2026-09-26: a judged Mission whose only remaining drain is the
+        # UNKNOWN charge of work that will never run again closes with that charge
+        # counted at its upper bound (overcount, never undercount, never freeze).
+        # Before, one unknown call kept the reservation held forever and the Mission
+        # sat ACTIVE with every criterion met.
+        upper = self._upper_bound_plan(mission.id, open_reservations) if (
+            not reasons and not unknown_effects and not open_intents
+            and (open_reservations or not usage["usage_fully_known"])
+        ) else None
+        if upper is not None:
+            body["usage_counted_at_upper_bound"] = upper
         if reasons:
             body.update(state="NOT_READY", reasons=reasons)
         elif unknown_effects:
             body.update(state="BLOCKED_UNKNOWN", reasons=["EFFECT_UNKNOWN"])
+        elif upper is not None:
+            body.update(state="READY", reasons=[])
         elif open_intents or open_reservations or not usage["usage_fully_known"]:
             draining = []
             if open_intents:
@@ -502,6 +516,37 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
         else:
             body.update(state="READY", reasons=[])
         return body
+
+    def _upper_bound_plan(self, mission_id: str, open_reservations: list[str]) -> dict | None:
+        """The subjects to count at their upper bound, or None when anything else drains.
+
+        Every open reservation must be held by an UNKNOWN charge, and every unknown
+        usage fact / unsettled grant of the Mission must belong to a subject that is
+        either counted now or was counted by an earlier closeout.
+        """
+        ledger = self.commit._ledger
+        if any(not ledger.has_unknown_usage(subject) for subject in open_reservations):
+            return None
+        counted = {
+            str(row[0]) for row in self.store.connection.execute(
+                "SELECT json_extract(payload_json,'$.subject_id') FROM events "
+                "WHERE mission_id=? AND type=?", (mission_id, UPPER_BOUND_EVENT)).fetchall()
+        }
+        pending = set(open_reservations)
+        unknown = {
+            str(row[0]) for row in self.store.connection.execute(
+                "SELECT subject_id FROM imported_usage WHERE mission_id=? AND unknown=1",
+                (mission_id,)).fetchall()
+        }
+        if self.store.has_table("provider_token_grants"):
+            unknown |= {
+                str(row[0]) for row in self.store.connection.execute(
+                    "SELECT subject_id FROM provider_token_grants WHERE mission_id=? "
+                    "AND state IN ('RESERVED','HANDED_OFF','UNKNOWN')", (mission_id,)).fetchall()
+            }
+        if not unknown <= pending | counted:
+            return None
+        return {"subjects": sorted(pending), "already_counted": sorted(counted & unknown)}
 
     def _stable(self, evaluation: Mapping[str, Any]) -> dict:
         return {key: value for key, value in evaluation.items() if key not in self.VOLATILE}
@@ -593,6 +638,15 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
                 "receipt_ref": ref.to_json(),
             },
         )
+        upper = evaluation.get("usage_counted_at_upper_bound")
+        if state == "READY" and upper and not finalized:
+            for subject in upper["subjects"]:
+                settled = self.commit._ledger.settle_at_upper_bound(subject_id=subject)
+                self.commit._emit(UPPER_BOUND_EVENT, mission_id, key="upper-bound:" + subject, payload={
+                    "subject_id": subject, "reason": "unknown_usage",
+                    "counted_tokens": settled["settled_tokens"],
+                    "counted_cost_micros": settled["settled_cost_micros"],
+                    "closeout_receipt_ref": ref.to_json()})
         if state == "READY" and self.finalizer is not None:
             final = self.finalizer(mission_id, evaluation)
             if final is not None and not isinstance(final, AssuranceRef):

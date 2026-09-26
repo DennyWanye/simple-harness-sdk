@@ -462,6 +462,43 @@ class BudgetLedger:
         assert settled is not None
         return settled
 
+    def settle_at_upper_bound(self, *, subject_id: str) -> dict[str, Any]:
+        """Count a reservation an UNKNOWN charge holds at its upper bound (user, 2026-09-26).
+
+        Only for a subject that will never run again (closeout of a judged
+        Mission).  The charge stays unknown in the usage facts — the truth — but the
+        account is charged the larger of the reservation and the known facts, so the
+        Mission can close: overcount, never undercount, never freeze.
+        """
+
+        reservation = self.reservation(subject_id)
+        if reservation is None:
+            raise BudgetError(f"no reservation for {subject_id}")
+        if reservation["state"] == "SETTLED":
+            return reservation
+        known_tokens, known_cost, unpriced = self.known_usage_for(subject_id)
+        tokens = max(int(reservation["reserved_tokens"]), int(known_tokens))
+        cost = max(int(reservation["reserved_cost_micros"]), int(known_cost or 0))
+        for snapshot in self._chain(reservation["account_id"]):
+            self._apply(
+                snapshot.account_id,
+                reserved_tokens=-int(reservation["reserved_tokens"]),
+                reserved_cost_micros=-int(reservation["reserved_cost_micros"]),
+                reserved_tool_calls=-int(reservation.get("reserved_tool_calls") or 0),
+                settled_tokens=tokens,
+                settled_cost_micros=cost,
+                settled_tool_calls=0,
+                unpriced_settlements=1 if unpriced else 0,
+            )
+        self._store.connection.execute(
+            "UPDATE budget_reservations SET state = 'SETTLED', settled_tokens = ?, settled_cost_micros = ?,"
+            " settled_tool_calls = 0, unpriced = ?, updated_at = ? WHERE subject_id = ?",
+            (tokens, cost, 1 if unpriced else 0, self._store.now, subject_id),
+        )
+        settled = self.reservation(subject_id)
+        assert settled is not None
+        return settled
+
     def costs_report(self, mission_id: str) -> dict[str, Any]:
         rows = self._store.connection.execute(
             "SELECT * FROM budget_accounts WHERE mission_id = ? ORDER BY account_id", (mission_id,)

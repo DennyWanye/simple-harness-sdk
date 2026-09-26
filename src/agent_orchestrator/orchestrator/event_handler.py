@@ -7131,7 +7131,10 @@ class Orchestrator:
         try:
             if result.state is not AgentTurnState.COMMITTED:
                 raise ContractError(f"synthesizer turn failed: {dict(result.error or {})}")
-            receipt = new_mode.apply_synthesizer_reply(mission.id, text)
+            # User decision 2026-09-26: the first ask of a round is held to the
+            # one-step-per-file granularity; the re-ask is admitted as written.
+            receipt = new_mode.apply_synthesizer_reply(
+                mission.id, text, enforce_granularity=ordinal == 1)
             admitted = bool(receipt.admitted)
             problems = rejection_problems(receipt)
             method_ref = str(receipt.method_ref.method_id)
