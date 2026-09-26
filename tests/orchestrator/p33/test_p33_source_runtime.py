@@ -87,9 +87,11 @@ def test_document_mission_rejects_publisher_overlapping_actual_source_roots(tmp_
             with pytest.raises(ContractError, match="source_publish_root_overlap"):
                 await orch.submit_mission(spec("overlap", domain=DOC_DOMAIN))
             assert orch.store.list_missions() == []
-            # code-v1 原行为保留；它没有文档来源根。
-            mission = await orch.submit_mission(spec("legacy", domain=CODE_DOMAIN))
-            assert mission.id
+            # 2026-09-26（用户决定）：通用任务（code-v1 第 5 版）也能带资料，
+            # 同样有资料目录，所以同样拒绝与证据存储重叠的发布目录。
+            with pytest.raises(ContractError, match="source_publish_root_overlap"):
+                await orch.submit_mission(spec("general", domain=CODE_DOMAIN))
+            assert orch.store.list_missions() == []
 
     asyncio.run(case())
 

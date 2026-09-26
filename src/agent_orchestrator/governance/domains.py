@@ -281,13 +281,25 @@ CODE_PROFILE_V3 = replace(
 
 # A concrete candidate envelope replaces the ambiguous {json} placeholder only
 # for new Missions. Stored v1-v3 domain profiles keep their original wire text.
-CODE_PROFILE = replace(
+CODE_PROFILE_V4 = replace(
     CODE_PROFILE_V3,
     version="4",
     completion_rules={
         **CODE_PROFILE_V3.completion_rules,
         "result_envelope_contract": "candidate-json-v1",
     },
+)
+
+# User decision 2026-09-26: one general task that may carry reference material.
+# New general Missions accept an initial source batch under ``sources/``; the
+# material is frozen per Attempt, mounted read-only in the Worker's workspace and
+# citable as ``source`` evidence, exactly as in the document domain, but without the
+# document domain's strict citation gates.  Stored v1-v4 profiles stay byte-identical.
+CODE_PROFILE = replace(
+    CODE_PROFILE_V4,
+    version="5",
+    allowed_evidence_kinds=(*CODE_PROFILE_V4.allowed_evidence_kinds, "source"),
+    source_roots=("sources/",),
 )
 
 DOC_PROFILE_V3 = DomainProfileV1(
@@ -481,7 +493,7 @@ ARE_PROFILE = DomainProfileV1(
 #: entry naming a version this build does not register is refused
 #: (:func:`~..runtime.role_templates.hierarchical_worker_for_domain`).
 DRONE_SIM_PROFILE = replace(
-    CODE_PROFILE, id=DRONE_SIM_DOMAIN, version="1",
+    CODE_PROFILE_V4, id=DRONE_SIM_DOMAIN, version="1",
     runs_layers=("format_check", "rule_check", "critic_review", "human_review"),
     planner_floor=("format_check", "rule_check"),
     default_policy=("format_check", "rule_check", "critic_review"),
@@ -570,6 +582,7 @@ def check_against_domain(
 __all__ = (
     "CODE_DOMAIN",
     "CODE_PROFILE",
+    "CODE_PROFILE_V4",
     "CRITERION_KINDS",
     "DOC_DOMAIN",
     "DOC_PROFILE",
