@@ -523,3 +523,42 @@ def test_effect_only_primitive_requires_real_preparation_output(tmp_path, has_ou
     criterion = local[LEAF_LOCAL_CRITERION]
     assert criterion.required_evidence_policy.required_check_ids == ("critic_review",)
     assert "not for the root goal or any external effect" in criterion.statement
+
+
+def test_a_linked_leaf_is_reviewed_on_its_links_not_on_every_criterion_its_type_declares(
+    tmp_path,
+) -> None:
+    """Desktop 2026-09-27: the desktop leaf types declare every root criterion.  Each
+    step of a five-file plan was reviewed for all five files, judged the other four
+    UNKNOWN, and could never pass once it wrote only its own.  A leaf the Method links
+    is reviewed on its link; the root keeps the root criterion.
+
+    **Mutation**: drop the linked-leaf branch → red (each leaf scope also names
+    ``criterion-report``)."""
+
+    world, plan, plan_ref = _committed_network(tmp_path)
+    spec = _content_only_spec(world.mission.id)
+    leaves = {str(item.task_id) for item in plan.occurrences if item.form is TaskForm.PRIMITIVE}
+    declaring = dataclasses.replace(
+        plan,
+        task_bindings=tuple(
+            dataclasses.replace(
+                binding,
+                goal_signature=dataclasses.replace(
+                    binding.goal_signature, coverage_criteria=("criterion-report",)),
+            )
+            if str(binding.task_id) in leaves
+            else binding
+            for binding in plan.task_bindings
+        ),
+    )
+    scopes = compile_completion_scopes(spec, declaring, _approved_coverage(plan), plan_ref=plan_ref)
+    by_occurrence = {scope.occurrence_id: scope for scope in scopes}
+    leaf_scopes = [
+        by_occurrence[str(item.occurrence_id)]
+        for item in plan.occurrences
+        if item.form is TaskForm.PRIMITIVE
+    ]
+    assert sorted(scope.content_criterion_ids for scope in leaf_scopes) == [("leaf-1",), ("leaf-2",)]
+    root = by_occurrence[str(plan.root_occurrence_ids[0])]
+    assert "criterion-report" in root.content_criterion_ids

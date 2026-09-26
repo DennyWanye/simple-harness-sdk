@@ -315,6 +315,12 @@ def compile_completion_scopes(
             raise _fail(f"occurrence {occurrence_id!r} has no Task semantic binding")
         declared = set(binding.goal_signature.coverage_criteria)
         declared_content = content_keys & declared
+        if occurrence_id in linked_leaves:
+            # Desktop 2026-09-27: the desktop leaf types declare every root criterion,
+            # so each step of a five-file plan was reviewed for all five files and
+            # could never pass once it wrote only its own.  A leaf the Method links
+            # to criteria is reviewed on those links; the root reviews the rest.
+            declared_content = set()
         spec_content[occurrence_id].update(declared_content)
         reviewed_content[occurrence_id].update(declared_content)
         declared_local = declared - content_keys - effect_criteria
