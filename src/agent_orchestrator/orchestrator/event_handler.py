@@ -2400,6 +2400,10 @@ class Orchestrator:
         work, and failed the Mission as NO_DISPATCHABLE_WORK.  Work that ran out of
         rechecks and waits for a person (MANUAL_REQUIRED) is a real stall and does
         not count.
+
+        The same run's sixth try: the final review's reply was classified, and the
+        stall check ran before the Assurance consumers had even read that event, so
+        no work row existed yet.  An event a consumer has not read is queued work too.
         """
 
         try:
@@ -2409,6 +2413,18 @@ class Orchestrator:
                 "AND (wait_reason IS NULL OR wait_reason<>'MANUAL_REQUIRED') LIMIT 1",
                 (mission_id,),
             ).fetchone()
+            if row is None:
+                row = self.store.connection.execute(
+                    # Only the REVIEW consumer and only the events it turns into work:
+                    # periodic Assurance events (closeout evaluations) must not keep a
+                    # truly stalled Mission alive forever.
+                    "SELECT 1 FROM assurance_event_cursors c WHERE c.mission_id=? "
+                    "AND c.consumer='REVIEW' AND EXISTS("
+                    "SELECT 1 FROM events e WHERE e.mission_id=c.mission_id "
+                    "AND e.seq>c.last_event_seq AND e.type IN "
+                    "('AssuranceReviewClassified','AssuranceReviewFormatRejected')) LIMIT 1",
+                    (mission_id,),
+                ).fetchone()
         except sqlite3.Error:
             return False
         return row is not None

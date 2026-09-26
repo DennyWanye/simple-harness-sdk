@@ -15,9 +15,15 @@ from types import SimpleNamespace
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
 
 
-def _pending(*rows: tuple[str, str, str | None]) -> bool:
+def _pending(*rows: tuple[str, str, str | None], cursor: int | None = None, last_seq: int = 0,
+             event_type: str = "AssuranceReviewClassified") -> bool:
     connection = sqlite3.connect(":memory:")
     connection.execute("CREATE TABLE assurance_pending_work(mission_id, consumer, work_key, state, wait_reason)")
+    connection.execute("CREATE TABLE assurance_event_cursors(mission_id, consumer, last_event_seq)")
+    connection.execute("CREATE TABLE events(mission_id, seq, type)")
+    connection.execute("INSERT INTO events VALUES ('m1', ?, ?)", (last_seq, event_type))
+    if cursor is not None:
+        connection.execute("INSERT INTO assurance_event_cursors VALUES ('m1', 'REVIEW', ?)", (cursor,))
     connection.executemany(
         "INSERT INTO assurance_pending_work VALUES (?,?,?,?,?)",
         [(mission, "REVIEW", f"w{i}", state, reason) for i, (mission, state, reason) in enumerate(rows)],
@@ -39,3 +45,12 @@ def test_finished_manual_or_foreign_work_does_not() -> None:
     assert not Orchestrator._has_pending_assurance_work(
         SimpleNamespace(store=SimpleNamespace(connection=sqlite3.connect(":memory:"))), "m1"
     )
+
+
+def test_an_event_no_consumer_has_read_yet_holds_off_the_stall() -> None:
+    # The final review was classified at seq 22118; the REVIEW cursor was still at 22106.
+    assert _pending(cursor=22106, last_seq=22118)
+    assert not _pending(cursor=22118, last_seq=22118)
+    assert not _pending(last_seq=22118)  # a Mission without Assurance has no cursor
+    # A periodic Assurance event the cursor has not reached is not review work.
+    assert not _pending(cursor=22106, last_seq=22118, event_type="AssuranceCloseoutEvaluated")
