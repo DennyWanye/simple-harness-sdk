@@ -257,7 +257,10 @@ def share_tokens(available: int | None, funded_now: int, reserved_subtrees: int 
 
 
 def occurrence_criteria(
-    binding: TaskSemanticBindingV1, requirements: RequirementsRevision | None
+    binding: TaskSemanticBindingV1,
+    requirements: RequirementsRevision | None,
+    *,
+    owned: Sequence[str] = (),
 ) -> tuple[str, ...]:
     """The Task row's ``success_criteria``: the duty's criteria and their checks.
 
@@ -283,7 +286,11 @@ def occurrence_criteria(
                 (item.statement,) if item.statement.startswith(("file:", "pytest:")) else ())
             for item in requirements.criteria
         }
-    for reference in binding.requirement_refs:
+    # Desktop 2026-09-26: a leaf the adopted method links to some of the duty's
+    # criteria owes only those.  Every leaf used to carry every criterion — each
+    # step of a five-file plan had to write all five files to pass its checks.
+    references = tuple(ref for ref in binding.requirement_refs if ref in set(owned))
+    for reference in references or binding.requirement_refs:
         if reference not in criteria:
             criteria.append(reference)
         for check in declared.get(reference, ()):
@@ -514,6 +521,7 @@ def occurrence_task(
     declared_policy: Sequence[str] = (),
     criterion_linked: bool = False,
     require_content_review: bool = False,
+    owned: Sequence[tuple[str, str]] = (),
 ) -> OccurrenceTask:
     """Build the Task row for one occurrence.  Pure: nothing is written here.
 
@@ -530,8 +538,11 @@ def occurrence_task(
     """
 
     primitive = binding.form is TaskForm.PRIMITIVE
-    criteria = occurrence_criteria(binding, requirements)
+    owned_refs = [ref for ref, _ in owned if ref in set(binding.requirement_refs)] if primitive else []
+    criteria = occurrence_criteria(binding, requirements, owned=owned_refs)
     goal = binding.goal_signature.statement or f"satisfy {binding.goal_signature.signature_id}"
+    if owned_refs:
+        goal = scoped_goal(goal, criteria, [text for ref, text in owned if ref in owned_refs])
     policy = occurrence_policy(
         criteria, deployed, declared_policy,
         read_only=read_only_leaf(binding) and not criterion_linked,
@@ -582,6 +593,17 @@ def occurrence_task(
         obligation_id=str(binding.obligation_id),
         ordinal=int(ordinal),
     )
+
+
+def scoped_goal(goal: str, criteria: Sequence[str], requirements: Sequence[str]) -> str:
+    """The goal a leaf with owned criteria is dispatched with: its share first."""
+
+    files = [c[5:] for c in criteria if c.startswith("file:") and c[5:]]
+    lines = ["本步骤只负责：" + ("、".join(files) if files else "下列要求")]
+    lines += ["- " + text for text in dict.fromkeys(t.strip() for t in requirements) if text]
+    lines.append("整个任务的其他文件由计划中的其他步骤负责，本步骤不要创建或改写它们。")
+    lines.append("整个任务（供理解上下文）：" + goal)
+    return "\n".join(lines)
 
 
 def _priority(spec: OccurrenceSpec) -> float:

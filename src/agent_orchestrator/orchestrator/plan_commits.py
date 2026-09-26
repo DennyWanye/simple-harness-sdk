@@ -1467,6 +1467,9 @@ class PlanCommitsMixin:
         from .accepted_outputs import criterion_linked_occurrences
 
         linked = criterion_linked_occurrences(network.obligation_coverage)
+        from .accepted_outputs import owned_criteria
+
+        owned = owned_criteria(network, semantics)
         from .scoped_content_review import uses_completion_protocol
         requires_content_review = uses_completion_protocol(self._store, mission.id)
         if requires_content_review and funded_now and "critic_review" not in self._deployed_layers:
@@ -1480,6 +1483,7 @@ class PlanCommitsMixin:
                     spec,
                     binding,
                     criterion_linked=spec.occurrence_id in linked,
+                    owned=owned.get(str(spec.occurrence_id), ()),
                     require_content_review=requires_content_review,
                     plan_revision=plan_revision,
                     budget=inherit_limits(

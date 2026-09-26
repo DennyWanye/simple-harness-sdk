@@ -370,6 +370,36 @@ def carried_criteria_for(
     )
 
 
+def owned_criteria(network: Any, semantics: Any) -> dict[str, list[tuple[str, str]]]:
+    """occurrence id → [(parent criterion id, evidence requirement)] of a network.
+
+    The pairing :func:`~..planning.htn.compiler.coverage_from_slots` flattens away:
+    each adopted method's ``criterion_links`` on the occurrences its slots bound (a
+    link with no ``child_step`` lands on the finalizer).  A method the store no
+    longer holds contributes nothing.
+    """
+
+    from ..storage.store import StoreError
+
+    owned: dict[str, list[tuple[str, str]]] = {}
+    for draft in getattr(network, "method_instances", ()):
+        if not network.is_adopted(draft.instance_id):
+            continue
+        try:
+            method = semantics.get_method(
+                str(draft.method_ref.method_id), int(draft.method_ref.version)).contract
+        except StoreError:
+            continue
+        by_slot = {str(child.slot_key): str(child.occurrence_id) for child in draft.child_bindings}
+        finalizer = by_slot.get(method.composition.finalizer_step or "")
+        for link in method.composition.criterion_links:
+            bound = by_slot.get(link.child_step or "") if link.child_step else finalizer
+            if bound is not None:
+                owned.setdefault(bound, []).append(
+                    (str(link.parent_criterion_id), str(link.evidence_requirement or "")))
+    return owned
+
+
 def stored_coverage(
     semantics: Any,
     instances: Sequence[Any],
