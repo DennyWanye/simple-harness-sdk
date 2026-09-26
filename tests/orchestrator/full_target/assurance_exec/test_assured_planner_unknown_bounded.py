@@ -7,7 +7,11 @@ the react wall clock ~17 minutes later.  Independent adjudication: on this lane 
 ever re-handed off (that re-sends the original request) and reviews keep their original
 executor (§6.2), but a Planner / MethodSynthesizer round is not a review — after the same
 bound as P2.3f it ends through its own failure door, which on this lane keeps the UNKNOWN
-grants and the reservation.  Reviews and Worker attempts keep waiting (unchanged).
+grants and the reservation.  Reviews keep waiting (unchanged).
+
+2026-09-26 Host run: a Worker attempt waited 35 minutes on the same kind of blocker — the
+wall clock did not end it — so an assured Worker attempt now also ends after the bound,
+as LOST (ordinary repair/retry), with its UNKNOWN charge and reservation kept.
 """
 
 from __future__ import annotations
@@ -44,7 +48,6 @@ def _intent(mission_id: str, *, kind: str, role: str, review: bool = False):  # 
         ("plan", "root_reviewer", False, False),
         ("plan", "planner", True, False),  # an assured review of any purpose
         ("critic", "critic", True, False),
-        ("attempt", "worker", False, False),
     ],
 )
 def test_only_assured_planning_rounds_end_after_the_bound(tmp_path, monkeypatch, kind, role, review, ends) -> None:
@@ -78,5 +81,32 @@ def test_only_assured_planning_rounds_end_after_the_bound(tmp_path, monkeypatch,
                 assert doors[0]["waited_seconds"] >= 0.05
             else:
                 assert doors == []
+
+    asyncio.run(case())
+
+
+def test_an_assured_worker_attempt_ends_as_lost_after_the_bound(tmp_path, monkeypatch) -> None:
+    async def case() -> None:
+        async with deployment(tmp_path) as world:
+            orch = world.orch
+            mission, _ = world.commit.create_mission(spec("assured-worker-unknown"))
+            monkeypatch.setattr(assurance_review_wait, "record_provider_wait", lambda *_a: None)
+            monkeypatch.setattr(Orchestrator, "_service_blocker_limit", property(lambda self: 0.05))
+            ended: list = []
+
+            async def door(intent, *, detail):  # type: ignore[no-untyped-def]
+                ended.append((intent.intent_id, dict(detail)))
+
+            monkeypatch.setattr(orch, "_give_up_blocked_assured_attempt", door)
+            rehandoffs: list = []
+            monkeypatch.setattr(orch.commit, "rehandoff_service_intent", lambda *a, **k: rehandoffs.append(a))
+            intent = _intent(mission.id, kind="attempt", role="worker")
+            assert await orch._resolve_provider_blocked_service(intent, BLOCKED) is None  # still waiting
+            await asyncio.sleep(0.08)
+            assert await orch._resolve_provider_blocked_service(intent, BLOCKED) == "give_up"
+            assert rehandoffs == []  # never re-sent on this lane
+            [(intent_id, detail)] = ended
+            assert intent_id == intent.intent_id and detail["assurance_lane"] is True
+            assert detail["waited_seconds"] >= 0.05
 
     asyncio.run(case())

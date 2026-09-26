@@ -11258,9 +11258,28 @@ class Orchestrator:
                 and str(intent.config.get("role", ""))
                 not in {"root_reviewer", "operation_proposal_reviewer", "operation_outcome_reviewer"}
             )
+            if intent.kind == "attempt":
+                # 2026-09-26 Host run: a Worker whose hand-off came back half-read
+                # (200 OK, body never finished) was settled UNKNOWN and then waited on
+                # the Provider blocker for 35 minutes — nothing here ended an assured
+                # Attempt.  After the same bound as a Planner round it ends as LOST, so
+                # the ordinary repair/retry path runs; the UNKNOWN charge keeps its
+                # reservation held (overcount, never undercount, never freeze).
+                since = self._service_blocked_since.setdefault(key, self.store.now)
+                waited = self.store.now - since
+                if waited < self._service_blocker_limit:
+                    return None
+                self._service_blocked_since.pop(key, None)
+                await self._give_up_blocked_assured_attempt(intent, detail={
+                    "waited_seconds": round(waited, 3),
+                    "limit_seconds": self._service_blocker_limit,
+                    "blocker": dict(liveness.blocker or {}),
+                    "assurance_lane": True,
+                })
+                return "give_up"
             new_mode = self._new_mode(mission) if planning else None
             if new_mode is None:
-                return "give_up"  # reviews keep their original executor (§6.2); attempts unchanged
+                return "give_up"  # reviews keep their original executor (§6.2)
             # A Planner / MethodSynthesizer round is not a review: after the same bound as
             # P2.3f it ends through its own failure door instead of waiting for the wall
             # clock (host-final-arp10, 2026-09-24: ~17 minutes frozen).  On this lane that
@@ -11462,6 +11481,27 @@ class Orchestrator:
         await self._fail_runtime_unavailable(
             mission, reason="provider_outcome_unknown", detail=dict(detail)
         )
+
+    async def _give_up_blocked_assured_attempt(
+        self, intent: DispatchIntent, *, detail: Mapping[str, Any]
+    ) -> None:
+        """End an assured Worker turn stuck on an unknown Provider outcome.
+
+        Unlike :meth:`_give_up_blocked_attempt` nothing is released: the Assurance
+        lane keeps the original UNKNOWN grants and the reservation stays held,
+        visible and counted, until an observation settles it (count rule 2026-09-24).
+        """
+
+        self._import_usage(intent)
+        self._settle_intent(intent, "FAILED")
+        attempt = self.store.get_attempt(intent.subject_id)
+        if attempt is None:
+            return
+        self.commit.mark_attempt_lost(attempt.id, reason="provider_outcome_unknown")
+        self._settle_if_known(attempt)
+        await self._release_attempt(attempt.id, cancel=True)
+        self._note(f"attempt {attempt.id} LOST: unknown Provider outcome for "
+                   f"{detail.get('waited_seconds')}s on the Assurance lane; reservation held")
 
     async def _give_up_blocked_attempt(
         self,
