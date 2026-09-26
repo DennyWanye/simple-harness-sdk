@@ -80,3 +80,12 @@ def test_the_closeout_counts_only_when_every_unknown_charge_is_covered(tmp_path)
     # An unknown charge whose reservation is not in the plan blocks it.
     assert plan(fake, mission.id, []) is None
     store.close()
+
+
+def test_a_resume_under_new_code_re_evaluates_the_closeout():
+    """Desktop: the thermos Mission sat DRAINING under old code; after the upgrade
+    nothing new happened on it, so the new counting rule never ran."""
+
+    from agent_orchestrator.orchestrator.assurance_consumers import CLOSEOUT_SOURCE_EVENTS
+
+    assert "PolicyInterpreterDrift" in CLOSEOUT_SOURCE_EVENTS

@@ -61,6 +61,10 @@ CLOSEOUT_SOURCE_EVENTS = frozenset(
         "TaskCompleted",
         "TaskFailed",
         "TaskCancelled",
+        # Resumed under new code (plan D9-4'): readiness is derived, so it is
+        # recomputed once by the running interpreter — a Mission left DRAINING by
+        # older code must not wait for an event that will never come.
+        "PolicyInterpreterDrift",
     }
 )
 VALIDITY_SOURCE_EVENTS = frozenset(
