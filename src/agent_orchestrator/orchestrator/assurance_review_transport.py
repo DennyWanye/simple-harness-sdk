@@ -18,6 +18,7 @@ from ..contracts.resolution import (
     ReviewAccount,
     ReviewPackage,
 )
+from ..contracts.semantic_base import TypedRefKind
 from ..storage.assurance_reads import AssuranceReader
 from ..storage.assurance_store import AssuranceStore
 from ..storage.assurance_work import atomic
@@ -154,6 +155,25 @@ def _receipt_ref(
     return AssuranceRef("commit_receipt", Pin(receipt_id, 0, fingerprint(body)))
 
 
+def _operation_task_id(store: Any, mission_id: str, package: Any) -> str:
+    """The producer Task of the operation a proposal/outcome package reviews."""
+    row = store.connection.execute(
+        "SELECT producer_task_id FROM operation_intent_bindings "
+        "WHERE mission_id=? AND review_package_id=?",
+        (mission_id, str(package.package_id)),
+    ).fetchone()
+    if row is None and package.binding.subject_ref.kind is TypedRefKind.OPERATION:
+        row = store.connection.execute(
+            "SELECT i.producer_task_id FROM operation_intent_bindings i "
+            "JOIN commit_receipts r ON r.commit_id='materialize:'||i.intent_id "
+            "WHERE i.mission_id=? AND json_extract(r.receipt_json,'$.operation_id')=?",
+            (mission_id, str(package.binding.subject_ref.id)),
+        ).fetchone()
+    if row is None:
+        raise AssuranceError("SOURCE_UNAVAILABLE", "operation task")
+    return str(row[0])
+
+
 def ensure_review_invocation(
     commit: CommitService,
     *,
@@ -193,11 +213,16 @@ def ensure_review_invocation(
         raise AssuranceError("REVIEW_SERVICE_RESERVATION_INVALID")
     owner_task_id = body["subject"]["owner_task_ref"]["id"]
     purpose = body["subject"]["purpose"]
-    account_id = (
-        mission_account(mission_id)
-        if package.account in {ReviewAccount.MISSION, ReviewAccount.MISSION_PLANNING}
-        else task_account(owner_task_id)
-    )
+    if package.account in {ReviewAccount.MISSION, ReviewAccount.MISSION_PLANNING}:
+        account_id = mission_account(mission_id)
+    elif package.account is ReviewAccount.OPERATION_TASK:
+        # The operation's own Task — the leaf that prepared it — as on the legacy
+        # reviewer path.  The subject's owner Task is the effect owner's Scope Task,
+        # usually the root compound, whose budget is 0 by design (real run
+        # 2026-09-27: BudgetExhausted on the root account, every round).
+        account_id = task_account(_operation_task_id(commit.store, mission_id, package))
+    else:
+        account_id = task_account(owner_task_id)
     invocation_config = dict(config)
     if "message" not in invocation_config or "agent_config" not in invocation_config:
         raise AssuranceError("REVIEW_RUNTIME_CONFIG_REQUIRED")

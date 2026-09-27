@@ -273,7 +273,9 @@ def ensure_assured_proposal_reviews(orchestrator: Any, mission_id: str) -> bool:
                 store.get_mission(mission_id), draft=draft, sources=sources, payloads=payloads
             )
             progressed = True
-        except (AssuranceError, ContractError, ValueError) as error:
+        except Exception as error:  # noqa: BLE001 - one intent must never stop the loop
+            # Real run 2026-09-27: an uncaught BudgetExhausted here failed every
+            # orchestrator round.  Logged and retried next round instead.
             logger.warning(
                 "assured proposal review not opened intent=%s: %s: %s",
                 row["intent_id"], type(error).__name__, error,
