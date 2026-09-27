@@ -37,6 +37,28 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+EXECUTION_PAGE_DEFAULT, EXECUTION_PAGE_MAX = 100, 200
+
+
+def _encode_cursor(value: Mapping[str, Any]) -> str:
+    import base64
+    return base64.urlsafe_b64encode(canonical_json(dict(value)).encode("utf-8")).decode("ascii")
+
+
+def _decode_cursor(cursor: Any) -> dict[str, Any]:
+    import base64
+    import json
+    if not isinstance(cursor, str) or not cursor or len(cursor) > 4096:
+        _fail("INVALID_CURSOR", "cursor is malformed")
+    try:
+        value = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")))
+    except (ValueError, UnicodeError):
+        _fail("INVALID_CURSOR", "cursor is malformed")
+    if not isinstance(value, dict):
+        _fail("INVALID_CURSOR", "cursor is malformed")
+    return value
+
+
 CurrentReader = Callable[[str], NetworkView]
 EpochReader = Callable[[str], Mapping[str, int]]
 ResolutionReader = Callable[[str, int], Sequence[Mapping[str, Any]]]
@@ -52,7 +74,8 @@ class TaskGraphReadApi:
                  current_source_validator: CurrentSourceValidator,
                  convergence_diagnostics: Callable[[str, str], Sequence[Mapping[str, Any]]],
                  graph_budget: GraphStructureBudget,
-                 seed_reader: Callable[[str], Any] | None = None) -> None:
+                 seed_reader: Callable[[str], Any] | None = None,
+                 journal_reader: Callable[[Mapping[str, Any]], Sequence[Any]] | None = None) -> None:
         if not str(tenant_id).strip() or not isinstance(history, TaskGraphStore):
             raise ValueError("tenant and TaskGraphStore are required")
         if not isinstance(graph_budget, GraphStructureBudget):
@@ -68,6 +91,7 @@ class TaskGraphReadApi:
         self._budget = graph_budget
         self._convergence_diagnostics = convergence_diagnostics
         self._seed_reader = seed_reader
+        self._journal_reader = journal_reader
 
     def matches_binding(self, commit: Any, tenant_id: str, principal: Any) -> bool:
         return self._commit is commit and self._tenant == tenant_id and self._principal == principal
@@ -153,7 +177,11 @@ class TaskGraphReadApi:
         checks below still apply unchanged.
         """
         from ..orchestrator.taskgraph_dispatch import taskgraph_enabled
+        from ..orchestrator.taskgraph_requirement import taskgraph_required
         if not taskgraph_enabled(self._store, mission_id):
+            if taskgraph_required(self._store, mission_id):
+                # NEXT-TG-1.0 §8.6: say the graph is on its way; never fake an enabled one
+                _fail("ACTIVATION_PENDING", "执行图正在启用：等规划授权发出后由系统启用", retry="REQUERY")
             _fail("NOT_ENABLED", "此任务未启用执行图")
 
     def snapshot(self, mission_id: str, *, revision: int | None = None) -> dict[str, Any]:
@@ -303,6 +331,102 @@ class TaskGraphReadApi:
             body["read_token"]["snapshot_hash"] = _hash(tokenless)
             return body, explanation_sources
 
+    # ------------------------------------------------------------ execution process (§8)
+    def _principal_digest(self) -> str:
+        return _hash([self._tenant, repr(getattr(self._principal, "principal_id", self._principal))])[:32]
+
+    def execution_snapshot(self, mission_id: str, *, cursor: str | None = None,
+                           limit: int = EXECUTION_PAGE_DEFAULT) -> dict[str, Any]:
+        """TaskGraphExecutionViewV1: the strict graph plus what executing it did.
+
+        One ``Store.read_view`` cut holds the graph read and the execution
+        projection. Pages are keyed by ``(at_ms, node_id)``; a cursor pins the
+        Mission, caller, plan revision and the execution content hash, so a page
+        can never mix two different histories (``SNAPSHOT_CHANGED``)."""
+        from ..orchestrator.taskgraph_execution_view import ExecutionProjection
+        if type(limit) is not int or not 1 <= limit <= EXECUTION_PAGE_MAX:
+            _fail("INVALID_REQUEST", f"limit must be 1..{EXECUTION_PAGE_MAX}")
+        with self._store.read_view() as connection:
+            graph, _sources = self._snapshot(mission_id)
+            projection = ExecutionProjection(connection, mission_id).build()
+            labels = projection.step_labels(node["occurrence_id"] for node in graph["nodes"]) \
+                if cursor is None else None
+            observed = int(self._store.now * 1000)
+        ordered = sorted(projection.nodes.values(), key=lambda n: (n["at_ms"] or 0, n["node_id"]))
+        execution_hash = _hash({"nodes": ordered, "edges": projection.edges})
+        pin = {"v": 1, "m": mission_id, "r": graph["read_token"]["plan_revision"],
+               "mh": graph["read_token"]["manifest_hash"], "h": execution_hash, "p": self._principal_digest()}
+        after: tuple[int, str] | None = None
+        if cursor is not None:
+            decoded = _decode_cursor(cursor)
+            if {key: decoded.get(key) for key in pin} != pin:
+                _fail("SNAPSHOT_CHANGED", "执行过程在翻页期间有变化，请重新读取第一页", retry="REQUERY")
+            key = decoded.get("k")
+            if (not isinstance(key, list) or len(key) != 2 or type(key[0]) is not int
+                    or not isinstance(key[1], str)):
+                _fail("INVALID_CURSOR", "cursor is malformed")
+            after = (key[0], key[1])
+        page = [n for n in ordered if after is None or ((n["at_ms"] or 0), n["node_id"]) > after][:limit]
+        complete = len(page) == 0 or page[-1] is ordered[-1]
+        ids = {n["node_id"] for n in page}
+        next_cursor = None
+        if not complete:
+            last = page[-1]
+            next_cursor = _encode_cursor({**pin, "k": [last["at_ms"] or 0, last["node_id"]]})
+        pending = projection.in_flight_turns()
+        return {"schema_version": 1, "mission_id": mission_id, "view_mode": "CURRENT",
+                "read_token": graph["read_token"], "graph": graph if cursor is None else None,
+                "occurrence_labels": labels,
+                "execution_cut": {"observed_at_ms": observed,
+                                  "imported_through_seq": graph["read_token"]["through_seq"],
+                                  "execution_hash": execution_hash,
+                                  "runtime_source_watermarks": [
+                                      {"profile_id": key, "in_flight_turns": value}
+                                      for key, value in sorted(pending.items())],
+                                  "coverage": "PENDING_IMPORT" if pending else "COMPLETE"},
+                "execution_nodes": page,
+                "execution_edges": [e for e in projection.edges if e["source"] in ids],
+                "next_cursor": next_cursor, "complete": complete}
+
+    def execution_detail(self, mission_id: str, node_id: str, *,
+                         through_journal_seq: int | None = None) -> dict[str, Any]:
+        """One execution node's facts and, when it was a model turn, what that turn
+        visibly did — read from its own runtime pool by exact agent id, redacted and
+        whitelisted (plan §8.4–§8.5). ``through_journal_seq`` re-reads a pinned cut."""
+        from ..orchestrator.taskgraph_execution_view import ExecutionProjection, turn_items
+        if not isinstance(node_id, str) or not node_id or len(node_id) > 512:
+            _fail("INVALID_REQUEST", "node_id is required")
+        if through_journal_seq is not None and (type(through_journal_seq) is not int or through_journal_seq < 0):
+            _fail("INVALID_REQUEST", "through_journal_seq must be a nonnegative integer")
+        with self._store.read_view() as connection:
+            self._mission(mission_id)  # current disclosure right, every read
+            self._require_enabled(mission_id)
+            projection = ExecutionProjection(connection, mission_id).build()
+        node = projection.nodes.get(node_id)
+        if node is None:
+            _fail("NOT_FOUND", "execution node was not found")
+        turn = node.get("turn")
+        body: dict[str, Any] = {"schema_version": 1, "mission_id": mission_id, "node": node,
+                                "turn": None, "items": [], "hidden_items": 0}
+        if not turn or not turn.get("agent_id"):
+            return body
+        intent = projection.intents[turn["intent_id"]]
+        coverage = "COMPLETE" if intent["state"] in {"SETTLED", "FAILED"} else "PENDING_IMPORT"
+        if self._journal_reader is None:
+            body["turn"] = {**turn, "coverage": "SOURCE_UNAVAILABLE", "through_journal_seq": None}
+            return body
+        try:
+            records = [r for r in self._journal_reader(intent)
+                       if through_journal_seq is None or int(r.seq) <= through_journal_seq]
+        except Exception:  # noqa: BLE001 - a pool this process does not run, or an unreadable library
+            body["turn"] = {**turn, "coverage": "SOURCE_UNAVAILABLE", "through_journal_seq": None}
+            return body
+        review = node["kind"] in {"check", "review"}
+        items, hidden, through = turn_items(records, review=review)
+        body.update(turn={**turn, "coverage": coverage, "through_journal_seq": through},
+                    items=items, hidden_items=hidden)
+        return body
+
     def why_not_ready(self, mission_id: str, occurrence_id: str) -> dict[str, Any]:
         view, sources = self._snapshot(mission_id)
         node = next((item for item in view["nodes"] if item["occurrence_id"] == occurrence_id), None)
@@ -327,9 +451,16 @@ class TaskGraphReadApi:
                 "details": [f"phase={node['phase']}", *completion_details]}
 
     def diff(self, mission_id: str, from_revision: int, to_revision: int) -> dict[str, Any]:
-        with self._store.read_view():
+        with self._store.read_view() as connection:
             self._mission(mission_id)
             self._require_enabled(mission_id)
+            for revision in (from_revision, to_revision):
+                if type(revision) is not int or not 0 <= revision <= 2**53 - 1:
+                    _fail("INVALID_REVISION", "revision must be a nonnegative integer")
+                if connection.execute("SELECT 1 FROM taskgraph_revision_records WHERE mission_id=? AND revision=?",
+                                      (mission_id, revision)).fetchone() is None:
+                    # 2A.4: a revision that was never recorded is not a damaged graph
+                    _fail("REVISION_NOT_FOUND", f"执行图没有第 {revision} 版")
             before = self._history.read_revision(mission_id, from_revision).record.document
             after = self._history.read_revision(mission_id, to_revision).record.document
             return diff_documents(before, after).to_json()

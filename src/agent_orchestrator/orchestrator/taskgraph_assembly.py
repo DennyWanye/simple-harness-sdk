@@ -158,11 +158,13 @@ def install_taskgraph(orchestrator: Any, ports: TaskGraphDeploymentPorts) -> Ins
     notifications = TaskGraphNotifications(orchestrator, history=history,
         convergence=convergence, validate_current=validate_current)
     operator = TaskGraphOperatorService(operator_guard, jobs=jobs, notifications=notifications, sources=plan_sources)
+    from .taskgraph_execution_view import read_turn_journal
     reads = TaskGraphReadApi(commit, tenant_id=ports.tenant_id, principal=ports.principal,
         history=history, current_reader=lambda mission_id: dispatch_for(mission_id).read(mission_id),
         epoch_reader=lambda mission_id: dispatch_for(mission_id).scope_epochs(mission_id),
         resolution_reader=TaskGraphResolutionReader(history), source_validator=validate_read,
         seed_reader=lambda mission_id: local_sources.read(mission_id).structure,
+        journal_reader=lambda intent: read_turn_journal(orchestrator, intent),
         current_source_validator=validate_sources, graph_budget=ports.graph_budget,
         convergence_diagnostics=TaskGraphFollowupStore(store).convergence_diagnostics)
     policy_authority = StoreTaskGraphPolicyAuthority(orchestrator, tenant_id=ports.tenant_id,
