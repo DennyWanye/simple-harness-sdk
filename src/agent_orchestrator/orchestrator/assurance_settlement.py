@@ -21,6 +21,24 @@ class AssuranceSettlement:
         if not store.connection.in_transaction:
             raise BudgetError("Assurance settlement requires the original transaction")
         intent = store.get_intent_for_subject(subject_id)
+        if intent is None and any(
+            action.get("reservation_subject") == subject_id
+            for action in store.list_actions(mission_id)
+        ):
+            # An Action reservation has no Agent executor: its physical work is the
+            # connector call, settled by the same original operation proof the
+            # TaskGraph lane uses. Real run 2026-09-28 (mission-e5f82ae8c9f24ff8):
+            # the publish succeeded but its reservation stayed held forever and the
+            # closeout drained on OPEN_RESERVATIONS after the root was resolved.
+            from .taskgraph_action_settlement import require_action_settlement
+
+            try:
+                require_action_settlement(self.orchestrator, subject_id, mission_id)
+            except (SourceUnavailable, ContractError, OSError) as error:
+                raise BudgetError(
+                    "Assurance action settlement source unavailable; reservation held"
+                ) from error
+            return
         if (
             intent is None
             or intent.mission_id != mission_id
