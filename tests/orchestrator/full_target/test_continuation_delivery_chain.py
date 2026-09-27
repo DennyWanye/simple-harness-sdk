@@ -171,3 +171,31 @@ def test_the_rule_check_accepts_the_candidate_the_contract_asked_for(tmp_path):
         [SimpleNamespace(path=OPERATION_CANDIDATE_FILE)], SimpleNamespace(resolve=lambda p: tmp_path / p))
     assert problems is not None
     assert not [p for p in problems if "not a declared output" in p]
+
+
+def test_the_accept_transaction_uses_the_same_declaration(monkeypatch):
+    """opt.36 真机：规则检查放行后，验收事务里第三处读 ``task.outputs`` 的检查又以
+    ``undeclared_action_output`` 拒绝同一个候选。
+
+    **Mutation**: check ``task.outputs`` in ``_action_candidates`` again → red."""
+    from agent_orchestrator.orchestrator import action_commits as ac
+    import agent_orchestrator.runtime.action_schema as schema
+
+    import agent_orchestrator.artifacts.store as artifact_store
+
+    monkeypatch.setattr(schema, "declared_action_outputs",
+                        lambda store, mission_id, task: (OPERATION_CANDIDATE_FILE,))
+    reached = []
+
+    def read(artifact):
+        reached.append(artifact.path)
+        raise artifact_store.ArtifactStoreError("stub", artifact.path)
+
+    monkeypatch.setattr(artifact_store, "read_verified", read)
+    artifact = SimpleNamespace(id="a1", path=OPERATION_CANDIDATE_FILE, content_hash="0" * 64)
+    fake = SimpleNamespace(_store=SimpleNamespace(get_artifact=lambda artifact_id: artifact))
+    found, rejected = ac.ActionCommitsMixin._action_candidates(
+        fake, SimpleNamespace(artifacts=("a1",)), SimpleNamespace(outputs=()), SimpleNamespace(id=M),
+        connectors={}, deployment=None)
+    assert reached == [OPERATION_CANDIDATE_FILE]  # got past the declaration check
+    assert "undeclared_action_output" not in str(rejected)

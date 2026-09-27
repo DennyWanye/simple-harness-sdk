@@ -107,6 +107,26 @@ def _action_contract(
     }
 
 
+def declared_action_outputs(store: Any, mission_id: str, task: Any) -> tuple[str, ...]:
+    """The Task's declared files plus, for a hierarchical primitive with the operation
+    candidate port, its candidate file.
+
+    The one answer the Worker's candidate contract, the result's rule check and the
+    accept transaction all use — three separate readings of ``task.outputs`` made the
+    candidate the contract asked for "undeclared" twice over (2A upstream runs).
+    """
+    from ..storage.htn_store import HtnStore
+
+    outputs = tuple(task.outputs)
+    if any(path.startswith("actions/") and path.endswith(".json") for path in outputs):
+        return outputs
+    binding = HtnStore(store).task_semantics_of(mission_id, task.id)
+    if binding is not None and any(port.port_key == OPERATION_CANDIDATE_PORT
+                                   for port in binding.output_ports):
+        return (*outputs, OPERATION_CANDIDATE_FILE)
+    return outputs
+
+
 def worker_action_contract(
     *,
     mission_criteria: Sequence[str],
@@ -154,5 +174,6 @@ def planner_action_contract(
 
 __all__ = (
     "ACTION_CANDIDATE_CONTEXT_VERSION", "OPERATION_CANDIDATE_FILE", "OPERATION_CANDIDATE_PORT",
+    "declared_action_outputs",
     "worker_action_contract", "planner_action_contract",
 )

@@ -1442,7 +1442,8 @@ class ActionCommitsMixin:
             if artifact is None or not is_action_path(artifact.path):
                 continue
             try:
-                if artifact.path not in task.outputs:
+                from ..runtime.action_schema import declared_action_outputs
+                if artifact.path not in declared_action_outputs(self._store, mission.id, task):
                     raise CandidateRejected("undeclared_action_output", artifact.path)
                 from ..artifacts.store import ArtifactStoreError, read_verified
 

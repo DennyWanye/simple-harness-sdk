@@ -10053,20 +10053,10 @@ class Orchestrator:
         return protected
 
     def _action_candidate_outputs(self, mission: Mission, task: Task) -> tuple[str, ...]:
-        """The Task's declared files, plus its operation candidate file when a
-        hierarchical primitive declares the operation candidate port (2A upstream run:
-        without it the Worker never saw the candidate contract)."""
-        from ..runtime.action_schema import OPERATION_CANDIDATE_FILE, OPERATION_CANDIDATE_PORT
-        from ..storage.htn_store import HtnStore
+        """See :func:`..runtime.action_schema.declared_action_outputs` (2A.1e/1f)."""
+        from ..runtime.action_schema import declared_action_outputs
 
-        outputs = tuple(task.outputs)
-        if any(path.startswith("actions/") and path.endswith(".json") for path in outputs):
-            return outputs
-        binding = HtnStore(self.store).task_semantics_of(mission.id, task.id)
-        if binding is not None and any(port.port_key == OPERATION_CANDIDATE_PORT
-                                       for port in binding.output_ports):
-            return (*outputs, OPERATION_CANDIDATE_FILE)
-        return outputs
+        return declared_action_outputs(self.store, mission.id, task)
 
     def _revises_its_inputs(self, mission_id: str, task_id: str) -> bool:
         """Every declared input port is also an output port of the same schema."""
