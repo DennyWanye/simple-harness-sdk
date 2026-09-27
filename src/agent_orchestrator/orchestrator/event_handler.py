@@ -9993,8 +9993,13 @@ class Orchestrator:
             return None
         problems: list[str] = []
         checked: set[tuple[str, str, str]] = set()
+        # The same declared outputs the Worker's candidate contract was built from:
+        # a hierarchical primitive with the operation candidate port declares its
+        # candidate file through that port (2A upstream run: the candidate the
+        # contract asked for was refused here as "not declared").
+        declared = self._action_candidate_outputs(mission, task)
         for path in paths:
-            if path not in task.outputs:
+            if path not in declared:
                 problems.append(f"action candidate {path} is not a declared output of this Task")
                 continue
             try:

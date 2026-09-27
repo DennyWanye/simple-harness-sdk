@@ -150,3 +150,24 @@ def test_the_operation_candidate_port_brings_the_candidate_contract(monkeypatch)
     declared = ("actions/mine.json",)
     assert outputs(fake, mission, SimpleNamespace(id="with", outputs=declared)) == declared
     assert OPERATION_CANDIDATE_FILE.startswith("actions/") and OPERATION_CANDIDATE_FILE.endswith(".json")
+
+
+def test_the_rule_check_accepts_the_candidate_the_contract_asked_for(tmp_path):
+    """opt.35 真机：候选按说明写到 actions/action_candidate.json，规则检查却因任务输出列表
+    为空判"未声明"，同一步重试。规则检查与候选说明必须用同一份声明。
+
+    **Mutation**: check ``task.outputs`` again → red."""
+    from agent_orchestrator.orchestrator import event_handler as eh
+
+    (tmp_path / "actions").mkdir()
+    (tmp_path / OPERATION_CANDIDATE_FILE).write_text("{}", encoding="utf-8")
+    fake = SimpleNamespace(
+        commit=SimpleNamespace(domain_for=lambda mission_id: SimpleNamespace(id="code-v1")),
+        _action_candidate_outputs=lambda mission, task: (OPERATION_CANDIDATE_FILE,),
+        _connectors={}, _config=SimpleNamespace(deployment_policy=None),
+    )
+    problems = eh.Orchestrator._action_problems(
+        fake, SimpleNamespace(id=M, success_criteria=()), SimpleNamespace(outputs=(), success_criteria=()),
+        [SimpleNamespace(path=OPERATION_CANDIDATE_FILE)], SimpleNamespace(resolve=lambda p: tmp_path / p))
+    assert problems is not None
+    assert not [p for p in problems if "not a declared output" in p]
