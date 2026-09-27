@@ -704,6 +704,39 @@ _INTERPRETATION_FEEDBACK = {
 }
 
 
+#: What a strict decoding code means for the reply, in the reviewer's own terms.
+#: Real run 2026-09-28 (mission-655daf8071519553): one assessment reason was 2069
+#: characters, the repair round said only "TEXT_INVALID", the reviewer sent the same
+#: reply back and the Mission failed. The rules are the decoder's, restated.
+_FORMAT_FEEDBACK = {
+    "TEXT_INVALID": (
+        "a text value is empty or too long. Each assessment reason and each finding reason "
+        "must be 1 to 2000 characters; every other string (criterion_id, each evidence id, "
+        "each limitation) 1 to 2048 characters. Shorten the longest reason and answer again "
+        "with the same verdicts."
+    ),
+    "ARRAY_INVALID": (
+        "an array has the wrong size: assessments needs at least one item; evidence_ids at "
+        "most 64, limitations at most 16, findings at most 128."
+    ),
+    "DUPLICATE_SET_MEMBER": "evidence_ids or limitations repeats the same value; list each once.",
+    "OBJECT_FIELDS_MISSING": (
+        "a required field is missing. The reply has exactly schema_version, verdict, "
+        "assessments and findings; each assessment has criterion_id, verdict, evidence_ids, "
+        "reason and limitations; each finding has criterion_id, severity and reason."
+    ),
+    "OBJECT_FIELDS_UNKNOWN": "a field outside the ReviewReply v2 shape is present; remove it.",
+    "ENUM_INVALID": (
+        "an enumerated value is not allowed: verdict is ACCEPT, REWORK, INCONCLUSIVE or "
+        "REJECTED; severity is BLOCKER, WARNING or INFO; an assessment verdict is one of "
+        "the grades named in the request."
+    ),
+    "REVIEW_SCHEMA_VERSION": "schema_version must be the integer 2.",
+    "JSON_INVALID": "the reply is not one JSON object; answer with the JSON object only.",
+    "JSON_DUPLICATE_KEY": "an object repeats a key; give each key once.",
+}
+
+
 def _require_format_repair(
     commit: CommitService, reader: AssuranceReader, review_key: str, prior: AssuranceRef
 ) -> str:
@@ -825,9 +858,10 @@ def ensure_format_repair_invocation(
         config = dict(old_intent.config)
         if classification == "FORMAT_INVALID":
             message = decode(config["message"]["content"])
+            code = text(original.get("error_code"))
             message["format_feedback"] = (
-                "Previous output failed strict ReviewReply v2 decoding: "
-                + text(original.get("error_code"))
+                "Previous output failed strict ReviewReply v2 decoding: " + code
+                + ("" if code not in _FORMAT_FEEDBACK else " — " + _FORMAT_FEEDBACK[code])
             )
             config["message"] = user_message_json(canonical(message))
         elif classification == "INTERPRETATION_INVALID":

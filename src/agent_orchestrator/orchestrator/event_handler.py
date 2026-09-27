@@ -265,6 +265,52 @@ OBSERVATION_EVENTS = frozenset({
     "HierarchicalMissionStalled",
 })
 HOLLOW_CYCLES_NOTED = 100
+WAIT_BACKOFF_MAX = 1.0
+class DeferredPlanning(dict):
+    """mission id → (since, ordinal) of a Planner round waiting for its pool.
+
+    NEXT-TG-1.0 §3.6: it lived only in memory, so a restart while the planner pool
+    cooled down forgot the round — counted as used and never asked. The map is
+    now kept in ``scheduler_state`` and reloaded by :meth:`Orchestrator.recover`;
+    ``since`` survives too, so the wait bound is not reset by a restart.
+    """
+
+    KEY = "deferred_planning"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._store: Any = None
+
+    def bind(self, store: Any) -> None:
+        self._store = store
+        saved = store.get_scheduler_state(self.KEY) or {}
+        for mission_id, (since, ordinal) in dict(saved.get("missions") or {}).items():
+            super().setdefault(str(mission_id), (float(since), int(ordinal)))
+
+    def _save(self) -> None:
+        if self._store is not None:
+            self._store.put_scheduler_state(
+                self.KEY, {"missions": {key: [since, ordinal] for key, (since, ordinal) in self.items()}}
+            )
+
+    def __setitem__(self, key: str, value: tuple[float, int]) -> None:
+        if self.get(key) == value:
+            return
+        super().__setitem__(key, value)
+        self._save()
+
+    def pop(self, key: str, *default: Any) -> Any:
+        present = key in self
+        value = super().pop(key, *default)
+        if present:
+            self._save()
+        return value
+
+
+#: ``plan`` intents that are not Planner rounds (NEXT-TG-1.0 §0.6 overlap 3).
+NOT_PLANNER_ROLES = frozenset({
+    "method_synthesizer", "operation_proposal_reviewer", "operation_outcome_reviewer",
+})
 from .resolution_commits import ResolutionCommitRejected, eligible_root_receipts
 from .taskgraph_epochs import planning_scope_digest
 
@@ -510,7 +556,7 @@ class Orchestrator:
         self._default_profile = default_profile
         self._deferred: dict[str, float] = {}  # task_id → first time it waited for a profile
         # review P0-1: a Planner whose pool is cooling down waits too: mission_id → (since, ordinal)
-        self._deferred_planning: dict[str, tuple[float, int]] = {}
+        self._deferred_planning: dict[str, tuple[float, int]] = DeferredPlanning()
         #: P2.3d / defect D5-B: the plan revision whose unrefined compounds this
         #: process has already put to the Planner, per Mission.  One round per
         #: revision: a successful refinement moves the revision on, and one that
@@ -2338,6 +2384,8 @@ class Orchestrator:
         turns, then let the loop re-drive the remaining intents (review P1-3)."""
 
         self._require_assurance_execution_root()
+        if isinstance(self._deferred_planning, DeferredPlanning):
+            self._deferred_planning.bind(self.store)
         for intent in self.store.list_intents("AGENT_CREATED", "SUBMITTED"):
             if intent.agent_id is None:
                 continue
@@ -2405,6 +2453,11 @@ class Orchestrator:
         self._stall_carry_ons.clear()
         mark = self._durable_watermark()
         hollow = 0
+        # A wait that writes nothing backs off from ``_poll`` up to WAIT_BACKOFF_MAX:
+        # every cycle re-reads plans, accounting and admissions, and polling that
+        # every 50 ms held a core at 100% for the whole of a model turn (real run
+        # 2026-09-28). Real progress resets it.
+        backoff = self._poll
         while cycles < max_cycles:
             await self._run_between_cycles()
             progressed = await self._cycle()
@@ -2422,9 +2475,10 @@ class Orchestrator:
                     if hollow == HOLLOW_CYCLES_NOTED:
                         self._note(f"{hollow} cycles in a row claimed progress with no durable change")
                         logger.warning("orchestrator.hollow_progress cycles=%s", hollow)
-                    await asyncio.sleep(self._poll)
+                    await asyncio.sleep(backoff)
+                    backoff = min(max(self._poll, backoff * 2), WAIT_BACKOFF_MAX)
                     continue
-                mark, hollow = moved, 0
+                mark, hollow, backoff = moved, 0, self._poll
                 if cycles % RECONCILE_EVERY_CYCLES == 0:
                     await self.actions.reconcile()
                 # P2.3e: a progressing cycle does not sleep, and the in-process bridge
@@ -2448,7 +2502,11 @@ class Orchestrator:
                 return
             if self._has_inflight():
                 idle_rounds = 0
-                await asyncio.sleep(self._poll)
+                moved = self._durable_watermark()
+                if moved != mark:
+                    mark, backoff = moved, self._poll
+                await asyncio.sleep(backoff)
+                backoff = min(max(self._poll, backoff * 2), WAIT_BACKOFF_MAX)
                 continue
             idle_rounds += 1
             if idle_rounds >= 2:
@@ -7528,12 +7586,17 @@ class Orchestrator:
         The two ride on the same intent kind, so "is a plan intent open" answers yes to
         a synthesis round as well — which is right for "do not ask two questions at
         once" and wrong for "has the Planner already been asked".
+
+        Operation proposal / outcome reviews ride on the same kind too, and they run
+        in the middle of a Mission: counting them held a repair round for another
+        branch until an unrelated publish was reviewed (NEXT-TG-1.0 §0.6 overlap 3,
+        §7.3 item 4). A root review still counts: planning under it would stale it.
         """
 
         return any(
             intent.kind == "plan"
             and intent.mission_id == mission_id
-            and str(intent.config.get("role", "")) != "method_synthesizer"
+            and str(intent.config.get("role", "")) not in NOT_PLANNER_ROLES
             for intent in self.store.list_intents(
                 "PENDING", "CLAIMED", "AGENT_CREATED", "SUBMITTED"
             )
@@ -12641,6 +12704,26 @@ class Orchestrator:
             )
         )
 
+    def _final_review_unreadable_detail(self, mission_id: str) -> dict[str, Any]:
+        """The final review ended without a verdict: its reply failed decoding twice.
+
+        Real run 2026-09-28 (mission-655daf8071519553): the stop said only
+        ``no_dispatchable_work``; the cause was the final reviewer's reply, still
+        undecodable after its one format repair. Say so in the report.
+        """
+
+        for event in self.store.iter_events(mission_id):
+            if event.type == "AssuranceReviewFormatExhausted" and str(
+                event.payload.get("review_key", "")
+            ).startswith("assurance-mission-final:"):
+                return {
+                    "final_review": {
+                        "reason": str(event.payload.get("reason", "")),
+                        "review_key": str(event.payload.get("review_key", "")),
+                    }
+                }
+        return {}
+
     def _root_review_stop_detail(
         self, mission: Mission, new_mode: HierarchicalDispatch
     ) -> dict[str, Any]:
@@ -12663,7 +12746,7 @@ class Orchestrator:
             RootReviewStatus.REVIEW_REJECTED,
             RootReviewStatus.CUT_BUDGET_SPENT,
         }:
-            return {}
+            return self._final_review_unreadable_detail(mission.id)
         package = getattr(state, "package", None)
         package_id = "" if package is None else str(package.package_id)
         active = new_mode.semantics().active_plan_revision(mission.id)

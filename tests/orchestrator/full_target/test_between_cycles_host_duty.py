@@ -100,11 +100,33 @@ def test_a_cycle_that_claims_progress_with_no_durable_change_sleeps(monkeypatch)
     fake._cycle = cycle
     fake._poll = 0.25
     asyncio.run(Orchestrator.run(fake))
-    assert slept.count(0.25) >= 5  # every hollow cycle waited one poll interval
+    assert len([s for s in slept if s >= 0.25]) >= 5  # every hollow cycle waited
 
     claims["left"] = 5
     slept.clear()
     marks = iter(range(100))
     fake._durable_watermark = lambda: (next(marks),)
     asyncio.run(Orchestrator.run(fake))
-    assert slept.count(0.25) <= 2  # real progress keeps going without the poll sleep
+    assert len([s for s in slept if s >= 0.25]) <= 2  # real progress keeps going without it
+
+
+def test_a_wait_that_writes_nothing_backs_off_to_a_bound(monkeypatch):
+    """Real run 2026-09-28: polling every 50 ms through a whole model turn held a core
+    at 100% with nothing written. The wait doubles up to WAIT_BACKOFF_MAX."""
+
+    from agent_orchestrator.orchestrator import event_handler
+
+    slept = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(seconds):
+        slept.append(seconds)
+        await real_sleep(0)
+
+    monkeypatch.setattr(event_handler.asyncio, "sleep", sleep)
+    fake = _loop(inflight_rounds=12, duty=None)
+    fake._poll = 0.05
+    asyncio.run(Orchestrator.run(fake))
+    waits = [s for s in slept if s]
+    assert waits[0] == 0.05 and waits[1] == 0.1
+    assert max(waits) == event_handler.WAIT_BACKOFF_MAX
