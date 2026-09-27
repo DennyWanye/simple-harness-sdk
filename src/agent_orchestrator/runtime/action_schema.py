@@ -8,6 +8,7 @@ Never serialize connector objects or their machine-local configuration into cont
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -157,6 +158,43 @@ def worker_action_contract(
             "your Result artifacts as well."
         ),
     }
+
+
+def with_candidate_targets(listed: Sequence[Any], workspace: Any) -> list[Any]:
+    """The file an operation candidate names is part of the step's own Result.
+
+    2A upstream run: a Worker that publishes a file it received unchanged kept leaving
+    it off its artifact list (its template asks for the files it *wrote*), even with
+    ``artifact_path_rule`` in its contract, and the candidate was refused as
+    ``artifact_not_in_result``.  So the system lists it — only a real file inside this
+    Attempt's workspace, never another candidate.  Identity is still bound later from
+    the accepted Result by ``bind_artifact_params``; nothing here trusts the model.
+    """
+
+    from ..artifacts.workspace import WorkspaceError
+
+    out = list(listed)
+    for path in [item for item in listed if isinstance(item, str)]:
+        if not (path.startswith("actions/") and path.endswith(".json")):
+            continue
+        try:
+            candidate = json.loads(workspace.read_text(path))
+        except (WorkspaceError, OSError, ValueError):
+            continue
+        params = candidate.get("params") if isinstance(candidate, Mapping) else None
+        target = params.get("artifact_path") if isinstance(params, Mapping) else None
+        if not isinstance(target, str) or not target.strip():
+            continue
+        target = target.strip()
+        if target in out or target.startswith("actions/"):
+            continue
+        try:
+            if not workspace.resolve(target).is_file():
+                continue
+        except (WorkspaceError, OSError):
+            continue
+        out.append(target)
+    return out
 
 
 def planner_action_contract(

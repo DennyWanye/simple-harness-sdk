@@ -9279,6 +9279,12 @@ class Orchestrator:
         # the files this Attempt actually wrote — so a bad claim is a bounded repair
         # on the same Attempt rather than a wrong artifact bound downstream.
         claims = self._port_claims_from(raw, attempt)
+        if isinstance(raw.get("artifacts"), list):
+            from ..runtime.action_schema import with_candidate_targets
+
+            raw["artifacts"] = with_candidate_targets(
+                raw["artifacts"], self.assembled.workspaces.get(attempt.id)
+            )
         client_ids = {raw.get("id"), raw.get("result_id")} - {None}
         if len(client_ids) > 1:
             raise ContractError("result carries both id and result_id with different values")
