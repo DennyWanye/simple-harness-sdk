@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from simple_harness.agents import AgentConfig, AgentLimits, AgentTurnState
@@ -30,6 +31,8 @@ REVIEW_INSTRUCTIONS = """[role:operation_proposal_reviewer]
 "mission_criteria":[{"criterion":"原 criterion_id","met":true,"reason":"依据"}]}
 verdict 实际填写 PASS 或 FAIL；任何 met=false 必须对应 blocker，存在 blocker 必须 FAIL。
 """
+
+logger = logging.getLogger("agent_orchestrator")
 
 
 def ensure_operation_runtime(orchestrator: Any) -> OperationMaterializationRuntime:
@@ -81,18 +84,13 @@ def prepare_review(orchestrator: Any, sources: Any, payloads: Any, package_id: s
     from ..storage.assurance_store import AssuranceStore
 
     if AssuranceStore(orchestrator.store).lane(sources.command.mission_id) == "ASSURANCE_1_1":
-        # BW03: the same frozen draft, reviewed on the Assurance round transport
-        # inside T0's own UoW; the legacy operation reviewer intent is not created.
-        from ..assurance.codec import AssuranceError
-        from .assurance_purpose_reviews import assurance_review_runtime
-
-        mission = orchestrator.store.get_mission(sources.command.mission_id)
-        try:
-            assurance_review_runtime(orchestrator.commit).ensure_action_proposal(
-                mission, draft=draft, sources=sources, payloads=payloads
-            )
-        except AssuranceError as error:
-            raise OperationCompletionError("OP_REVIEW_UNAVAILABLE", str(error)) from error
+        # BW03: the same frozen draft is reviewed on the Assurance round transport;
+        # the legacy operation reviewer intent is not created.  T0 only persists the
+        # draft (package, input manifest, four check receipts): the review input
+        # embeds the frozen payload files and CAS bytes are never read inside a
+        # transaction (real run 2026-09-27: CAS_READ_INSIDE_TRANSACTION at
+        # submission).  ``ensure_assured_proposal_reviews`` opens the round after
+        # T0 commits.
         return draft
     decision = orchestrator._route_service("critic", sources.command.mission_id)
     config = AgentConfig(
@@ -228,6 +226,58 @@ async def collect_operation_review(
         orchestrator._settle_service_if_known(
             intent.subject_id, mission.id, task_id=None if row is None else row["producer_task_id"]
         )
+
+
+def ensure_assured_proposal_reviews(orchestrator: Any, mission_id: str) -> bool:
+    """Open the Assurance ACTION_PROPOSAL round for each submitted intent, outside T0.
+
+    One round per frozen package (``assurance_review_invocations`` is the durable
+    marker), so a later loop round or a restart never opens a second one.  A
+    refusal is logged and retried next round; it never falls back to the legacy
+    reviewer.
+    """
+    from ..assurance.codec import AssuranceError
+    from ..storage.assurance_store import AssuranceStore
+    from .assurance_purpose_reviews import assurance_review_runtime, purpose_review_key
+
+    store = orchestrator.store
+    rows = OperationIntentStore(store).for_mission(mission_id)
+    if not rows:
+        return False
+    try:
+        if AssuranceStore(store).lane(mission_id) != "ASSURANCE_1_1":
+            return False
+    except AssuranceError:
+        return False
+    progressed = False
+    for row in rows:
+        package_id = str(row["review_package_id"])
+        if store.get_receipt("materialize:" + row["intent_id"]) is not None:
+            continue
+        if HtnStore(store).official_review_record(package_id) is not None:
+            continue
+        key = purpose_review_key("ACTION_PROPOSAL", mission_id, package_id)
+        if store.connection.execute(
+            "SELECT 1 FROM assurance_review_invocations WHERE mission_id=? AND review_key=?",
+            (mission_id, key),
+        ).fetchone() is not None:
+            continue
+        try:
+            with store.transaction():
+                sources, payloads = _current_inputs(orchestrator, row)
+                draft = coordinator_for(orchestrator, sources).prepare_review(
+                    sources, payloads, package_id=package_id
+                )
+            assurance_review_runtime(orchestrator.commit).ensure_action_proposal(
+                store.get_mission(mission_id), draft=draft, sources=sources, payloads=payloads
+            )
+            progressed = True
+        except (AssuranceError, ContractError, ValueError) as error:
+            logger.warning(
+                "assured proposal review not opened intent=%s: %s: %s",
+                row["intent_id"], type(error).__name__, error,
+            )
+    return progressed
 
 
 def recover_materializations(orchestrator: Any, mission_id: str) -> bool:

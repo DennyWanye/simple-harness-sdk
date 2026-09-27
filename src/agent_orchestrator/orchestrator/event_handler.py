@@ -11979,9 +11979,12 @@ class Orchestrator:
         if not tasks or mission.status is not MissionStatus.ACTIVE:
             return False
         from .operation_runtime import (
-            advance_operation_outcomes, dispatch_materialized_operations, recover_materializations,
+            advance_operation_outcomes, dispatch_materialized_operations,
+            ensure_assured_proposal_reviews, recover_materializations,
         )
 
+        if ensure_assured_proposal_reviews(self, mission.id):
+            return True
         if recover_materializations(self, mission.id):
             return True
         if await dispatch_materialized_operations(self, mission.id):
