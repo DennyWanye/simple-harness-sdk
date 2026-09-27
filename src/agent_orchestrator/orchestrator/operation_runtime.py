@@ -249,6 +249,7 @@ def ensure_assured_proposal_reviews(orchestrator: Any, mission_id: str) -> bool:
             return False
     except AssuranceError:
         return False
+    ensure_operation_runtime(orchestrator)  # _current_inputs needs the bound runtime
     progressed = False
     for row in rows:
         package_id = str(row["review_package_id"])
