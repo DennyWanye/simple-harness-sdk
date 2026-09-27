@@ -15,5 +15,6 @@ from agent_orchestrator.storage import schema
 
 
 def test_the_root_lookup_has_an_index() -> None:
-    assert schema.MIGRATIONS[-1].name == "orchestrator-commit-receipts-kind-index"
-    assert "commit_receipts(kind)" in schema.MIGRATIONS[-1].ddl
+    # Looked up by name: a later migration (29, NEXT-TG-1.0 2A) must not hide it.
+    [index] = [m for m in schema.MIGRATIONS if m.name == "orchestrator-commit-receipts-kind-index"]
+    assert "commit_receipts(kind)" in index.ddl

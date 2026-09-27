@@ -199,3 +199,37 @@ def test_the_accept_transaction_uses_the_same_declaration(monkeypatch):
         connectors={}, deployment=None)
     assert reached == [OPERATION_CANDIDATE_FILE]  # got past the declaration check
     assert "undeclared_action_output" not in str(rejected)
+
+
+def test_the_published_artifact_is_verified_against_the_accepted_inputs(monkeypatch):
+    """2A.1j：审阅员两次以"参数所指产物≠候选文件"误拒发布。确定性检查现在自己核对：参数要
+    发布的产物必须是冻结已验收输入里的同一产物（id 与哈希一致），并把核对结果交给审阅员。
+
+    **Mutation**: return a fact without checking membership → the stranger case goes red."""
+    from agent_orchestrator.orchestrator import operation_proposal_review as review
+    import agent_orchestrator.storage.htn_store as htn
+
+    accepted = SimpleNamespace(id="artifact-notes", content_hash="5" * 64)
+
+    class _Htn:
+        def __init__(self, store):
+            pass
+
+        def get_acceptance(self, acceptance_id):
+            return SimpleNamespace(artifact_refs=(accepted,))
+
+    monkeypatch.setattr(htn, "HtnStore", _Htn)
+
+    def payloads(artifact_id, digest):
+        return SimpleNamespace(parameters=SimpleNamespace(
+            effective_params={"artifact_id": artifact_id, "artifact_path": "NOTES.md", "content_hash": digest},
+            accepted_input_refs=(SimpleNamespace(id="acc-1"),)))
+
+    fact = review._published_artifact(None, payloads("artifact-notes", "5" * 64))
+    assert fact["in_accepted_inputs"] is True and fact["accepted_by"] == "acc-1"
+    with pytest.raises(review.ActionProposalReviewError, match="not an accepted input"):
+        review._published_artifact(None, payloads("artifact-stranger", "5" * 64))
+    with pytest.raises(review.ActionProposalReviewError, match="hash differs"):
+        review._published_artifact(None, payloads("artifact-notes", "6" * 64))
+    assert review._published_artifact(None, SimpleNamespace(parameters=SimpleNamespace(
+        effective_params={}, accepted_input_refs=()))) is None

@@ -159,7 +159,13 @@ def _policy_ref() -> TypedRef:
 def _criteria() -> tuple[Criterion, ...]:
     statements = {
         "operation-intent-scope": "The frozen proposal matches the approved operation intent and scope.",
-        "operation-parameters-and-candidate": "The frozen parameters bind the exact candidate bytes and accepted inputs.",
+        "operation-parameters-and-candidate": (
+            "The frozen parameters were derived from the exact candidate bytes, and the "
+            "artifact they will publish is an artifact of the same accepted inputs, with "
+            "the same id and content hash.  The candidate file is the operation's "
+            "description; the published content is that accepted artifact, so the two "
+            "are expected to be different files."
+        ),
         "operation-effect-capability": "The current registered adapter profile supports the approved effect milestone.",
         "operation-write-safety": "The registered operation supports the approved conditional-write safety policy.",
     }
@@ -206,11 +212,40 @@ def _assert_frozen_payload_identity(
             raise ActionProposalReviewError("OP_REVIEW_PAYLOAD_STALE", name)
 
 
+def _published_artifact(store: Store, payloads: FrozenOperationPayloadInputs) -> dict[str, Any] | None:
+    """The artifact the frozen parameters will publish, verified against the accepted
+    inputs (2A upstream run: the reviewer twice judged "params ≠ candidate" because the
+    package only named the acceptance, not that the published file belongs to it).
+
+    ``None`` when the operation publishes no artifact.  An ``artifact_id`` that is not
+    an accepted artifact of the frozen accepted inputs, or whose hash differs, is a
+    refusal here — never a judgement left to the reviewer.
+    """
+    params = payloads.parameters.effective_params
+    artifact_id = params.get("artifact_id")
+    if artifact_id is None:
+        return None
+    from ..storage.htn_store import HtnStore
+
+    htn = HtnStore(store)
+    for ref in payloads.parameters.accepted_input_refs:
+        acceptance = htn.get_acceptance(str(ref.id))
+        for accepted in acceptance.artifact_refs:
+            if accepted.id == artifact_id:
+                if accepted.content_hash != params.get("content_hash"):
+                    raise ActionProposalReviewError("OP_REVIEW_PAYLOAD_STALE", "published artifact hash differs")
+                return {"artifact_id": artifact_id, "artifact_path": params.get("artifact_path"),
+                        "content_hash": accepted.content_hash, "accepted_by": str(ref.id),
+                        "in_accepted_inputs": True}
+    raise ActionProposalReviewError("OP_REVIEW_SOURCE_UNRESOLVED", "published artifact is not an accepted input")
+
+
 def _checks(
     sources: PreparedOperationIntentSources,
     payloads: FrozenOperationPayloadInputs,
     *,
     input_hash: str,
+    published: Mapping[str, Any] | None = None,
 ) -> tuple[ActionProposalCheckDocument, ...]:
     proposal = payloads.action_proposal
     checks = (
@@ -241,6 +276,8 @@ def _checks(
                     ref.to_json() for ref in payloads.parameters.accepted_input_refs
                 ],
                 "raw_candidate_hash": content_hash_of(sources.raw_candidate_bytes.decode("utf-8")),
+                # The candidate is the operation's description; this is what it publishes.
+                **({} if published is None else {"published_artifact": dict(published)}),
             },
         ),
         (
@@ -355,7 +392,8 @@ def build_action_proposal_review(
         "raw_candidate_hash": content_hash_of(sources.raw_candidate_bytes.decode("utf-8")),
     }
     manifest_hash = content_hash_of(manifest)
-    checks = _checks(sources, payloads, input_hash=manifest_hash)
+    checks = _checks(sources, payloads, input_hash=manifest_hash,
+                     published=_published_artifact(store, payloads))
     package = ReviewPackage(
         package_id=ReviewPackageId(package_id),
         purpose=ReviewPurpose.ACTION_PROPOSAL,
