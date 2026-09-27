@@ -1212,6 +1212,18 @@ class ResolutionCommitsMixin:
                             raise ResolutionCommitRejected("OP_OUTCOME_SOURCE_UNAVAILABLE",
                                 "root review did not include current effect acceptance")
                         for criterion_id in proof["criterion_ids"]:
+                            if assured_root:
+                                # The assured V1 record and its resolution carry no
+                                # evidence refs (they live in the certified manifest):
+                                # the review above included the current effect
+                                # acceptance, and the certificate's re-decided grade
+                                # must be PASS (real run 2026-09-27: every assured
+                                # root with an effect was refused here).
+                                if assured.effective_grades.get(criterion_id) != "PASS":
+                                    raise ResolutionCommitRejected(
+                                        "OP_OUTCOME_SOURCE_UNAVAILABLE",
+                                        "root effect criterion is not certified PASS")
+                                continue
                             for outcomes in (reviewed, resolved):
                                 item = outcomes.get(criterion_id)
                                 actual = set() if item is None else {
