@@ -311,9 +311,9 @@ class TaskGraphDispatchBinding:
         if len(candidates) != 1 or view.accepted is None:
             raise StoreError("TASKGRAPH_DISPATCH_SOURCE_INCOMPLETE")
         occurrence = candidates[0]
-        result = self.dispatch_for(task.mission_id).resolved_inputs(task.mission_id, view.network, occurrence,
-            accepted=view.accepted, witnesses=view.licences.get(task_id, {}), now_ms=moment)
-        if result.problems or result.manifest is None or not result.manifest.is_frozen:
+        # NEXT-TG-1.0 §5.2: the resolution this read's report was judged against.
+        result = view.resolutions.get(occurrence.occurrence_id)
+        if result is None or result.problems or result.manifest is None or not result.manifest.is_frozen:
             raise StoreError("TASKGRAPH_INPUT_NOT_FROZEN")
         manifest = result.manifest
         rules = self.dispatch_for(task.mission_id).target_rules_for(task.id)

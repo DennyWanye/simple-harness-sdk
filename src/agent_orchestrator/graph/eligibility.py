@@ -442,6 +442,10 @@ class ReadinessReport:
     plan_revision: PlanRevision
     details: tuple[ReadinessDetail, ...] = ()
     evaluated_at_ms: int = 0
+    #: The hash of the frozen input manifest this verdict checked, when there was
+    #: one (NEXT-TG-1.0 §5.2).  :func:`admit_for_dispatch` admits that manifest and
+    #: no other, so readiness and admission cannot describe two different inputs.
+    input_manifest_hash: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -1312,6 +1316,8 @@ def evaluate_readiness(
         settlements=settlements,
     )
     read_set = build_read_set(view, plan, evidence, input_result)
+    checked = input_result.manifest if input_result is not None else None
+    checked_hash = checked.manifest_hash() if checked is not None and checked.is_frozen else None
 
     def report(reason: ReadinessReason, details: tuple[ReadinessDetail, ...]) -> ReadinessReport:
         return ReadinessReport(
@@ -1323,6 +1329,7 @@ def evaluate_readiness(
             plan_revision=plan.plan_revision,
             details=details,
             evaluated_at_ms=context.now_ms,
+            input_manifest_hash=checked_hash,
         )
 
     scope = globals()
@@ -1584,6 +1591,11 @@ def admit_for_dispatch(
     # Hash the manifest *before* opening the admission window, so an unfrozen
     # manifest raises ManifestNotFrozen without the guard ever being lifted.
     manifest_hash = manifest.manifest_hash()
+    if manifest_hash != report.input_manifest_hash:
+        raise NotEligible(
+            "this is not the manifest readiness checked: admission takes the verdict's "
+            "own input, not a second resolution or an empty stand-in (NEXT-TG-1.0 §5.2)"
+        )
     marker = _ADMITTING.set(True)
     try:
         admitted = EligiblePrimitiveTask(

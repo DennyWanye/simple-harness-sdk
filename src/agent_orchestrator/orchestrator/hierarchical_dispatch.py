@@ -786,6 +786,10 @@ class NetworkView:
     #: judged against (P2.3c part 2c; the sibling of ``licences`` on the DATA lane).
     starts: Mapping[str, Mapping[str, ValidityWitness]] = field(default_factory=dict)
     licences: Mapping[str, Mapping[str, ValidityWitness]] = field(default_factory=dict)
+    #: The input resolution each report was judged against (NEXT-TG-1.0 §5.2).  An
+    #: admission takes *this* resolution; it never resolves the inputs a second time
+    #: and never stands an empty manifest in for a missing one.
+    resolutions: Mapping[OccurrenceId, ResolutionResult] = field(default_factory=dict)
 
     @property
     def planning_frontier(self) -> PlanningFrontier:
@@ -1226,22 +1230,25 @@ class HierarchicalDispatch:
         moment = int(self.store.now * 1000) if now_ms is None else int(now_ms)
         views: dict[OccurrenceId, TaskView] = {}
         reports: dict[OccurrenceId, ReadinessReport] = {}
+        resolutions: dict[OccurrenceId, ResolutionResult] = {}
         for spec in network.occurrences:
             view = self.task_view(mission_id, network, spec)
             views[spec.occurrence_id] = view
+            resolution = self.resolved_inputs(
+                mission_id,
+                network,
+                spec,
+                accepted=accepted,
+                witnesses=licences.get(str(spec.task_id), {}),
+                now_ms=moment,
+            )
+            resolutions[spec.occurrence_id] = resolution
             reports[spec.occurrence_id] = evaluate_readiness(
                 view,
                 plan,
                 outcomes,
                 EvidenceView(witnesses={**witnesses, **starts.get(str(spec.task_id), {})}),
-                self.resolved_inputs(
-                    mission_id,
-                    network,
-                    spec,
-                    accepted=accepted,
-                    witnesses=licences.get(str(spec.task_id), {}),
-                    now_ms=moment,
-                ),
+                resolution,
                 now_ms=moment,
                 settlements=settlements,
             )
@@ -1256,6 +1263,7 @@ class HierarchicalDispatch:
             witnesses=witnesses,
             licences=licences,
             starts=starts,
+            resolutions=resolutions,
         )
 
     def task_view(
@@ -1460,10 +1468,15 @@ class HierarchicalDispatch:
             for item in network.data_requirements
             if item.consumer_occurrence == spec.occurrence_id
         ]
-        if not requirements:
+        binding = network.binding_for_occurrence(spec.occurrence_id)
+        # NEXT-TG-1.0 §5.2: "no requirement" is a legitimate no-input only when the
+        # contract declares no required input port either.  A required port the plan
+        # drew no edge for goes through the resolver, which names it
+        # UNBOUND_REQUIRED_PORT, instead of becoming an empty success below.
+        if not requirements and not any(port.required for port in binding.input_ports):
             return None
         return resolve_input_manifest(
-            network.binding_for_occurrence(spec.occurrence_id),
+            binding,
             network,
             accepted if accepted is not None else self.accepted_outputs(mission_id, network),
             consumer_occurrence=spec.occurrence_id,
@@ -2839,18 +2852,21 @@ class HierarchicalDispatch:
                     )
                 )
                 continue
-            result = self.resolved_inputs(
-                mission_id,
-                network,
-                spec,
-                accepted=accepted,
-                witnesses=licences.get(task_id, {}),
-            )
-            manifest = (
-                result.manifest
-                if result.manifest is not None
-                else InputManifest(consumer_task_ref=spec.task_id)
-            )
+            # NEXT-TG-1.0 §5.2: the resolution the report was judged against — not a
+            # second resolution, and never an empty manifest standing in for none.
+            result = view.resolutions.get(spec.occurrence_id)
+            manifest = None if result is None else result.manifest
+            if manifest is None:
+                refusals.append(
+                    DispatchRefusal(
+                        task_id=task_id,
+                        occurrence_id=str(spec.occurrence_id),
+                        reason=ReadinessReason.STALE_BINDING,
+                        detail_codes=("input_resolution_absent",),
+                        detail="the read that judged this occurrence ready carries no input manifest",
+                    )
+                )
+                continue
             try:
                 readiness[task_id] = admit_for_dispatch(
                     report, task_view, view.plan, manifest, now_ms=moment

@@ -550,6 +550,9 @@ class Orchestrator:
         self._client_ids: dict[str, str | None] = {}
         self._released: set[str] = set()
         self.progress_log: list[str] = []
+        #: intent id → the refusal last noted for its collection, so a refusal that
+        #: repeats every round is noted once per distinct reason (NEXT-TG-1.0 §5.1).
+        self._collection_refusals: dict[str, str] = {}
         self.cancel_receipts: list[dict[str, Any]] = []
         self._rotation = 0  # D6-1: round-robin start across active Missions
         self._verifying: dict[str, asyncio.Task[bool]] = {}  # D6-9': bounded verification set
@@ -3312,13 +3315,20 @@ class Orchestrator:
             try:
                 if await self._collect(intent):
                     progressed = True
+                    self._collection_refusals.pop(intent.intent_id, None)
             except (BudgetError, CommitRejected) as error:
                 # 2026-09-25: one Mission's refused collection must not stop every
                 # other Mission's results (it re-raised out of run() each round).
-                # The row stays SUBMITTED and is retried next round, visibly.
-                self._note(f"intent {intent.id}: collection refused ({type(error).__name__}: {error})")
-                logger.warning("orchestrator.collection_refused intent=%s mission=%s error=%s: %s",
-                               intent.id, intent.mission_id, type(error).__name__, error)
+                # The row stays SUBMITTED and is retried next round, visibly — noted
+                # once per distinct reason, not once per round.  (It read ``intent.id``,
+                # which does not exist, so the refusal it meant to isolate became an
+                # AttributeError that stopped every Mission: NEXT-TG-1.0 §5.1.)
+                reason = f"{type(error).__name__}: {error}"
+                if self._collection_refusals.get(intent.intent_id) != reason:
+                    self._collection_refusals[intent.intent_id] = reason
+                    self._note(f"intent {intent.intent_id}: collection refused ({reason})")
+                    logger.warning("orchestrator.collection_refused intent=%s mission=%s error=%s",
+                                   intent.intent_id, intent.mission_id, reason)
         # D6-9': verification runs in a bounded set of tasks (``verifier_workers``); the loop
         # reaps finished ones and starts new ones.  A crash inside a verification is raised at
         # the next phase boundary — nothing else is decided after it (fault-injection tests)
