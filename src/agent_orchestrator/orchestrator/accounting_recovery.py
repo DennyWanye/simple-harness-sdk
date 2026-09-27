@@ -63,6 +63,10 @@ def _account_subject(commit, intent, task_id):
         if package.account in {ReviewAccount.MISSION, ReviewAccount.MISSION_PLANNING}:
             return mission.id
         _require(task_id == binding.to_json()["subject"]["owner_task_ref"]["id"], "review account owner")
+        if package.account is ReviewAccount.OPERATION_TASK:
+            # Same rule as the invocation writer: the operation's producer Task.
+            from .assurance_review_transport import operation_task_id
+            return operation_task_id(commit.store, mission.id, package)
         return task_id
     return intent.mission_id if intent.kind == "manager" else (task_id or intent.mission_id)
 

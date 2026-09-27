@@ -155,7 +155,7 @@ def _receipt_ref(
     return AssuranceRef("commit_receipt", Pin(receipt_id, 0, fingerprint(body)))
 
 
-def _operation_task_id(store: Any, mission_id: str, package: Any) -> str:
+def operation_task_id(store: Any, mission_id: str, package: Any) -> str:
     """The producer Task of the operation a proposal/outcome package reviews."""
     row = store.connection.execute(
         "SELECT producer_task_id FROM operation_intent_bindings "
@@ -220,7 +220,7 @@ def ensure_review_invocation(
         # reviewer path.  The subject's owner Task is the effect owner's Scope Task,
         # usually the root compound, whose budget is 0 by design (real run
         # 2026-09-27: BudgetExhausted on the root account, every round).
-        account_id = task_account(_operation_task_id(commit.store, mission_id, package))
+        account_id = task_account(operation_task_id(commit.store, mission_id, package))
     else:
         account_id = task_account(owner_task_id)
     invocation_config = dict(config)
