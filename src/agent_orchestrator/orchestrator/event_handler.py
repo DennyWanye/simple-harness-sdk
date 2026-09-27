@@ -2534,6 +2534,15 @@ class Orchestrator:
         # out of cycles is the caller's bound, not a statement about the Mission.
         await self._record_hierarchical_stall()
 
+    def durable_watermark(self) -> tuple[Any, ...]:
+        """Public: what a real step of progress leaves behind (see ``_durable_watermark``).
+
+        An embedding host compares it across its own rounds to tell a quiet library
+        from a busy one without counting the loop's observation-only events.
+        """
+
+        return self._durable_watermark()
+
     def _durable_watermark(self) -> tuple[Any, ...]:
         """What a real step of progress leaves behind in the store.
 

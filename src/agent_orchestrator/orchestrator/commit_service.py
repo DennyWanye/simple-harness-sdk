@@ -13,6 +13,8 @@ Orchestrator, the API and the recovery path do.
 
 from __future__ import annotations
 
+import contextlib
+
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -756,23 +758,27 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             # A later generation may reach the same terminal status. It must not
             # replay an earlier Task-only event and borrow its conclusion.
             idempotency_key += f":taskgraph:{task.version}"
-        event = self._store.append_event(
-            Event(
-                id=ids.event_id(idempotency_key),
-                type=event_type,
-                trace_id=ids.trace_id(mission_id),
-                mission_id=mission_id,
-                task_id=task_id,
-                attempt_id=attempt_id,
-                actor_type=actor_type,
-                actor_id=actor_id,
-                payload=dict(payload or {}),
-                idempotency_key=idempotency_key,
-                created_at=self._store.now,
+        # The terminal event and its TaskGraph record are one unit: a caller that
+        # emitted outside a transaction (a cancellation path, real run 2026-09-27)
+        # failed every loop round with TASKGRAPH_TERMINAL_TRANSACTION_REQUIRED.
+        with self._store.transaction() if bind_terminal else contextlib.nullcontext():
+            event = self._store.append_event(
+                Event(
+                    id=ids.event_id(idempotency_key),
+                    type=event_type,
+                    trace_id=ids.trace_id(mission_id),
+                    mission_id=mission_id,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    payload=dict(payload or {}),
+                    idempotency_key=idempotency_key,
+                    created_at=self._store.now,
+                )
             )
-        )
-        if bind_terminal:
-            record_terminal_event(self._store, event)
+            if bind_terminal:
+                record_terminal_event(self._store, event)
         return event
 
     # ------------------------------------------------------------- missions
