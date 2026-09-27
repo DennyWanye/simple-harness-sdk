@@ -562,3 +562,44 @@ def test_a_linked_leaf_is_reviewed_on_its_links_not_on_every_criterion_its_type_
     assert sorted(scope.content_criterion_ids for scope in leaf_scopes) == [("leaf-1",), ("leaf-2",)]
     root = by_occurrence[str(plan.root_occurrence_ids[0])]
     assert "criterion-report" in root.content_criterion_ids
+
+
+def test_a_linked_leaf_does_not_take_an_effect_its_type_declares_for_every_step(tmp_path) -> None:
+    """Desktop 2026-09-27 (NEXT-TG-1.0 2A upstream run): "写 slugify.py … 最后把 NOTES.md
+    发布到授权目录".  The desktop leaf types declare every root criterion, the publish
+    criterion included, so every linked step "carried an effect criterion" with no
+    owner and the same deterministic REFINE was refused three times — any Mission
+    with a publish requirement and a multi-step Method failed planning.  As with
+    content, a linked leaf's blanket declaration is not its own: the effect stays with
+    its Obligation root and the leaves stay content.
+
+    **Mutation**: drop the linked-leaf condition on ``effect_linked`` → red
+    (``OP_COMPLETION_SCOPE_UNRESOLVED … carries an effect criterion``)."""
+
+    world, plan, plan_ref = _committed_network(tmp_path)
+    spec = _spec(world.mission.id)
+    leaves = {str(item.task_id) for item in plan.occurrences if item.form is TaskForm.PRIMITIVE}
+    declaring = dataclasses.replace(
+        plan,
+        task_bindings=tuple(
+            dataclasses.replace(
+                binding,
+                goal_signature=dataclasses.replace(
+                    binding.goal_signature,
+                    coverage_criteria=("criterion-report", "criterion-delivery")),
+            )
+            if str(binding.task_id) in leaves
+            else binding
+            for binding in plan.task_bindings
+        ),
+    )
+    scopes = compile_completion_scopes(spec, declaring, _approved_coverage(plan), plan_ref=plan_ref)
+    by_occurrence = {scope.occurrence_id: scope for scope in scopes}
+    root = by_occurrence[str(plan.root_occurrence_ids[0])]
+    assert root.role is CompletionScopeRole.AGGREGATE
+    assert root.owned_effect_keys == ("deliver-report",)
+    for item in plan.occurrences:
+        if item.form is TaskForm.PRIMITIVE:
+            leaf = by_occurrence[str(item.occurrence_id)]
+            assert leaf.role is CompletionScopeRole.CONTENT
+            assert not leaf.owned_effect_keys and not leaf.required_effect_keys

@@ -326,7 +326,11 @@ def compile_completion_scopes(
         declared_local = declared - content_keys - effect_criteria
         reviewed_content[occurrence_id].update(declared_local)
         local_review_ids[occurrence_id].update(declared_local)
-        if effect_criteria & declared:
+        # The same blanket declaration names the effect criteria too.  A linked leaf
+        # does not take an effect from it: the effect stays with its Obligation root
+        # (NEXT-TG-1.0 2A upstream run — every desktop Mission with a publish
+        # requirement and a multi-step Method failed planning here).
+        if effect_criteria & declared and occurrence_id not in linked_leaves:
             effect_linked.add(occurrence_id)
 
     authoritative_spec_content = (
