@@ -251,6 +251,7 @@ from .occurrence_tasks import (
 )
 from .plan_commits import PlanCommitRejected, PlanPrincipal
 from .resolution_commits import ResolutionCommitRejected, eligible_root_receipts
+from .taskgraph_epochs import planning_scope_digest
 
 logger = logging.getLogger("agent_orchestrator")
 
@@ -4367,9 +4368,7 @@ class Orchestrator:
             package_hash=package_hash(body),
             base_plan_revision=int(body["plan"]["plan_revision"]),
             requirements_revision=0 if latest is None else int(latest.revision),
-            scope_epoch_digest=sha256_hex(
-                {str(key): int(value) for key, value in sorted(epochs.items())}
-            ),
+            scope_epoch_digest=planning_scope_digest(epochs),
             subject_bindings_hash=subject_bindings_hash(body.get("planning_subjects", ())),
             visible_refs_digest=visible_refs_digest(body.get("visible_refs", ())),
             prompt_version=template.prompt_version,
@@ -4815,9 +4814,7 @@ class Orchestrator:
             visible_refs=visible_refs,
             plan_revision=int(network.plan_revision),
             requirements_revision=0 if latest is None else int(latest.revision),
-            scope_epoch_digest=sha256_hex(
-                {str(key): int(value) for key, value in sorted(epochs.items())}
-            ),
+            scope_epoch_digest=planning_scope_digest(epochs),
             package_version=self._planning_decision_package_version(body),
             package_hash=current_package_hash,
             prompt_version=prompt.prompt_version,
