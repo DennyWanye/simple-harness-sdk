@@ -382,14 +382,20 @@ class ExecutionProjection:
 _ENVELOPE = re.compile(r"<(result_envelope|planning_decision|method_proposal|critic_verdict)>(.*?)</\1>", re.S)
 _THINKING = re.compile(r"<thinking>.*?</thinking>", re.S)
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*\})\s*```", re.S)
-_TURN_KINDS = ("assistant", "tool_result", "feedback")
+#: ``feedback`` is the journal's catch-all kind (e.g. the SDK's mandatory-context
+#: control message carries its instruction text); it never leaves (review 2026-09-28).
+_TURN_KINDS = ("assistant", "tool_result")
 
 
 def turn_items(records: Iterable[Any], *, review: bool) -> tuple[list[dict[str, Any]], int, int]:
     """Whitelisted, redacted items of one Agent's journal; ``(items, hidden, through_seq)``.
 
-    ``instructions`` / ``user_input`` rows are skipped by kind; ``metadata`` (where a
-    provider keeps reasoning) is never read; ``<thinking>`` blocks are dropped."""
+    Only ``assistant`` and ``tool_result`` rows are read: ``instructions``,
+    ``user_input`` and the catch-all ``feedback`` rows are skipped by kind. Of
+    ``metadata`` (where a provider keeps reasoning) only the journal's own
+    preview marker is looked at — a large tool result is journaled in full and
+    again as a context preview, and the preview is not a second call.
+    ``<thinking>`` blocks are dropped."""
     items: list[dict[str, Any]] = []
     through = 0
     for record in records:
@@ -400,11 +406,10 @@ def turn_items(records: Iterable[Any], *, review: bool) -> tuple[list[dict[str, 
         if not isinstance(message, Mapping):
             continue
         if record.kind == "tool_result":
+            metadata = message.get("metadata")
+            if isinstance(metadata, Mapping) and "journal_full_record_seq" in metadata:
+                continue
             _push(items, _tool(message))
-        elif record.kind == "feedback":
-            text = _cut(message.get("content"), SAY_LIMIT)
-            if text:
-                items.append({"t": "feedback", "text": text})
         else:
             for piece in _assistant(message.get("content"), review=review):
                 _push(items, piece)

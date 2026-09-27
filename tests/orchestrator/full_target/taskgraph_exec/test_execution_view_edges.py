@@ -127,12 +127,18 @@ def test_turn_items_whitelist_drops_instructions_thinking_and_credentials():
             {"outcome": "succeeded", "value": {"path": "a.md", "bytes": 12, "content": "file body"}})}),
         _Record(5, "tool_result", {"name": "workspace_write_file", "content": json.dumps(
             {"outcome": "succeeded", "value": {"path": "a.md", "bytes": 12}})}),
-        _Record(6, "assistant", {"content": '<result_envelope>{"outcome":"candidate","summary":"done"}</result_envelope>'}),
+        _Record(6, "tool_result", {"name": "workspace_read_file", "content": json.dumps(
+            {"outcome": "succeeded", "value_preview": "…", "truncated": True}),
+            "metadata": {"journal_full_record_seq": 4}}),
+        _Record(7, "feedback", {"role": "system", "content": json.dumps(
+            {"kind": "mandatory_context_action_required", "instruction": "Use the currently authorized context_route"})}),
+        _Record(8, "assistant", {"content": '<result_envelope>{"outcome":"candidate","summary":"done"}</result_envelope>'}),
     ]
     items, hidden, through = turn_items(records, review=False)
     text = json.dumps(items, ensure_ascii=False)
-    assert through == 6 and hidden == 0
-    for leaked in ("[role:worker]", "context package", "private chain", "hidden", "file body", "b" * 30):
+    assert through == 8 and hidden == 0
+    for leaked in ("[role:worker]", "context package", "private chain", "hidden", "file body", "b" * 30,
+                   "context_route", "mandatory_context"):
         assert leaked not in text
     assert items[0]["t"] == "say" and "<redacted:api_key_sk>" in items[0]["text"]
     assert items[1] == {"t": "tool", "tool": "workspace_write_file", "ok": True, "path": "a.md", "bytes": 12, "count": 2}
