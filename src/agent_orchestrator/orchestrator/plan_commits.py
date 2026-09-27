@@ -1244,6 +1244,23 @@ class PlanCommitsMixin:
 
         instance_of = _occurrence_instances(network)
         for draft in delta.method_instances:
+            # The instance id is derived from (goal, occurrence, method, parameters),
+            # so a repair that re-grounds the very method and parameters already stored
+            # changes nothing and used to die on the table's UNIQUE constraint as an
+            # internal error (real run 2026-09-27, mission-bc2c094e9dc5e3b5). Say what
+            # the planner did instead; the whole commit rolls back.
+            try:
+                existing = semantics.method_instance_state(command.mission_id, str(draft.instance_id))
+            except StoreError:
+                existing = None
+            if existing is not None:
+                raise PlanCommitRejected(
+                    "REPAIR_NOT_ALLOWED",
+                    f"method {draft.method_ref.method_id} with these parameters is already "
+                    f"instance {draft.instance_id} ({existing}) for goal {draft.goal_id}; "
+                    "a repair must choose a different method or different parameters",
+                )
+        for draft in delta.method_instances:
             semantics.insert_method_instance(command.mission_id, draft, state="ADOPTED")
         for instance_id in delta.retired_instance_ids:
             semantics.set_method_instance_state(command.mission_id, str(instance_id), "RETIRED")

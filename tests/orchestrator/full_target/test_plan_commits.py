@@ -2553,3 +2553,23 @@ def test_the_network_snapshot_type_is_what_the_command_promises(tmp_path):
     world = _world(tmp_path)
     assert isinstance(world.command.network, TaskNetworkSnapshot)
     assert int(world.command.network.plan_revision) == 1
+
+
+def test_re_grounding_an_already_stored_method_instance_is_a_named_refusal(tmp_path):
+    """Real run 2026-09-27 (mission-bc2c094e9dc5e3b5): a REPAIR re-chose the adopted
+    method with the same parameters; its derived instance id was already stored and
+    the commit died on the UNIQUE constraint as an internal error. It is now refused
+    by name, and nothing is written."""
+
+    world = _world(tmp_path)
+    HtnStore(world.service.store).insert_method_instance(
+        world.mission.id, world.draft, state="ADOPTED"
+    )
+    before = _new_table_counts(world.service)
+    events = len(world.store.list_events(world.mission.id))
+    with pytest.raises(PlanCommitRejected) as caught:
+        world.commit()
+    assert caught.value.reason == "REPAIR_NOT_ALLOWED"
+    assert "different method or different parameters" in caught.value.detail
+    assert _new_table_counts(world.service) == before
+    assert len(world.store.list_events(world.mission.id)) == events

@@ -211,6 +211,8 @@ from ..verification.verifier_router import VERIFIER_VERSION, VerifierRouter
 from .action_commits import (
     ACTION_PREFIX,
     HANDOFF_READY_STATES,
+    IN_FLIGHT_ACTION_STATES,
+    OPEN_ACTION_STATES,
     ActionCommitError,
     CandidateRejected,
     check_candidate,
@@ -251,6 +253,18 @@ from .occurrence_tasks import (
     verification_failure_fingerprint,
 )
 from .plan_commits import PlanCommitRejected, PlanPrincipal
+from .progress import IdleFacts, Route, idle_verdict
+
+#: Events that observe the world without changing it (NEXT-TG-1.0 §3.6): a cycle
+#: that wrote only these made no progress.
+OBSERVATION_EVENTS = frozenset({
+    "HeartbeatReceived",
+    "TaskGraphConvergenceWakeRequested",
+    "AssuranceCloseoutEvaluated",
+    "AssuranceUseValidityChecked",
+    "HierarchicalMissionStalled",
+})
+HOLLOW_CYCLES_NOTED = 100
 from .resolution_commits import ResolutionCommitRejected, eligible_root_receipts
 from .taskgraph_epochs import planning_scope_digest
 
@@ -549,6 +563,11 @@ class Orchestrator:
         #: mission id → how many times this ``run()`` has already carried on because
         #: the stall confirmation moved the world (third-round review P1-A).
         self._stall_carry_ons: dict[str, int] = {}
+        #: The embedding host's own duties (NEXT-TG-1.0 2B, 2A.1g): see
+        #: :meth:`set_between_cycles`.
+        self._between_cycles: Callable[[], Any] | None = None
+        self._between_every = 0.0
+        self._between_last = 0.0
         self._client_ids: dict[str, str | None] = {}
         self._released: set[str] = set()
         self.progress_log: list[str] = []
@@ -1367,6 +1386,38 @@ class Orchestrator:
             self.store, self.commit, planning=planning, **kwargs
         )
         return self._hierarchical
+
+    def set_between_cycles(self, duty: Callable[[], Any] | None, *, every_seconds: float) -> None:
+        """Let the embedding host run its own duties while :meth:`run` is still going.
+
+        NEXT-TG-1.0 2A.1g (real run 2026-09-27): the Host issues planning grants,
+        check-policy approvals and TaskGraph enables only after ``run()`` returns, and
+        ``run()`` does not return while any turn anywhere is in flight. One Mission's
+        long model turn held every other Mission's grant for eleven minutes, and the
+        Mission waiting for it could never start. The duty runs between cycles, never
+        inside one, at most once per ``every_seconds``; its failure is logged and does
+        not end the run.
+        """
+
+        self._between_cycles = duty
+        self._between_every = max(0.0, float(every_seconds))
+        self._between_last = 0.0
+
+    async def _run_between_cycles(self) -> bool:
+        if self._between_cycles is None:
+            return False
+        now = asyncio.get_running_loop().time()
+        if now - self._between_last < self._between_every:
+            return False
+        self._between_last = now
+        try:
+            outcome = self._between_cycles()
+            if asyncio.iscoroutine(outcome):
+                outcome = await outcome
+        except Exception as error:  # noqa: BLE001 - a host duty never ends the run
+            logger.warning("orchestrator.between_cycles_failed error=%s", error)
+            return False
+        return bool(outcome)
 
     def install_hierarchical_deployment(self, world_factory: Any, *, start_gate: Any) -> None:
         """Install a deployment-owned, Mission-isolated world resolver.
@@ -2352,11 +2403,28 @@ class Orchestrator:
         # P1-A's carry-on budget is per ``run()``: a fresh execution cycle is allowed
         # to give a Mission the same benefit of the doubt the last one did.
         self._stall_carry_ons.clear()
+        mark = self._durable_watermark()
+        hollow = 0
         while cycles < max_cycles:
+            await self._run_between_cycles()
             progressed = await self._cycle()
             if progressed:
                 cycles += 1
                 idle_rounds = 0
+                moved = self._durable_watermark()
+                if moved == mark:
+                    # NEXT-TG-1.0 §3.6: a cycle that claims progress and left no
+                    # durable change (only observation events, only row versions)
+                    # is not allowed to skip the sleep — that is the busy loop that
+                    # held the CPU with nothing written. It still counts toward
+                    # ``max_cycles``, so the run keeps its old bound and verdicts.
+                    hollow += 1
+                    if hollow == HOLLOW_CYCLES_NOTED:
+                        self._note(f"{hollow} cycles in a row claimed progress with no durable change")
+                        logger.warning("orchestrator.hollow_progress cycles=%s", hollow)
+                    await asyncio.sleep(self._poll)
+                    continue
+                mark, hollow = moved, 0
                 if cycles % RECONCILE_EVERY_CYCLES == 0:
                     await self.actions.reconcile()
                 # P2.3e: a progressing cycle does not sleep, and the in-process bridge
@@ -2407,6 +2475,39 @@ class Orchestrator:
         # is the one ending the smoke test refuses.  No stop here either — running
         # out of cycles is the caller's bound, not a statement about the Mission.
         await self._record_hierarchical_stall()
+
+    def _durable_watermark(self) -> tuple[Any, ...]:
+        """What a real step of progress leaves behind in the store.
+
+        Observation-only events (heartbeats, periodic closeout and validity checks,
+        convergence wake-ups, stall records) are not progress; a new business event,
+        an intent / Attempt / result row change is.
+        """
+
+        connection = self.store.connection
+        try:
+            recent = connection.execute(
+                "SELECT seq, type FROM events ORDER BY seq DESC LIMIT 64"
+            ).fetchall()
+            seq = next((int(row[0]) for row in recent if row[1] not in OBSERVATION_EVENTS), None)
+            if seq is None and recent:
+                marks = ",".join("?" * len(OBSERVATION_EVENTS))
+                row = connection.execute(
+                    f"SELECT MAX(seq) FROM events WHERE type NOT IN ({marks})",  # noqa: S608
+                    tuple(sorted(OBSERVATION_EVENTS)),
+                ).fetchone()
+                seq = row[0]
+            rows = tuple(
+                tuple(connection.execute(sql).fetchone())
+                for sql in (
+                    "SELECT COUNT(*), MAX(updated_at) FROM dispatch_intents",
+                    "SELECT COUNT(*), MAX(updated_at) FROM attempts",
+                    "SELECT COUNT(*), MAX(updated_at) FROM results",
+                )
+            )
+        except sqlite3.Error:
+            return (object(),)  # unreadable: never equal, never suppresses progress
+        return (seq, *rows)
 
     def _has_pending_assurance_work(self, mission_id: str) -> bool:
         """Assurance work still queued for this Mission is progress in waiting.
@@ -2496,6 +2597,87 @@ class Orchestrator:
             return False
         return False
 
+    def _idle_facts(
+        self, mission: Mission, *, admissions: Any = None, read_plan: bool = True
+    ) -> tuple[IdleFacts, Any, Sequence[Any]] | None:
+        """The facts :func:`idle_verdict` routes on; None for a legacy Mission.
+
+        Cheap named waits are read first and short-circuit: the plan is read only
+        when no wait holds, because only a stall candidate needs its admissions.
+        ``admissions`` already read by the caller are reused rather than read again
+        (the confirmation reads them exactly once); ``read_plan=False`` asks only
+        whether a named wait holds.
+        """
+
+        new_mode = self._new_mode(mission)
+        if new_mode is None:
+            return None
+        rows = self.store.list_tasks(mission.id)
+        actions = self.store.list_actions(mission.id)
+        waits = {
+            "all_rows_terminal": bool(rows) and all(task.status in TERMINAL_TASK for task in rows),
+            "closeout_pending": self.commit.assured_closeout_pending(mission.id),
+            "root_resolved": self._root_resolved(mission, new_mode),
+            "running_rows": any(
+                task.status is TaskStatus.ACTIVE
+                and not self._awaiting_retry_decision(mission.id, task)
+                for task in rows
+            ),
+            "unknown_actions": any(a["state"] in IN_FLIGHT_ACTION_STATES for a in actions),
+            "approvals_pending": any(a["state"] in OPEN_ACTION_STATES for a in actions),
+            "operation_completion": self._has_pending_operation_completion(mission),
+            "assurance_work": self._has_pending_assurance_work(mission.id),
+            "repair_continuation_waiting": self._repair_continuation_waiting(mission.id),
+            "planning_wait": self._has_pending_planning_waits(mission.id),
+            "taskgraph_sources": bool(
+                self._taskgraph_notifications is not None
+                and self._taskgraph_notifications.awaiting_sources(mission.id)
+            ),
+        }
+        if any(waits.values()):
+            return IdleFacts(mission.id, **waits), None, rows
+        if admissions is None and not read_plan:
+            return IdleFacts(mission.id, plan_has_work=True, **waits), None, rows
+        try:
+            if admissions is None:
+                admissions = new_mode.admissions(mission.id)
+        except (GraphIntegrityError, ContractError, StoreError) as error:
+            # An unreadable plan is already reported by the integrity path; it is
+            # not this method's finding and must not become a second verdict.
+            self._note(f"mission {mission.id}: stall check could not read the plan ({error})")
+            return IdleFacts(mission.id, **waits), None, rows
+        plan_has_work = bool(admissions.refusals) or bool(admissions.readiness)
+        return IdleFacts(mission.id, plan_has_work=plan_has_work, **waits), admissions, rows
+
+    def _root_resolved(self, mission: Mission, new_mode: Any) -> bool:
+        """The root goal has an adopted resolution and the Mission is not judged yet."""
+
+        from ..storage.htn_store import HtnStore
+
+        try:
+            network = new_mode.network(mission.id)
+            htn = HtnStore(self.store)
+            for occurrence in network.root_occurrence_ids:
+                binding = htn.task_semantics_of(mission.id, str(network.occurrence(occurrence).task_id))
+                if binding is not None and htn.adopted_goal_resolution(
+                    mission.id, str(binding.obligation_id)
+                ) is not None:
+                    return True
+        except (GraphIntegrityError, ContractError, StoreError):
+            return False
+        return False
+
+    def _repair_continuation_waiting(self, mission_id: str) -> bool:
+        try:
+            row = self.store.connection.execute(
+                "SELECT 1 FROM planning_repair_continuations WHERE mission_id=? "
+                "AND state='WAITING' LIMIT 1",
+                (mission_id,),
+            ).fetchone()
+        except sqlite3.Error:
+            return False
+        return row is not None
+
     async def _record_hierarchical_stall(self) -> None:
         """A hierarchical Mission that idles with work left over says so, once.
 
@@ -2520,34 +2702,14 @@ class Orchestrator:
         for mission in self._active_missions():
             if mission.status is not MissionStatus.ACTIVE:
                 continue
-            if self._has_pending_planning_waits(mission.id) or (
-                self._taskgraph_notifications is not None
-                and self._taskgraph_notifications.awaiting_sources(mission.id)
-            ):
-                # An external WAIT is a deliberate suspension, not a scheduling
-                # stall.  Keep the Mission ACTIVE until its target state is observed.
+            # NEXT-TG-1.0 2B: one verdict for the record and the confirmation. A
+            # legal wait (a judged Mission converging its closeout, an UNKNOWN
+            # action under reconciliation, a pending approval, ...) is not a stall.
+            observed = self._idle_facts(mission)
+            if observed is None:
                 continue
-            if self._has_pending_operation_completion(mission) or self._has_pending_assurance_work(mission.id):
-                continue
-            new_mode = self._new_mode(mission)
-            if new_mode is None:
-                continue
-            try:
-                admissions = new_mode.admissions(mission.id)
-            except (GraphIntegrityError, ContractError, StoreError) as error:
-                # An unreadable plan is already reported by the integrity path; it is
-                # not this method's finding and must not become a second verdict.
-                self._note(f"mission {mission.id}: stall check could not read the plan ({error})")
-                continue
-            rows = self.store.list_tasks(mission.id)
-            if any(task.status is TaskStatus.ACTIVE and not self._awaiting_retry_decision(mission.id, task)
-                   for task in rows):
-                # A row still running is not a stalled plan; the loop is waiting on it.
-                # A leaf only waiting for a retry decision is not running (2026-09-25).
-                continue
-            if all(task.status in TERMINAL_TASK for task in rows):
-                # Nothing is left to dispatch because nothing is left: that Mission is
-                # finished or being judged, and this is not the method that says so.
+            facts, admissions, rows = observed
+            if idle_verdict(facts).route is not Route.STOP:
                 continue
             blocking = [item.to_json() for item in admissions.refusals]
             # An occurrence that every readiness gate admitted and that still did not
@@ -2555,8 +2717,6 @@ class Orchestrator:
             # allocator (budget, concurrency, attempt policy), not from the plan — so
             # it is named here instead of being silently dropped from the record.
             admitted = sorted(admissions.readiness)
-            if not blocking and not admitted:
-                continue
             append_hierarchical_event(
                 self.store,
                 MISSION_STALLED,
@@ -2687,18 +2847,10 @@ class Orchestrator:
         for mission in self._active_missions():
             if mission.status is not MissionStatus.ACTIVE:
                 continue
-            if self.commit.assured_closeout_pending(mission.id):
-                # Handoff item 7: a judged assured Mission waiting for its closeout
-                # to converge is not stalled work; NO_DISPATCHABLE_WORK would be the
-                # no-progress pseudo failure the spec forbids.
-                self._stalled_at.pop(mission.id, None)
-                continue
-            if self._has_pending_planning_waits(mission.id) or (
-                self._taskgraph_notifications is not None
-                and self._taskgraph_notifications.awaiting_sources(mission.id)
-            ):
-                continue
-            if self._has_pending_operation_completion(mission) or self._has_pending_assurance_work(mission.id):
+            # Handoff item 7 / NEXT-TG-1.0 2B: the same verdict as the record. A
+            # legal wait is never turned into NO_DISPATCHABLE_WORK.
+            observed = self._idle_facts(mission, read_plan=False)
+            if observed is None or idle_verdict(observed[0]).route is not Route.STOP:
                 self._stalled_at.pop(mission.id, None)
                 continue
             before = self._stalled_at.pop(mission.id, None)
@@ -2720,7 +2872,10 @@ class Orchestrator:
                 self._note(f"mission {mission.id}: stall confirmation could not read ({error})")
                 continue
             rows = self.store.list_tasks(mission.id)
-            if self._has_pending_operation_completion(mission):
+            # The confirmation cycle may itself have opened a legal wait (an
+            # evidence round, a phase advance): ask the same verdict again.
+            observed = self._idle_facts(mission, admissions=admissions)
+            if observed is None or idle_verdict(observed[0]).route is not Route.STOP:
                 continue
             after = self._stall_fingerprint(mission, admissions, rows)
             if after != before:
