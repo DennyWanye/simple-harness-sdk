@@ -345,6 +345,14 @@ class PlanCommitsMixin:
                 graph_impact = taskgraph.prepare(command, principal)
             elif taskgraph is not None:
                 raise PlanCommitRejected("TASKGRAPH_POLICY_UNAVAILABLE", "TaskGraph is not enabled for this Mission")
+            else:
+                from .taskgraph_requirement import taskgraph_required
+                if taskgraph_required(self._store, command.mission_id):
+                    # NEXT-TG-1.0 §6.4: never an unbound plan for a Mission created
+                    # to run on the strict TaskGraph — it waits for its binding.
+                    raise PlanCommitRejected(
+                        "TASKGRAPH_REQUIRED_NOT_BOUND",
+                        "this Mission must run on the strict TaskGraph and is not bound yet")
             if mission.status in TERMINAL_MISSION:
                 raise PlanCommitRejected(
                     "MISSION_NOT_WRITABLE",

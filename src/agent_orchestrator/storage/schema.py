@@ -550,6 +550,23 @@ DDL_V28 = """
 CREATE INDEX commit_receipts_kind_idx ON commit_receipts(kind);
 """
 
+# NEXT-TG-1.0 §6.4: a Mission created under a deployment that runs every new
+# Mission on the strict TaskGraph carries that requirement from its creation
+# transaction.  Until the Mission is actually bound (taskgraph_policy_bindings), it
+# may not dispatch a plan nor commit one — it waits, it never falls back.
+DDL_V29 = """
+CREATE TABLE taskgraph_requirements (
+ mission_id TEXT PRIMARY KEY REFERENCES missions(mission_id),
+ kernel_version TEXT NOT NULL,
+ source TEXT NOT NULL,
+ created_at REAL NOT NULL
+) STRICT;
+CREATE TRIGGER taskgraph_requirements_no_update BEFORE UPDATE ON taskgraph_requirements BEGIN
+ SELECT RAISE(ABORT,'TG_IMMUTABLE'); END;
+CREATE TRIGGER taskgraph_requirements_no_delete BEFORE DELETE ON taskgraph_requirements BEGIN
+ SELECT RAISE(ABORT,'TG_IMMUTABLE'); END;
+"""
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "orchestrator-step02", DDL_V1),
     Migration(2, "orchestrator-step04", DDL_V2),
@@ -579,6 +596,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(26, "orchestrator-assurance-exec-v1.1", DDL_V26),
     Migration(27, "orchestrator-assurance-pin-per-object", DDL_V27),
     Migration(28, "orchestrator-commit-receipts-kind-index", DDL_V28),
+    Migration(29, "orchestrator-taskgraph-required", DDL_V29),
 )
 SCHEMA_VERSION = MIGRATIONS[-1].version
 SCHEMA_NAME = MIGRATIONS[-1].name
@@ -608,6 +626,7 @@ __all__ = (
     "DDL_V20",
     "DDL_V27",
     "DDL_V28",
+    "DDL_V29",
     "MIGRATIONS",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",

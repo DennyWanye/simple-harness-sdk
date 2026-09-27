@@ -144,10 +144,14 @@ class TaskGraphPolicyService:
                                       subject_id=mission_id, base_version=mission.version,
                                       proposal_hash=intent_hash, receipt=receipt)
             event_key = derive_id("tg-enable-event", command_id)
+            # NEXT-TG-1.0 §6.4: enabling is a trusted deployment action taken on the
+            # principal's behalf (after the principal's own planning grant), not a
+            # person's click — recorded as system, delegated by that principal.
             self.store.append_event(Event(id=event_key, type="TaskGraphContractEnabled", trace_id=command_id,
                                           mission_id=mission_id, task_id=None, attempt_id=None,
-                                          actor_type="human", actor_id=self.principal.principal_id,
-                                          payload=receipt, idempotency_key=event_key, created_at=self.store.now))
+                                          actor_type="system", actor_id=self.principal.principal_id,
+                                          payload={**receipt, "enabled_by": "HOST_DELEGATED"},
+                                          idempotency_key=event_key, created_at=self.store.now))
             active = db.execute("SELECT revision FROM plan_revisions WHERE mission_id=? AND state='ACTIVE'",
                                 (mission_id,)).fetchall()
             if len(active) > 1:

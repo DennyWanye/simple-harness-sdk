@@ -553,6 +553,8 @@ class Orchestrator:
         #: intent id → the refusal last noted for its collection, so a refusal that
         #: repeats every round is noted once per distinct reason (NEXT-TG-1.0 §5.1).
         self._collection_refusals: dict[str, str] = {}
+        #: planning intents already noted as waiting for their TaskGraph binding.
+        self._taskgraph_waits_noted: set[str] = set()
         self.cancel_receipts: list[dict[str, Any]] = []
         self._rotation = 0  # D6-1: round-robin start across active Missions
         self._verifying: dict[str, asyncio.Task[bool]] = {}  # D6-9': bounded verification set
@@ -2938,12 +2940,16 @@ class Orchestrator:
             missions = [mission for mission in missions if mission.id == mission_id]
         from ..storage.planning_human_store import PlanningHumanStore
         from .planning_selection import awaits_authority
+        from .taskgraph_requirement import awaits_taskgraph
         pending_intents = self.store.list_intents("PENDING", "CLAIMED", "AGENT_CREATED")
         from .planning_runtime_block import pending_block
         for mission in missions:
             if pending_block(self.store, mission.id) is not None:
                 return True
-            if any(intent.mission_id == mission.id and awaits_authority(self.store, intent)
+            # A planning request still waiting for its TaskGraph binding is external
+            # work too (NEXT-TG-1.0 §6.4): not a stall, not a reason to plan again.
+            if any(intent.mission_id == mission.id
+                   and (awaits_authority(self.store, intent) or awaits_taskgraph(self.store, intent))
                    for intent in pending_intents):
                 return True
             if PlanningHumanStore(self.store).pending(mission.id):
@@ -5555,6 +5561,15 @@ class Orchestrator:
             return False
         from .planning_selection import awaits_authority
         if awaits_authority(self.store, intent):
+            return False
+        # NEXT-TG-1.0 §6.4: a Mission created to run on the strict TaskGraph plans
+        # only once it is bound.  Its planning request waits here (after the grant,
+        # before any local or model dispatch); it never commits an unbound plan.
+        from .taskgraph_requirement import awaits_taskgraph
+        if awaits_taskgraph(self.store, intent):
+            if intent.intent_id not in self._taskgraph_waits_noted:
+                self._taskgraph_waits_noted.add(intent.intent_id)
+                self._note(f"intent {intent.intent_id}: waiting for the Mission's TaskGraph binding")
             return False
         if intent.config.get("native_planning_decision") is None and self._pool_missing(intent):
             return False
