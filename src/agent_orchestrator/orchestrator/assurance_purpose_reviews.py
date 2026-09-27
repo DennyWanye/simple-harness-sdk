@@ -605,6 +605,20 @@ def action_proposal_subject(
         materials.add(
             AssuranceRef("artifact", Pin(artifact.id, int(artifact.version), artifact.content_hash))
         )
+    # The four system check receipts T0 persisted for this package: the facts the
+    # code gates enforced (registered adapter profile, conditional-write policy, ...).
+    # Without them the reviewer could only answer UNKNOWN on the two capability
+    # points (real run 2026-09-27: INCONCLUSIVE); the legacy reviewer saw them as
+    # ``deterministic_checks``.
+    checks = store.connection.execute(
+        "SELECT commit_id, receipt_json FROM commit_receipts "
+        "WHERE kind='operation_proposal_check' AND subject_id=? ORDER BY commit_id",
+        (proposal.intent_id,),
+    ).fetchall()
+    for row in checks:
+        receipt = decode(row[1])
+        if receipt.get("package_id") == str(package.package_id):
+            materials.add(AssuranceRef("commit_receipt", Pin(str(row[0]), 0, fingerprint(receipt))))
     subject = PurposeSubject(
         purpose="ACTION_PROPOSAL",
         target=AssuranceRef(

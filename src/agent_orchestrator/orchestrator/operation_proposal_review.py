@@ -489,6 +489,9 @@ def persist_action_proposal_review_inputs(
         receipt = {
             "kind": "operation_proposal_check",
             "receipt_id": receipt_id,
+            # The assured reviewer reads these receipts as material; an Assurance
+            # commit_receipt read is scoped to its Mission (NEXT-TG-1.0, 2026-09-27).
+            "mission_id": sources.command.mission_id,
             "subject_intent_id": draft.request_content["input_manifest"]["intent_id"],
             "package_id": str(draft.package.package_id),
             "proposal_ref": proposal.to_json(),
