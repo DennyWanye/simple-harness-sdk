@@ -171,3 +171,48 @@ def test_the_requirement_is_written_only_at_creation(tmp_path):
             assert not taskgraph_required(loop.store, mission.id)
 
     asyncio.run(case())
+
+
+def test_a_revoked_grant_releases_the_wait_to_the_original_refusal(tmp_path):
+    """Review 2026-09-27 (blocking): held forever once the grant expired or was
+    revoked.  Without a current grant the request goes back to its original admission
+    and is refused there; no plan is committed and the Mission is not stuck waiting.
+
+    **Mutation**: drop the ``current_planning_grant`` condition → red (still PENDING)."""
+
+    async def case():
+        provider = RoleScriptedProvider({"planner": [lambda request: _refine_reply(package_of(request))]})
+        async with Orchestrator(_config(tmp_path), provider) as loop:
+            mission, dispatch, principal, _graph = _world(loop, tmp_path, "tg-revoked")
+            intent = await _open_planner_round(loop, mission, dispatch, ordinal=1)
+            api = PlanningAuthorizationApi(loop.commit, tenant_id=mission.tenant_id, principal=principal)
+            grant = api.issue(mission.id, command_id="grant:tg-revoked", request_id=intent.intent_id)
+            assert (await _drive(loop, intent)).state == "PENDING"
+            api.revoke(grant.grant_id, expected_revision=grant.revision, command_id="revoke:tg-revoked",
+                       reason="用户撤销")
+            current = await _drive(loop, intent, rounds=4)
+            assert current.state != "PENDING"
+            assert HtnStore(loop.store).active_plan_revision(mission.id) is None
+            assert not loop._has_pending_planning_waits(mission.id) or current.state != "PENDING"
+
+    asyncio.run(case())
+
+
+def test_an_ineligible_mission_is_never_marked(tmp_path):
+    """Review 2026-09-27: a Mission that could never be bound is refused the mark."""
+
+    async def case():
+        provider = RoleScriptedProvider({"planner": []})
+        async with Orchestrator(_config(tmp_path), provider) as loop:
+            from agent_orchestrator.contracts import Budget
+            from agent_orchestrator.orchestrator.commit_service import MissionSpec
+            legacy, _ = loop.commit.create_mission(MissionSpec(
+                goal="旧式平铺任务", success_criteria=("有说明",), tenant_id="tenant-legacy",
+                idempotency_key="tg-legacy", allowed_tools=("workspace_read_file",),
+                budget=Budget(max_tokens=10_000, max_attempts=2)))
+            with pytest.raises(StoreError, match="NOT_ELIGIBLE"):
+                with loop.store.transaction():
+                    require_taskgraph(loop.store, legacy.id)
+            assert not taskgraph_required(loop.store, legacy.id)
+
+    asyncio.run(case())

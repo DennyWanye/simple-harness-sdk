@@ -30,8 +30,19 @@ def require_taskgraph(store: Store, mission_id: str, *, source: str = DEPLOYMENT
         raise StoreError("TASKGRAPH_REQUIREMENT_TRANSACTION_REQUIRED")
     if not isinstance(source, str) or not source:
         raise StoreError("TASKGRAPH_REQUIREMENT_SOURCE_REQUIRED")
-    if store.get_mission(mission_id) is None:
+    mission = store.get_mission(mission_id)
+    if mission is None:
         raise StoreError("MISSION_NOT_FOUND")
+    # The same eligibility the enable command checks: a Mission that could never be
+    # bound (legacy semantics, or not the planning-decision protocol) must not be
+    # marked — it would either wait forever or run unbound under a strict label.
+    from ..contracts.planning_decisions import PLANNING_DECISION_V1
+    from .plan_commits import HIERARCHICAL_SEMANTICS, semantics_of
+    from .planning_protocol_binding import planning_protocol_for_mission
+    protocol = planning_protocol_for_mission(store, mission_id)
+    if (semantics_of(mission) != HIERARCHICAL_SEMANTICS or protocol is None
+            or protocol.get("protocol_version") != PLANNING_DECISION_V1):
+        raise StoreError("TASKGRAPH_REQUIREMENT_MISSION_NOT_ELIGIBLE")
     db = store.connection
     if (db.execute("SELECT 1 FROM plan_revisions WHERE mission_id=? LIMIT 1", (mission_id,)).fetchone()
             or db.execute("SELECT 1 FROM attempts WHERE mission_id=? LIMIT 1", (mission_id,)).fetchone()):
@@ -55,8 +66,34 @@ def awaiting_taskgraph(store: Store, mission_id: str) -> bool:
     return taskgraph_required(store, mission_id) and not taskgraph_enabled(store, mission_id)
 
 
+def current_planning_grant(store: Store, mission_id: str) -> bool:
+    """Whether the Mission holds a planning grant the enable command could use now.
+
+    The same currency the enable authority reads (active, inside its window, the
+    Mission's current policy, REFINE and REPAIR allowed); the issuer is the
+    deployment's single principal on the desktop.
+    """
+    from ..governance.planning_authorization import planning_policy_for_mission
+    from ..storage.planning_admission_store import PlanningAdmissionStore
+    policy, now = planning_policy_for_mission(store, mission_id), int(store.now * 1000)
+    admission = PlanningAdmissionStore(store)
+    for (grant_id,) in store.connection.execute(
+            "SELECT DISTINCT grant_id FROM planning_lane_grants WHERE mission_id=?", (mission_id,)).fetchall():
+        grant = admission.get_grant(grant_id)
+        if (grant is not None and grant["active"] and grant["policy_hash"] == policy.policy_hash
+                and grant["not_before_ms"] <= now < grant["expires_at_ms"]
+                and {"REFINE", "REPAIR/REPLACE_METHOD"} <= set(grant["allowed_decisions"])):
+            return True
+    return False
+
+
 def awaits_taskgraph(store: Store, intent: Any) -> bool:
     """A planning request of a Mission still waiting for its TaskGraph binding.
+
+    Held only while a current planning grant exists — the binding can then still
+    come.  Without one (expired, revoked) the request is released to its original
+    admission, whose normal refusal asks for authority again; the commit gate still
+    refuses any unbound plan, so release never means an unbound plan.
 
     Method synthesis is not a planning request (it needs no planning authority and
     commits no plan), so it is not held here.
@@ -67,7 +104,9 @@ def awaits_taskgraph(store: Store, intent: Any) -> bool:
     with store.read_view():
         if not awaiting_taskgraph(store, intent.mission_id):
             return False
-        return PlanningDecisionStore(store).get_planning_request_for_intent(intent.intent_id) is not None
+        if PlanningDecisionStore(store).get_planning_request_for_intent(intent.intent_id) is None:
+            return False
+        return current_planning_grant(store, intent.mission_id)
 
 
 def missions_awaiting_taskgraph(store: Store) -> list[str]:
@@ -88,4 +127,4 @@ def enable_command_id(mission_id: str) -> str:
 
 
 __all__ = ("DEPLOYMENT_DEFAULT", "require_taskgraph", "taskgraph_required", "awaiting_taskgraph",
-           "awaits_taskgraph", "missions_awaiting_taskgraph", "enable_command_id")
+           "current_planning_grant", "awaits_taskgraph", "missions_awaiting_taskgraph", "enable_command_id")

@@ -10047,6 +10047,22 @@ class Orchestrator:
                 protected[path] = content
         return protected
 
+    def _action_candidate_outputs(self, mission: Mission, task: Task) -> tuple[str, ...]:
+        """The Task's declared files, plus its operation candidate file when a
+        hierarchical primitive declares the operation candidate port (2A upstream run:
+        without it the Worker never saw the candidate contract)."""
+        from ..runtime.action_schema import OPERATION_CANDIDATE_FILE, OPERATION_CANDIDATE_PORT
+        from ..storage.htn_store import HtnStore
+
+        outputs = tuple(task.outputs)
+        if any(path.startswith("actions/") and path.endswith(".json") for path in outputs):
+            return outputs
+        binding = HtnStore(self.store).task_semantics_of(mission.id, task.id)
+        if binding is not None and any(port.port_key == OPERATION_CANDIDATE_PORT
+                                       for port in binding.output_ports):
+            return (*outputs, OPERATION_CANDIDATE_FILE)
+        return outputs
+
     def _revises_its_inputs(self, mission_id: str, task_id: str) -> bool:
         """Every declared input port is also an output port of the same schema."""
         from ..storage.htn_store import HtnStore
@@ -13587,7 +13603,7 @@ class Orchestrator:
                     worker_action_contract(
                         mission_criteria=mission.success_criteria,
                         task_criteria=task.success_criteria,
-                        task_outputs=task.outputs,
+                        task_outputs=self._action_candidate_outputs(mission, task),
                         connectors=self._connectors,
                         deployment=self._config.deployment_policy,
                     )

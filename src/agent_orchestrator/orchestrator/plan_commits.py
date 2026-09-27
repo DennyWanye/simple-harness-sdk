@@ -349,7 +349,9 @@ class PlanCommitsMixin:
                 from .taskgraph_requirement import taskgraph_required
                 if taskgraph_required(self._store, command.mission_id):
                     # NEXT-TG-1.0 §6.4: never an unbound plan for a Mission created
-                    # to run on the strict TaskGraph — it waits for its binding.
+                    # to run on the strict TaskGraph — it waits for its binding.  The
+                    # one write path of plan_revisions; checked after the original
+                    # authority guard, so an expired grant keeps its own refusal.
                     raise PlanCommitRejected(
                         "TASKGRAPH_REQUIRED_NOT_BOUND",
                         "this Mission must run on the strict TaskGraph and is not bound yet")

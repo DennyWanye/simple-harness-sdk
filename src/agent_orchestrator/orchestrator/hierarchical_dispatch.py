@@ -4991,12 +4991,30 @@ class HierarchicalDispatch:
             semantic = self.semantics().task_semantics_of(mission_id, task_id)
             if semantic is not None and read_only_leaf(semantic):
                 read_only.add(task_id)
-        return overlay_bound_producer_files(
+        overlaid = overlay_bound_producer_files(
             inputs,
             seed_paths=set((mission.final_report or {}).get("workspace_seed", {})),
             artifacts_by_producer=artifacts,
             read_only_producers=read_only,
         )
+        # NEXT-TG-1.0 2A.1d: a continuation producer (every input port is also one of
+        # its output ports, e.g. desktop.continue-delivery) delivers the next version
+        # of what it received.  Its delivery therefore carries the inputs its accepted
+        # Attempt was frozen with — which already carry theirs, so the chain is
+        # complete — each by its real producer, artifact id and hash.  The nearest
+        # version of a path wins; ORDER-only predecessors still contribute nothing.
+        occupied = {item.path for item in overlaid}
+        carried: dict[str, UpstreamInput] = {}
+        for task_id in dict.fromkeys(item.task_id for item in inputs):
+            for item in self.carried_inputs(mission_id, task_id):
+                if item.path not in occupied and item.path not in carried:
+                    carried[item.path] = item
+        if not carried:
+            return overlaid
+        return sorted([*overlaid, *carried.values()], key=lambda entry: entry.path)
+
+    def carried_inputs(self, mission_id: str, producer_task_id: str) -> list[UpstreamInput]:
+        return carried_inputs(self.store, mission_id, producer_task_id)
 
     # ------------------------------------------------------------------------ plumbing
     def require_planning_world(self) -> PlanningWorld:
@@ -5502,3 +5520,42 @@ __all__ = (
     "record_assembly_missing",
     "root_not_identified",
 )
+
+
+def carried_inputs(store: Any, mission_id: str, producer_task_id: str) -> list[UpstreamInput]:
+    """What a continuation producer's accepted Attempt received, re-verified.
+
+    Empty for any producer that is not a continuation, or has no accepted
+    result.  Every entry must still name an artifact of this Mission that its
+    own producer accepted, with the same path and content hash; anything else
+    (a candidate's selection material, a later-rejected file) is not carried.
+    """
+    semantic = HtnStore(store).task_semantics_of(mission_id, producer_task_id)
+    if semantic is None or not semantic.input_ports:
+        return []
+    outputs = {(port.port_key, port.schema_ref) for port in semantic.output_ports}
+    if not all((port.port_key, port.schema_ref) in outputs for port in semantic.input_ports):
+        return []
+    producer = store.get_task(producer_task_id)
+    if producer is None or producer.mission_id != mission_id or not producer.accepted_result_id:
+        return []
+    result = store.get_result(producer.accepted_result_id)
+    if result is None:
+        return []
+    intent = store.get_intent_for_subject(result.envelope.attempt_id)
+    if intent is None:
+        return []
+    received: list[UpstreamInput] = []
+    for raw in intent.config.get("inputs", []) or []:
+        item = UpstreamInput.from_json(raw)
+        if item.path.startswith("actions/"):
+            continue  # an operation candidate is not part of the delivered work
+        owner = store.get_task(item.task_id)
+        artifact = store.get_artifact(item.artifact_id)
+        if (owner is None or owner.mission_id != mission_id or artifact is None
+                or item.artifact_id not in owner.accepted_artifacts
+                or artifact.mission_id != mission_id or artifact.task_id != item.task_id
+                or artifact.path != item.path or artifact.content_hash != item.content_hash):
+            continue
+        received.append(item)
+    return received

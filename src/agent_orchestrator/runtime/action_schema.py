@@ -21,6 +21,15 @@ from .connectors_publish import FilePublishConnector
 
 ACTION_CANDIDATE_CONTEXT_VERSION = "action-candidate-context-v2"
 
+#: The output port through which a hierarchical primitive delivers its operation
+#: candidate.  A deployment that declares it (the desktop's task types do when the
+#: Mission carries an ``action:`` criterion) gets the candidate contract into the
+#: Worker's package, with the file under ``actions/`` where the operation workspace
+#: reads candidates.  Without it the Worker was never told the candidate shape and
+#: invented one outside ``actions/`` (NEXT-TG-1.0 2A upstream run, 2026-09-27).
+OPERATION_CANDIDATE_PORT = "action_candidate"
+OPERATION_CANDIDATE_FILE = f"actions/{OPERATION_CANDIDATE_PORT}.json"
+
 
 def _action_contract(
     *,
@@ -144,5 +153,6 @@ def planner_action_contract(
 
 
 __all__ = (
-    "ACTION_CANDIDATE_CONTEXT_VERSION", "worker_action_contract", "planner_action_contract",
+    "ACTION_CANDIDATE_CONTEXT_VERSION", "OPERATION_CANDIDATE_FILE", "OPERATION_CANDIDATE_PORT",
+    "worker_action_contract", "planner_action_contract",
 )

@@ -302,12 +302,6 @@ class PlanningAdmissionCommitsMixin:
                 if not callable(factory):
                     _raise("TASKGRAPH_COMMIT_PARTICIPANT_REQUIRED", "fixed TaskGraph admission assembly is missing")
                 taskgraph = factory(command, principal, admission)
-            if taskgraph is None and replay is None:
-                from .taskgraph_requirement import taskgraph_required
-                if taskgraph_required(self._store, command.mission_id):  # type: ignore[attr-defined]
-                    # NEXT-TG-1.0 §6.4: a required Mission never admits an unbound plan.
-                    _raise("TASKGRAPH_REQUIRED_NOT_BOUND",
-                           "this Mission must run on the strict TaskGraph and is not bound yet")
             if taskgraph is not None and replay is None:
                 from .taskgraph_plan_commit import TaskGraphPlanCommitParticipant
                 if not isinstance(taskgraph, TaskGraphPlanCommitParticipant):

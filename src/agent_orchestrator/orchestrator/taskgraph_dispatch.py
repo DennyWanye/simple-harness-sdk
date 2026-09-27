@@ -20,6 +20,7 @@ from ..graph.network_codec import decode
 from ..graph.revision_records import HistoricalRevision
 from ..graph.task_network import TaskNetworkSnapshot
 from ..storage.htn_store import HtnStore
+from .hierarchical_dispatch import carried_inputs
 from ..storage.store import DispatchIntent, Store, StoreConflict, StoreError
 from ..storage.taskgraph_attempt_inputs import TaskGraphAttemptInputStore
 from ..storage.taskgraph_store import TaskGraphStore
@@ -124,7 +125,8 @@ def require_taskgraph_attempt_handoff(store: Store, intent: DispatchIntent, *,
         if str(frozen.consumer_task_ref) != attempt.task_id:
             raise StoreError("TASKGRAPH_FROZEN_INPUT_CONSUMER_MISMATCH")
         _intent_inputs(intent, frozen, source_revision=row["source_revision"],
-                       manifest_hash=row["manifest_hash"], selection_inputs=selection_inputs)
+                       manifest_hash=row["manifest_hash"], selection_inputs=selection_inputs,
+                       carried=lambda producer: carried_inputs(store, intent.mission_id, producer))
     except (ContractError, ArtifactConflict) as error:
         raise StoreError("TASKGRAPH_FROZEN_INPUT_CORRUPT") from error
 
@@ -132,7 +134,8 @@ def require_taskgraph_attempt_handoff(store: Store, intent: DispatchIntent, *,
 def _intent_inputs(intent: DispatchIntent, manifest: InputManifest, *,
                    source_revision: int, manifest_hash: str,
                    network: TaskNetworkSnapshot | None = None,
-                   selection_inputs: tuple[UpstreamInput, ...] | None = None) -> tuple[UpstreamInput, ...]:
+                   selection_inputs: tuple[UpstreamInput, ...] | None = None,
+                   carried: Callable[[str], Sequence[UpstreamInput]] | None = None) -> tuple[UpstreamInput, ...]:
     frozen = intent.config.get("taskgraph_inputs")
     version = frozen.get("version") if isinstance(frozen, Mapping) else None
     keys = {"version", "source_revision", "manifest_hash", "target_rules"}
@@ -157,7 +160,17 @@ def _intent_inputs(intent: DispatchIntent, manifest: InputManifest, *,
         from collections import Counter
         base = Counter(canonical_json(item.to_json()) for item in data_inputs)
         actual = Counter(canonical_json(item.to_json()) for item in materialized)
-        if not base <= actual or any(item.task_id not in {x.task_id for x in data_inputs} for item in materialized):
+        direct = {x.task_id for x in data_inputs}
+        # NEXT-TG-1.0 2A.1d: besides the direct producers' own files, an entry may be
+        # one a direct continuation producer was itself frozen with (re-verified by
+        # ``carried_inputs``: accepted by its real producer, same path and hash).
+        closure: set[str] = set()
+        if carried is not None:
+            for producer in direct:
+                closure.update(canonical_json(item.to_json()) for item in carried(producer))
+        if not base <= actual or any(item.task_id not in direct
+                                     and canonical_json(item.to_json()) not in closure
+                                     for item in materialized):
             raise StoreError("TASKGRAPH_FROZEN_DATA_PRODUCER_MISMATCH")
         data_inputs = materialized
     expected = (*data_inputs, *(selection_inputs or ()))
@@ -365,7 +378,8 @@ class TaskGraphDispatchBinding:
                                       source_revision=frozen.binding.source_revision,
                                       manifest_hash=frozen.binding.manifest_hash, network=network,
                                       selection_inputs=self.selection_materials(frozen.binding.task_id,
-                                          intent.config.get("selection_decision_id")))
+                                          intent.config.get("selection_decision_id")),
+                                      carried=lambda producer: carried_inputs(self.store, mission_id, producer))
             return TaskGraphAttemptContext(inputs=frozen, history=history, manifest=manifest,
                                            network=network, upstream=upstream)
 
