@@ -734,6 +734,7 @@ def mission_final_subject(
         mission_id, int(package.binding.requirements_revision)
     )
     contributions = tuple(sorted(str(ref.id) for ref in package.child_acceptance_refs))
+    effects = _root_effect_materials(store, mission_id, scope_ref.pin.id)
     adopted = network.adopted_instance_for(roots[0])
     instance = (
         None
@@ -753,10 +754,45 @@ def mission_final_subject(
         output_manifest_hash=output_manifest_hash(
             "MISSION_FINAL", {"contributions": list(contributions)}
         ),
-        material_refs=frozenset(_acceptance_refs(store, contributions)),
+        material_refs=frozenset(_acceptance_refs(store, contributions) | effects),
         scope_id=scope_ref.pin.id,
     )
     return subject, requirements
+
+
+def _root_effect_materials(store: Any, mission_id: str, scope_id: str) -> set[AssuranceRef]:
+    """The root's own accepted operation effects and the readbacks they rest on.
+
+    An effect the root Scope owns is accepted on the root Task itself, so it is not
+    among the child acceptances the cut is made over. Real run 2026-09-28
+    (mission-a3272b79f2d4d360): the publish ran, was read back and accepted, yet
+    the final reviewer saw only the candidate and answered UNKNOWN on the action
+    criterion. The outcome acceptance and its observation receipt are its facts.
+    """
+    rows = store.connection.execute(
+        "SELECT s.acceptance_id, b.document_json FROM operation_acceptance_scopes s "
+        "JOIN acceptances a ON a.acceptance_id=s.acceptance_id AND a.mission_id=s.mission_id "
+        "JOIN operation_outcome_review_bindings b "
+        "ON b.binding_id=s.outcome_binding_id AND b.mission_id=s.mission_id "
+        "WHERE s.mission_id=? AND s.completion_scope_id=? "
+        "AND s.contribution_kind='OPERATION_EFFECT' AND a.validity='CURRENT' "
+        "ORDER BY s.acceptance_id",
+        (mission_id, scope_id),
+    ).fetchall()
+    refs = _acceptance_refs(store, (row[0] for row in rows))
+    for row in rows:
+        for source in decode(row[1]).get("source_receipt_refs") or ():
+            receipt = store.connection.execute(
+                "SELECT receipt_json FROM commit_receipts WHERE commit_id=?", (source["id"],)
+            ).fetchone()
+            if receipt is None:
+                raise AssuranceError("SOURCE_UNAVAILABLE", "operation observation")
+            refs.add(
+                AssuranceRef(
+                    "commit_receipt", Pin(str(source["id"]), 0, fingerprint(decode(receipt[0])))
+                )
+            )
+    return refs
 
 
 __all__ = (
