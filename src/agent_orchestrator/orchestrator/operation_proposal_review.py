@@ -10,6 +10,7 @@ transaction and dispatches the resulting review request through its own bridge.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
@@ -157,6 +158,19 @@ def _policy_ref() -> TypedRef:
 
 
 def _criteria() -> tuple[Criterion, ...]:
+    """The four points the proposal reviewer judges over the frozen facts.
+
+    SEMANTIC (NEXT-TG-1.0, 2026-09-27, independent ruling "方案 C"): ``_checks`` only
+    restates facts that the freeze (``freeze_operation_payloads`` +
+    ``_assert_frozen_payload_identity``), the materialization inputs
+    (``build_operation_materialization_inputs``) and
+    ``validate_materialization_review`` already *enforce* in code and refuse on any
+    mismatch; they were never run by an independent checker.  Declaring them as
+    registered checks made every assured publish unapprovable
+    (``CHECK_POLICY_UNRESOLVED: ACTION_PROPOSAL``) and overstated what the record
+    proves.  The four check receipts are still persisted and re-verified before
+    materialization; only the reviewer's part is a judgement.
+    """
     statements = {
         "operation-intent-scope": "The frozen proposal matches the approved operation intent and scope.",
         "operation-parameters-and-candidate": (
@@ -176,10 +190,8 @@ def _criteria() -> tuple[Criterion, ...]:
             origin=CriterionOrigin.POLICY_REQUIRED,
             statement=statements[criterion_id],
             requirement_class=RequirementClass.HARD_CONSTRAINT,
-            evaluation_kind=EvaluationKind.DETERMINISTIC,
-            required_evidence_policy=RequiredEvidencePolicy(
-                required_check_ids=(criterion_id,), independence_required=True
-            ),
+            evaluation_kind=EvaluationKind.SEMANTIC,
+            required_evidence_policy=RequiredEvidencePolicy(),
         )
         for criterion_id in ACTION_PROPOSAL_CRITERIA
     )
@@ -689,6 +701,67 @@ class ActionProposalReviewCoordinator:
         )
 
 
+def _assured(store: Store, mission_id: str) -> bool:
+    from ..storage.assurance_store import AssuranceStore
+
+    try:
+        return AssuranceStore(store).lane(mission_id) == "ASSURANCE_1_1"
+    except Exception:  # noqa: BLE001 - a Mission without a lane row is not assured
+        return False
+
+
+def _assured_check_receipts(
+    store: Store, package: ReviewPackage, review: ReviewRecord, proposal: Any
+) -> dict[str, TypedRef]:
+    """An assured official review: grades from its authenticated manifest, and the
+    four T0 check receipts read directly (the assured V1 record carries no evidence
+    refs and projects a SEMANTIC PASS as UNKNOWN — see ``assurance_review_import``).
+    The caller then re-verifies every receipt exactly as on the legacy path.
+    """
+    from ..assurance.codec import decode
+    from ..assurance.refs import AssuranceRef, Pin
+    from ..storage.assurance_reads import AssuranceReader
+
+    mission = store.get_mission(package.binding.mission_id)
+    if mission is None:
+        raise ActionProposalReviewError("OP_REVIEW_SOURCE_UNRESOLVED", "mission")
+    reader = AssuranceReader(store, tenant_id=mission.tenant_id, mission_id=mission.id)
+    pin = Pin(review.evidence_manifest_hash, 0, review.evidence_manifest_hash)
+    try:
+        manifest = decode(reader.read_exact_metadata(AssuranceRef("input_manifest", pin)).body_json)
+    except Exception as error:  # noqa: BLE001 - an unreadable manifest is a refusal
+        raise ActionProposalReviewError("OP_REVIEW_RECORD_MISSING", "assured manifest") from error
+    grades = {item["criterion_id"]: item["effective_grade"] for item in manifest["criteria"]}
+    if (
+        manifest.get("effective_verdict") != "ACCEPT"
+        or set(grades) != set(ACTION_PROPOSAL_CRITERIA)
+    ):
+        raise ActionProposalReviewError("OP_REVIEW_REJECTED", "assured manifest verdict")
+    for criterion_id in ACTION_PROPOSAL_CRITERIA:
+        if grades[criterion_id] != "PASS":
+            raise ActionProposalReviewError("OP_REVIEW_REJECTED", criterion_id)
+    found: dict[str, TypedRef] = {}
+    rows = store.connection.execute(
+        "SELECT commit_id, receipt_json FROM commit_receipts "
+        "WHERE kind='operation_proposal_check' AND subject_id=? ORDER BY commit_id",
+        (proposal.intent_id,),
+    ).fetchall()
+    for row in rows:
+        receipt = json.loads(row[1])
+        if receipt.get("package_id") != str(package.package_id):
+            continue
+        criterion_id = (receipt.get("check") or {}).get("criterion_id")
+        if criterion_id in found or criterion_id not in ACTION_PROPOSAL_CRITERIA:
+            raise ActionProposalReviewError("OP_REVIEW_CHECK_RECEIPT_STALE", str(criterion_id))
+        found[criterion_id] = TypedRef(
+            kind=TypedRefKind.TOOL_RECEIPT, id=str(row[0]), revision=1,
+            content_hash=content_hash_of(receipt), produced_by=Provenance.TOOL,
+        )
+    if set(found) != set(ACTION_PROPOSAL_CRITERIA):
+        raise ActionProposalReviewError("OP_REVIEW_CHECK_RECEIPT_STALE", "check receipts missing")
+    return found
+
+
 def validate_materialization_review(
     store: Store,
     sources: PreparedOperationIntentSources,
@@ -767,16 +840,22 @@ def validate_materialization_review(
     by_id = {item.criterion_id: item for item in review.criteria}
     if set(by_id) != set(ACTION_PROPOSAL_CRITERIA):
         raise ActionProposalReviewError("OP_REVIEW_RECORD_MISSING", "criterion coverage differs")
+    if _assured(store, package.binding.mission_id):
+        receipts = _assured_check_receipts(store, package, review, proposal)
+    else:
+        receipts = {}
+        for criterion_id in ACTION_PROPOSAL_CRITERIA:
+            outcome = by_id[criterion_id]
+            if (
+                outcome.verdict is not CriterionVerdict.PASS
+                or outcome.check_execution is not CheckExecution.SUCCEEDED
+                or len(outcome.evidence_refs) != 1
+                or outcome.evidence_refs[0].kind is not TypedRefKind.TOOL_RECEIPT
+            ):
+                raise ActionProposalReviewError("OP_REVIEW_REJECTED", criterion_id)
+            receipts[criterion_id] = outcome.evidence_refs[0]
     for criterion_id in ACTION_PROPOSAL_CRITERIA:
-        outcome = by_id[criterion_id]
-        if (
-            outcome.verdict is not CriterionVerdict.PASS
-            or outcome.check_execution is not CheckExecution.SUCCEEDED
-            or len(outcome.evidence_refs) != 1
-            or outcome.evidence_refs[0].kind is not TypedRefKind.TOOL_RECEIPT
-        ):
-            raise ActionProposalReviewError("OP_REVIEW_REJECTED", criterion_id)
-        receipt_ref = outcome.evidence_refs[0]
+        receipt_ref = receipts[criterion_id]
         receipt = store.get_receipt(receipt_ref.id)
         check = None if receipt is None else receipt.get("check")
         if (

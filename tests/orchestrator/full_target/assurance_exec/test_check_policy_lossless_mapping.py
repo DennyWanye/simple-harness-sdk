@@ -135,4 +135,66 @@ def test_unknown_purpose_is_refused(tmp_path):
     except AssuranceError as error:
         assert error.code == "CHECK_POLICY_APPROVAL_INVALID"
     else:
-        raise AssertionError("only CONTENT and MISSION_FINAL are projected")
+        raise AssertionError("METHOD_PLAN is never projected")
+
+
+def test_operation_reviews_are_projected_on_the_effect_owner_and_approved(tmp_path):
+    """NEXT-TG-1.0 (2026-09-27): an assured publish was refused CHECK_POLICY_UNRESOLVED
+    at submission because nothing could approve the two operation reviews. They are
+    now spelled out on the effect owner's Scope, and the approval they feed succeeds."""
+    from _assured_fixture import build_world
+
+    from agent_orchestrator.orchestrator.operation_proposal_review import ACTION_PROPOSAL_CRITERIA
+
+    world, task, stored, artifact, scope_ref = build_world(tmp_path / "w", approve_policy=False)
+    commit, mission_id = world.service, world.mission.id
+    owner = Principal("host-authenticated-user")
+    requirements_ref, derived, mapping = lossless_scope_mapping(
+        commit, mission_id=mission_id, scope_id=scope_ref.pin.id, purpose="ACTION_PROPOSAL")
+    assert derived == scope_ref
+    assert mapping == tuple(CriterionPolicy(c, "SEMANTIC", ()) for c in sorted(ACTION_PROPOSAL_CRITERIA))
+    ref = commit.approve_assurance_check_policy(
+        tenant_id=world.mission.tenant_id, mission_id=mission_id,
+        command_id="host-check-policy:action-proposal:" + scope_ref.pin.id, principal=owner,
+        requirements_ref=requirements_ref, completion_scope=derived, candidate_mapping=mapping,
+        purpose="ACTION_PROPOSAL", approval_source="HOST_LOSSLESS_AUTO")
+    assert ref.kind == "check_policy"
+    requirements_ref, derived, mapping = lossless_scope_mapping(
+        commit, mission_id=mission_id, scope_id=scope_ref.pin.id, purpose="OPERATION_OUTCOME",
+        effect_key="deliver-report")
+    assert mapping and all(row.mode == "SEMANTIC" for row in mapping)
+    ref = commit.approve_assurance_check_policy(
+        tenant_id=world.mission.tenant_id, mission_id=mission_id,
+        command_id="host-check-policy:operation-outcome:deliver-report", principal=owner,
+        requirements_ref=requirements_ref, completion_scope=derived, candidate_mapping=mapping,
+        purpose="OPERATION_OUTCOME", effect_key="deliver-report", approval_source="HOST_LOSSLESS_AUTO")
+    assert ref.kind == "check_policy"
+    for purpose, effect_key, code in (
+        ("OPERATION_OUTCOME", "effect-x", "CHECK_POLICY_UNRESOLVED"),  # not owned here
+        ("OPERATION_OUTCOME", None, "CHECK_POLICY_APPROVAL_INVALID"),  # outcome needs its effect
+        ("ACTION_PROPOSAL", "deliver-report", "CHECK_POLICY_APPROVAL_INVALID"),
+    ):
+        try:
+            lossless_scope_mapping(commit, mission_id=mission_id, scope_id=scope_ref.pin.id,
+                                   purpose=purpose, effect_key=effect_key)
+        except AssuranceError as error:
+            assert error.code == code, (purpose, effect_key, error.code)
+        else:  # pragma: no cover
+            raise AssertionError((purpose, effect_key))
+
+
+def test_the_proposal_review_criteria_are_judged_not_claimed_as_checks():
+    """Ruling 方案 C: the four proposal points are restated facts the code already
+    enforces, so the reviewer judges them (SEMANTIC); declaring registered checks made
+    the policy unapprovable and overstated the record."""
+    from agent_orchestrator.contracts.resolution import EvaluationKind
+    from agent_orchestrator.orchestrator.operation_proposal_review import (
+        ACTION_PROPOSAL_CRITERIA,
+        _criteria,
+    )
+
+    criteria = _criteria()
+    assert tuple(c.criterion_id for c in criteria) == ACTION_PROPOSAL_CRITERIA
+    for criterion in criteria:
+        assert criterion.evaluation_kind is EvaluationKind.SEMANTIC
+        assert criterion.required_evidence_policy.required_check_ids == ()

@@ -592,6 +592,19 @@ def action_proposal_subject(
             proposal.candidate_artifact_ref,
         )
     }
+    # The accepted file the frozen parameters publish (the reviewer judges
+    # "parameters and candidate" against it; the freeze already refused any other
+    # id or hash, so this only exposes it — NEXT-TG-1.0, 2026-09-27).
+    published_id = payloads.parameters.effective_params.get("artifact_id")
+    if published_id is not None:
+        artifact = store.get_artifact(str(published_id))
+        if artifact is None or artifact.content_hash != payloads.parameters.effective_params.get(
+            "content_hash"
+        ):
+            raise AssuranceError("SOURCE_UNAVAILABLE", "published artifact")
+        materials.add(
+            AssuranceRef("artifact", Pin(artifact.id, int(artifact.version), artifact.content_hash))
+        )
     subject = PurposeSubject(
         purpose="ACTION_PROPOSAL",
         target=AssuranceRef(

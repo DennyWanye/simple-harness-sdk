@@ -310,7 +310,12 @@ def approve_check_policy(
 
 
 def lossless_scope_mapping(
-    commit: CommitService, *, mission_id: str, scope_id: str, purpose: str = "CONTENT"
+    commit: CommitService,
+    *,
+    mission_id: str,
+    scope_id: str,
+    purpose: str = "CONTENT",
+    effect_key: str | None = None,
 ) -> tuple[AssuranceRef, AssuranceRef, tuple[CriterionPolicy, ...]]:
     """The candidate mapping a deployment derives *losslessly* from the original
     requirements for one frozen completion Scope (plan §5.1 无损旧适配).
@@ -328,13 +333,21 @@ def lossless_scope_mapping(
     Scope: the whole root requirements (as :func:`approve_check_policy` checks),
     with the same lossless per-criterion rule (Host real model run 15/16,
     2026-09-23: the root review had no approved policy and the Mission stalled).
+
+    ``purpose="ACTION_PROPOSAL"`` / ``"OPERATION_OUTCOME"`` (with ``effect_key``) spell
+    out the two operation reviews on the effect owner's Scope, from exactly the
+    catalogues :func:`approve_check_policy` projects: the proposal review's own
+    criteria, and the effect slot's criteria.  A Scope that owns no effect (or not
+    this one) is ``CHECK_POLICY_UNRESOLVED``.
     """
     from .scoped_composition_review import read_compound_projection
     from .scoped_content_review import read_task_check_policy_projection
 
     text(mission_id)
     text(scope_id)
-    if purpose not in {"CONTENT", "MISSION_FINAL"}:
+    if purpose not in {"CONTENT", "MISSION_FINAL", "ACTION_PROPOSAL", "OPERATION_OUTCOME"}:
+        raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID", purpose)
+    if (purpose == "OPERATION_OUTCOME") != (effect_key is not None):
         raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID", purpose)
     store = commit.store
     row = store.connection.execute(
@@ -357,7 +370,28 @@ def lossless_scope_mapping(
     binding = HtnStore(store).task_semantics_of(mission_id, str(row["task_id"]))
     if binding is None:
         raise AssuranceError("CHECK_POLICY_UNRESOLVED", scope_id)
-    if purpose == "MISSION_FINAL":
+    if purpose in {"ACTION_PROPOSAL", "OPERATION_OUTCOME"}:
+        owned = set(scope.owned_effect_keys)
+        if not owned or (effect_key is not None and effect_key not in owned):
+            raise AssuranceError("CHECK_POLICY_UNRESOLVED", scope_id)
+    if purpose == "ACTION_PROPOSAL":
+        from .operation_proposal_review import _criteria as proposal_criteria
+
+        criteria_source = proposal_criteria()
+    elif purpose == "OPERATION_OUTCOME":
+        from .operation_outcomes import OperationOutcomeError, _effect_owner
+
+        try:
+            owner, spec, requirements = _effect_owner(store, mission_id, str(effect_key))
+        except OperationOutcomeError as error:
+            raise AssuranceError("CHECK_POLICY_UNRESOLVED", scope_id) from error
+        if owner != scope:
+            raise AssuranceError("CHECK_POLICY_UNRESOLVED", scope_id)
+        slot = spec.effect(str(effect_key))
+        criteria_source = tuple(
+            c for c in requirements.criteria if c.criterion_id in slot.criterion_ids
+        )
+    elif purpose == "MISSION_FINAL":
         criteria_source = tuple(
             HtnStore(store)
             .get_requirements_revision(mission_id, int(scope.requirements_ref.revision))

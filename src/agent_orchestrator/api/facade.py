@@ -152,9 +152,13 @@ class MissionControlV1:
 
         try:
             body = fields(dict(command), {"mission_id", "command_id", "requirements_ref",
-                "completion_scope", "candidate_mapping"}, {"result_ref", "purpose", "approval_source"})
+                "completion_scope", "candidate_mapping"},
+                {"result_ref", "purpose", "approval_source", "effect_key"})
             purpose = body.get("purpose", "CONTENT")
-            if purpose not in ("CONTENT", "MISSION_FINAL"):
+            # NEXT-TG-1.0 2B: the two operation reviews are approved on the effect
+            # owner's Scope like the others (an assured publish was refused
+            # CHECK_POLICY_UNRESOLVED at submission — nobody could approve them).
+            if purpose not in ("CONTENT", "MISSION_FINAL", "ACTION_PROPOSAL", "OPERATION_OUTCOME"):
                 raise AssuranceError("CHECK_POLICY_APPROVAL_INVALID", str(purpose))
             # 2026-09-25: the Host says when it is the one approving (recorded as system)
             approval_source = body.get("approval_source", "HUMAN")
@@ -171,6 +175,7 @@ class MissionControlV1:
                 result_ref=None if body.get("result_ref") is None else
                     AssuranceRef.from_json(body["result_ref"], kinds={"result"}),
                 purpose=purpose,
+                effect_key=None if body.get("effect_key") is None else str(body["effect_key"]),
                 approval_source=approval_source,
             )
             return {"check_policy_ref": ref.to_json()}
