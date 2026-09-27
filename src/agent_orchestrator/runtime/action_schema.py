@@ -143,7 +143,20 @@ def worker_action_contract(
         mission_criteria=mission_criteria, task_criteria=task_criteria,
         connectors=connectors, deployment=deployment,
     )
-    return None if contract is None else {**contract, "output_files": outputs}
+    if contract is None:
+        return None
+    return {
+        **contract,
+        "output_files": outputs,
+        # 2A upstream run: a later step named the file an earlier step produced, did
+        # not list it among its own artifacts, and its candidate was refused
+        # (artifact_not_in_result); listing the received file resolved it.
+        "artifact_path_rule": (
+            "artifact_path must name a file in this step's own Result. If the file to "
+            "publish is one you received unchanged from your inputs, list that file in "
+            "your Result artifacts as well."
+        ),
+    }
 
 
 def planner_action_contract(

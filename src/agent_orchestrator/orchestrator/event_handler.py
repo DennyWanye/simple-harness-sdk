@@ -822,6 +822,16 @@ class Orchestrator:
         with self.store.read_view():
             attempt = self.store.get_attempt(attempt_id)
             if attempt is None:
+                # A Mission-level judgment view ("<mission>-judge-<owner>", see
+                # ``_judge_mission``) is not a Worker Attempt.  Refusing it here left
+                # the judge unable to read a single file after the root resolution
+                # stood, so it judged every criterion unmet and failed the Mission
+                # (2A upstream run, 2026-09-27).  It keeps authority while its Mission
+                # is live.
+                mission_id, sep, _owner = attempt_id.partition("-judge-")
+                mission = self.store.get_mission(mission_id) if sep else None
+                if mission is not None and mission.status not in TERMINAL_MISSION:
+                    return None
                 return "attempt_unavailable"
             if planning_repair_stop_gate(self.store, attempt.mission_id, attempt.task_id):
                 return "planning_repair_stop_gate"

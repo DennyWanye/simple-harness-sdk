@@ -233,3 +233,26 @@ def test_the_published_artifact_is_verified_against_the_accepted_inputs(monkeypa
         review._published_artifact(None, payloads("artifact-notes", "6" * 64))
     assert review._published_artifact(None, SimpleNamespace(parameters=SimpleNamespace(
         effective_params={}, accepted_input_refs=()))) is None
+
+
+
+def test_the_mission_judge_view_keeps_tool_authority_while_its_mission_is_live():
+    """opt.38 真机：根结论已提交后，任务终判评审员读 NOTES.md 等文件全部被拒
+    （``attempt_unavailable``——它的工作区是"<任务>-judge-<所有者>"视图，不是执行尝试），
+    于是判"不满足"，任务失败。
+
+    **Mutation**: return ``attempt_unavailable`` for every non-Attempt id again → red."""
+    import contextlib
+
+    from agent_orchestrator.contracts.models import MissionStatus
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator
+
+    missions = {"mission-live": SimpleNamespace(status=MissionStatus.ACTIVE),
+                "mission-done": SimpleNamespace(status=MissionStatus.COMPLETED)}
+    store = SimpleNamespace(read_view=contextlib.nullcontext, get_attempt=lambda attempt_id: None,
+                            get_mission=missions.get)
+    fake = SimpleNamespace(store=store)
+    refusal = Orchestrator._tool_execution_refusal
+    assert refusal(fake, "mission-live-judge-owner-1") is None
+    assert refusal(fake, "mission-done-judge-owner-1") == "attempt_unavailable"
+    assert refusal(fake, "task-x:attempt-9") == "attempt_unavailable"
