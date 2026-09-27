@@ -83,7 +83,7 @@ ROOT_RESOLUTION_CONSUMER = "ROOT_RESOLUTION"
 MAXIMUM_CANDIDATES = 256
 #: Official record purposes a use certificate can be prepared from, with the
 #: kind of the review subject's target (approved contract SUBJECT_TARGET_KINDS).
-USE_TARGET_KINDS = {"TASK_CONTENT": "result", "MISSION_FINAL": "task"}
+USE_TARGET_KINDS = {"TASK_CONTENT": "result", "MISSION_FINAL": "task", "OPERATION_OUTCOME": "operation"}
 
 
 def acceptance_id_for(task_id: str, result_id: str) -> str:
@@ -239,6 +239,25 @@ class AssuranceValidity:
             if purpose != "TASK_CONTENT":
                 raise AssuranceError("USE_PURPOSE_UNSUPPORTED", purpose)
             return ACCEPTANCE_CONSUMER, acceptance_id_for(owner_task, target.pin.id)
+
+        return self._prepare_use(record, consumer)
+
+    def prepare_outcome_use(
+        self, record: ReviewRecord, *, acceptance_id: str
+    ) -> CandidateUseCertificate:
+        """The ACCEPT use of an official ``OPERATION_OUTCOME`` record for its outcome
+        acceptance (outside the write lock; nothing is written).
+
+        NEXT-TG-1.0, 2026-09-27: the outcome acceptor still named the legacy
+        self-issued witness, so every assured outcome was refused
+        ``USE_CERTIFICATE_REQUIRED`` after an ACCEPTed review.
+        """
+        consumer_id = text(acceptance_id)
+
+        def consumer(purpose: str, owner_task: str, target: AssuranceRef) -> tuple[str, str]:
+            if purpose != "OPERATION_OUTCOME":
+                raise AssuranceError("USE_PURPOSE_UNSUPPORTED", purpose)
+            return ACCEPTANCE_CONSUMER, consumer_id
 
         return self._prepare_use(record, consumer)
 

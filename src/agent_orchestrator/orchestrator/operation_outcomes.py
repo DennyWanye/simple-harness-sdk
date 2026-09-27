@@ -620,6 +620,40 @@ def accept_operation_outcome(
     commit: Any, *, mission_id: str, binding_id: str, service_authority: object
 ) -> Any:
     """Consume an official outcome review and finish eligible owner work atomically."""
+    runtime = getattr(commit, "_operation_materialization_runtime", None)
+    if runtime is None or service_authority is not runtime.service_authority:
+        raise OperationOutcomeError("OP_SERVICE_CALLER_REQUIRED")
+    candidate = _assured_outcome_use(commit, mission_id, binding_id)
+    try:
+        return _accept_operation_outcome(commit, mission_id, binding_id, candidate)
+    finally:
+        if candidate is not None:
+            commit._assurance_validity.forget(mission_id, str(candidate.record.record_id))
+
+
+def _assured_outcome_use(commit: Any, mission_id: str, binding_id: str) -> Any:
+    """An assured Mission's outcome acceptance is licensed by a current UseCertificate
+    prepared here, outside the write lock, and committed by ``accept_review`` beside
+    the Acceptance — never by the legacy self-issued witness."""
+    from ..storage.assurance_store import AssuranceStore
+
+    store = commit.store
+    try:
+        if AssuranceStore(store).lane(mission_id) != "ASSURANCE_1_1":
+            return None
+    except Exception:  # noqa: BLE001 - a Mission without a lane row is not assured
+        return None
+    row = OperationCompletionStore(store).get_outcome_binding_exact(mission_id, binding_id)
+    record = (
+        None if row is None else HtnStore(store).official_review_record(row["review_package_id"])
+    )
+    validity = getattr(commit, "_assurance_validity", None)
+    if record is None or record.verdict is not ReviewVerdict.ACCEPT or validity is None:
+        raise OperationOutcomeError("OP_REVIEW_NOT_OFFICIAL", "no licensable outcome review")
+    return validity.prepare_outcome_use(record, acceptance_id="acc-" + binding_id)
+
+
+def _accept_operation_outcome(commit: Any, mission_id: str, binding_id: str, candidate: Any) -> Any:
     from ..contracts import TaskStatus
     from ..contracts.htn import TaskForm
     from ..memory.summaries import refresh_summaries
@@ -629,9 +663,6 @@ def accept_operation_outcome(
     from .resolution_commits import AcceptReviewCommand, ResolutionPrincipal
     from .state_machine import next_task
 
-    runtime = getattr(commit, "_operation_materialization_runtime", None)
-    if runtime is None or service_authority is not runtime.service_authority:
-        raise OperationOutcomeError("OP_SERVICE_CALLER_REQUIRED")
     store = commit.store
     with store.transaction():
         htn = HtnStore(store)
@@ -661,7 +692,17 @@ def accept_operation_outcome(
             now_ms = previous.accepted_at_ms
         issuer = "operation-outcome-acceptor"
         anchors = LeafAcceptanceAssembly(store, commit, reviewer_agent_id=issuer)
-        witness = anchors._witness(mission_id, task.id, acceptance_id=acceptance_id, now_ms=now_ms)
+        if candidate is not None and candidate.record != record:
+            raise OperationOutcomeError(
+                "OP_REVIEW_NOT_OFFICIAL", "use certificate names another record"
+            )
+        witness_id = (
+            candidate.certificate_id
+            if candidate is not None
+            else anchors._witness(
+                mission_id, task.id, acceptance_id=acceptance_id, now_ms=now_ms
+            ).witness_id
+        )
         command = AcceptReviewCommand(
             command_id="accept:" + binding_id,
             mission_id=mission_id,
@@ -671,7 +712,7 @@ def accept_operation_outcome(
             package=package,
             record=record,
             requirements=requirements,
-            witness_id=witness.witness_id,
+            witness_id=witness_id,
             independence=IndependenceFacts(
                 producer_agent_ids=package.producer_agent_ids, reviewer_can_write_candidate=False
             ),
