@@ -256,3 +256,37 @@ def test_the_mission_judge_view_keeps_tool_authority_while_its_mission_is_live()
     assert refusal(fake, "mission-live-judge-owner-1") is None
     assert refusal(fake, "mission-done-judge-owner-1") == "attempt_unavailable"
     assert refusal(fake, "task-x:attempt-9") == "attempt_unavailable"
+
+
+def test_an_undeclared_file_under_actions_is_policed_only_when_it_claims_an_action(tmp_path):
+    """2026-09-27 真机（ABS.md 那局）：发布步骤把交付说明写成 actions/delivery.json，
+    被当成"未声明的候选"连拒三次、任务失败。只有自称是操作（带 connector/operation）的
+    文件才按候选把关；读不懂的照旧拒绝。
+
+    **Mutation**: drop the ``claims_an_action`` skip → the delivery note is refused again."""
+    import json
+
+    from agent_orchestrator.orchestrator import event_handler as eh
+    from agent_orchestrator.orchestrator.action_commits import claims_an_action
+
+    (tmp_path / "actions").mkdir()
+    (tmp_path / "actions" / "delivery.json").write_text(
+        json.dumps({"delivered": "ABS.md"}), encoding="utf-8")
+    (tmp_path / "actions" / "sneaky.json").write_text(
+        json.dumps({"connector": "file_publish", "operation": "publish"}), encoding="utf-8")
+    fake = SimpleNamespace(
+        commit=SimpleNamespace(domain_for=lambda mission_id: SimpleNamespace(id="code-v1")),
+        _action_candidate_outputs=lambda mission, task: (OPERATION_CANDIDATE_FILE,),
+        _connectors={}, _config=SimpleNamespace(deployment_policy=None),
+    )
+
+    def problems_for(path):
+        return eh.Orchestrator._action_problems(
+            fake, SimpleNamespace(id=M, success_criteria=()),
+            SimpleNamespace(outputs=(), success_criteria=()),
+            [SimpleNamespace(path=path)], SimpleNamespace(resolve=lambda p: tmp_path / p))
+
+    assert problems_for("actions/delivery.json") == []
+    assert [p for p in problems_for("actions/sneaky.json") if "not a declared output" in p]
+    assert claims_an_action(b"{not json") and claims_an_action(b"[1]")
+    assert not claims_an_action(b'{"note": "x"}')

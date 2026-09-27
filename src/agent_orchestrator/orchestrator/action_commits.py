@@ -190,6 +190,24 @@ def is_action_path(path: str) -> bool:
     return path.startswith("actions/") and path.endswith(".json")
 
 
+def claims_an_action(raw: bytes) -> bool:
+    """Whether an ``actions/*.json`` file claims to be an action.
+
+    A JSON object naming neither a ``connector`` nor an ``operation`` is ordinary
+    content that happens to sit under ``actions/`` — nothing ever executes it
+    (real run 2026-09-27: a Worker wrote its delivery note as
+    ``actions/delivery.json`` and the publish step failed three times as an
+    undeclared candidate).  Anything unreadable or not an object still counts as
+    a claim, so it keeps being policed (fail closed).
+    """
+
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return True
+    return not isinstance(value, dict) or "connector" in value or "operation" in value
+
+
 def judgment_key(tasks: Sequence[Any]) -> str:
     """D7-7' ①: the integrated tree is fixed by the live Tasks' accepted results."""
 
@@ -1442,15 +1460,17 @@ class ActionCommitsMixin:
             if artifact is None or not is_action_path(artifact.path):
                 continue
             try:
-                from ..runtime.action_schema import declared_action_outputs
-                if artifact.path not in declared_action_outputs(self._store, mission.id, task):
-                    raise CandidateRejected("undeclared_action_output", artifact.path)
                 from ..artifacts.store import ArtifactStoreError, read_verified
+                from ..runtime.action_schema import declared_action_outputs
 
                 try:  # P3.2 D3: stored bytes only, hash re-checked, never through a symlink
                     raw = read_verified(artifact)
                 except ArtifactStoreError as error:
                     raise CandidateRejected("artifact_bytes_mismatch", artifact.path) from error
+                if artifact.path not in declared_action_outputs(self._store, mission.id, task):
+                    if not claims_an_action(raw):
+                        continue  # ordinary content under actions/, never executed
+                    raise CandidateRejected("undeclared_action_output", artifact.path)
                 if hashlib.sha256(raw).hexdigest() != artifact.content_hash:
                     raise CandidateRejected("artifact_bytes_mismatch", artifact.path)
                 candidate = json.loads(raw.decode("utf-8"))

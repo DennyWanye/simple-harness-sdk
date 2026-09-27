@@ -214,6 +214,7 @@ from .action_commits import (
     ActionCommitError,
     CandidateRejected,
     check_candidate,
+    claims_an_action,
     is_action_path,
     judgment_key,
     parse_action_criterion,
@@ -10013,7 +10014,16 @@ class Orchestrator:
         declared = self._action_candidate_outputs(mission, task)
         for path in paths:
             if path not in declared:
-                problems.append(f"action candidate {path} is not a declared output of this Task")
+                try:
+                    raw = copy.resolve(path).read_bytes()
+                except Exception:  # noqa: BLE001 - unreadable: policed below as a claim
+                    raw = b""
+                if not claims_an_action(raw):
+                    continue  # ordinary content under actions/, never executed
+                problems.append(
+                    f"action candidate {path} is not a declared output of this Task; only "
+                    f"{sorted(declared)} may hold an action — move other files out of actions/"
+                )
                 continue
             try:
                 candidate = json.loads(copy.resolve(path).read_text(encoding="utf-8"))
