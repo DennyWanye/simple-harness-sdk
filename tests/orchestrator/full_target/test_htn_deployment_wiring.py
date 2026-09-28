@@ -851,6 +851,46 @@ def test_the_synthesis_request_carries_no_authority_vocabulary(synth: SynthWorld
     assert set(request.forbidden_fields) >= {"mission_id", "registry_status", "budget_account"}
 
 
+def test_each_criterion_id_is_shown_with_its_own_statement(synth: SynthWorld) -> None:
+    """2026-09-29 第十局：合成器只看到 c-user-1…c-user-10 和同一句总目标，只能按目标
+    描述自己猜编号——把"写出 README.md"链接到了写模块的那一步。每个编号必须带上
+    任务要求里它自己的原文；要求里没有的编号保持原样。"""
+
+    from agent_orchestrator.contracts.resolution import (
+        AllExpr,
+        Criterion,
+        CriterionExpr,
+        CriterionOrigin,
+        EvaluationKind,
+        RequirementClass,
+        RequirementsRevision,
+    )
+
+    before = synth.dispatch.synthesis_request(synth.mission.id, "task-root")
+    ids = [item["id"] for item in before.criterion_evidence]
+    assert ids, "the fixture's goal names coverage criteria"
+    known, unknown = ids[0], ids[1:]
+    HtnStore(synth.service.store).insert_requirements_revision(RequirementsRevision(
+        revision_id="requirements-1",  # type: ignore[arg-type]
+        mission_id=synth.mission.id,
+        revision=1,
+        criteria=(Criterion(
+            criterion_id=known,
+            revision=1,
+            origin=CriterionOrigin.USER_EXPLICIT,
+            statement="file:wordfreq.py",
+            requirement_class=RequirementClass.REQUIRED_OUTCOME,
+            evaluation_kind=EvaluationKind.SEMANTIC,
+        ),),
+        success_expression=AllExpr((CriterionExpr(known),)),
+    ))
+    after = {item["id"]: item["evidence_requirement"]
+             for item in synth.dispatch.synthesis_request(synth.mission.id, "task-root").criterion_evidence}
+    assert after[known] == "file:wordfreq.py"
+    old = {item["id"]: item["evidence_requirement"] for item in before.criterion_evidence}
+    assert all(after[item] == old[item] for item in unknown)
+
+
 def test_an_unusable_capability_is_reported_as_unavailable(synth: SynthWorld) -> None:
     synth.world.records = capability_records(
         synth.env.catalog, deployed_layers=(), unhealthy=("demo.read",)

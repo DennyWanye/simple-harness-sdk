@@ -3107,6 +3107,17 @@ class HierarchicalDispatch:
             review_feedback=review_feedback,
         )
         from dataclasses import replace
+        # 2026-09-29 第十局：criterion_evidence 原先给每个编号配同一句总目标，模型看不出
+        # c-user-3 是"跑测试"、c-user-6 是"写出 README.md"，只能按目标描述自己猜编号，
+        # 把文件要求链到了错的步骤。有任务要求原文的编号换成它自己的原文。
+        requirements = self.semantics().latest_requirements_revision(mission_id)
+        statements = {} if requirements is None else {
+            str(item.criterion_id): str(item.statement) for item in requirements.criteria}
+        if statements:
+            request = replace(request, criterion_evidence=tuple(
+                {"id": item["id"],
+                 "evidence_requirement": statements.get(item["id"], item["evidence_requirement"])}
+                for item in request.criterion_evidence))
         fresh_id = "synth-" + content_hash_of({"goal_task_id": str(goal_task_id)})[:24]
         occupied = [int(item.contract.method_version) for item in self.semantics().list_methods()
                     if item.contract.method_id == fresh_id]
