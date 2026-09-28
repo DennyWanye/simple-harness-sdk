@@ -142,13 +142,19 @@ def test_the_operation_candidate_port_brings_the_candidate_contract(monkeypatch)
             return SimpleNamespace(output_ports=ports[task_id])
 
     monkeypatch.setattr(htn, "HtnStore", _Htn)
-    fake = SimpleNamespace(store=None)
+    # 一步负责几个操作就声明几个申请单文件（2026-09-28），此处任务没有操作要求：照旧一个
+    fake = SimpleNamespace(store=SimpleNamespace(
+        get_mission=lambda mission_id: SimpleNamespace(success_criteria=())))
     mission = SimpleNamespace(id=M)
     outputs = eh.Orchestrator._action_candidate_outputs
-    assert outputs(fake, mission, SimpleNamespace(id="with", outputs=())) == (OPERATION_CANDIDATE_FILE,)
-    assert outputs(fake, mission, SimpleNamespace(id="without", outputs=())) == ()
+
+    def task(task_id, declared=()):
+        return SimpleNamespace(id=task_id, outputs=declared, success_criteria=())
+
+    assert outputs(fake, mission, task("with")) == (OPERATION_CANDIDATE_FILE,)
+    assert outputs(fake, mission, task("without")) == ()
     declared = ("actions/mine.json",)
-    assert outputs(fake, mission, SimpleNamespace(id="with", outputs=declared)) == declared
+    assert outputs(fake, mission, task("with", declared)) == declared
     assert OPERATION_CANDIDATE_FILE.startswith("actions/") and OPERATION_CANDIDATE_FILE.endswith(".json")
 
 

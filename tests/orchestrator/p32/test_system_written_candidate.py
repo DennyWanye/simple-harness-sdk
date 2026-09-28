@@ -117,3 +117,84 @@ def test_nothing_is_written_when_the_file_to_publish_is_missing(tmp_path):
     listed = with_system_candidate(["notes.md"], ws, contract)
     assert listed == ["notes.md"]
     assert not ws.resolve(OPERATION_CANDIDATE_FILE).exists()
+
+
+def test_a_step_owning_two_publishes_gets_two_system_written_candidates(tmp_path):
+    """2026-09-28 真机第五局：两个发布交给同一步，而一步只有一个申请单文件，永远交不齐。"""
+    from agent_orchestrator.runtime.action_schema import candidate_file
+
+    ws = _Workspace(tmp_path / "ws")
+    ws.write_text("README.md", "说明\n")
+    ws.write_text("wordfreq.py", "x\n")
+    contract = worker_action_contract(
+        mission_criteria=MISSION, task_criteria=["c-user-2", "c-user-3"],
+        task_outputs=[candidate_file(0), candidate_file(1)],
+        connectors={"file_publish": FilePublishConnector(tmp_path / "pub", tmp_path / "ledger")},
+        deployment=ENABLED,
+    )
+    assert contract["system_writes_candidate"] is True
+    assert contract["output_files"] == [OPERATION_CANDIDATE_FILE, "actions/action_candidate-2.json"]
+
+    listed = with_system_candidate([], ws, contract)
+
+    assert sorted(listed) == sorted(["README.md", "wordfreq.py", *contract["output_files"]])
+    written = {json.loads(ws.read_text(path))["target"]: json.loads(ws.read_text(path))["params"]
+               for path in contract["output_files"]}
+    assert written == {"README.md": {"artifact_path": "README.md"},
+                       "wordfreq.py": {"artifact_path": "wordfreq.py"}}
+
+
+def test_a_step_declares_one_candidate_file_per_owned_operation(monkeypatch):
+    from types import SimpleNamespace
+
+    from agent_orchestrator.runtime import action_schema
+    from agent_orchestrator.storage import htn_store
+
+    port = SimpleNamespace(port_key=action_schema.OPERATION_CANDIDATE_PORT)
+    monkeypatch.setattr(htn_store.HtnStore, "__init__", lambda self, store: None)
+    monkeypatch.setattr(htn_store.HtnStore, "task_semantics_of",
+                        lambda self, mission_id, task_id: SimpleNamespace(output_ports=[port]))
+    store = SimpleNamespace(get_mission=lambda mission_id: SimpleNamespace(success_criteria=MISSION))
+
+    def declared(criteria):
+        task = SimpleNamespace(id="t", outputs=["notes.md"], success_criteria=criteria)
+        return action_schema.declared_action_outputs(store, "m", task)
+
+    assert declared(["c-user-2", "c-user-3"]) == (
+        "notes.md", OPERATION_CANDIDATE_FILE, "actions/action_candidate-2.json")
+    assert declared(["c-user-3"]) == ("notes.md", OPERATION_CANDIDATE_FILE)
+    assert declared(["c-user-1"]) == ("notes.md", OPERATION_CANDIDATE_FILE)  # 照旧至少一个
+
+
+def test_the_candidate_port_names_the_file_the_system_wrote():
+    """审阅 2026-09-28：申请单端口必填；模型按提示不写申请单，就由系统认领。"""
+    from types import SimpleNamespace
+
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator
+    from agent_orchestrator.runtime.action_schema import OPERATION_CANDIDATE_PORT
+
+    def claim(raw, ports=("delivery", OPERATION_CANDIDATE_PORT), new_mode=True):
+        mode = SimpleNamespace(declared_output_ports_for=lambda m, t: [{"port": p} for p in ports])
+        fake = SimpleNamespace(_new_mode=lambda mission: mode if new_mode else None)
+        contract = {"system_writes_candidate": True, "output_files": [OPERATION_CANDIDATE_FILE]}
+        Orchestrator._claim_system_candidate(
+            fake, raw, SimpleNamespace(mission_id="m", task_id="t"), None, contract)
+        return raw.get("outputs")
+
+    assert claim({"artifacts": ["README.md", OPERATION_CANDIDATE_FILE],
+                  "outputs": {"delivery": "README.md"}}) == {
+        "delivery": "README.md", OPERATION_CANDIDATE_PORT: OPERATION_CANDIDATE_FILE}
+    assert claim({"artifacts": [OPERATION_CANDIDATE_FILE]}) == {
+        OPERATION_CANDIDATE_PORT: OPERATION_CANDIDATE_FILE}
+    assert claim({"artifacts": ["README.md"]}) is None  # 系统没写成：不替它认领
+    assert claim({"artifacts": [OPERATION_CANDIDATE_FILE]}, ports=("delivery",)) is None
+    assert claim({"artifacts": [OPERATION_CANDIDATE_FILE]}, new_mode=False) is None
+
+
+def test_a_numbered_step_that_owns_no_operation_is_told_nothing_about_candidates(tmp_path):
+    """2026-09-28 真机第五局：写文件那一步（只负责内容要求）被退回"整个任务的两个发布"，
+    屡次写申请单被规则检查退回，5 次尝试白费。"""
+    assert _contract(tmp_path, ["c-user-1", "pytest: test_wordfreq.py"]) is None
+    # 不带编号的旧式步骤：照旧退回整个任务的操作
+    legacy = _contract(tmp_path, ["README.md 引用 top_words"])
+    assert len(legacy["operations"]) == 2
