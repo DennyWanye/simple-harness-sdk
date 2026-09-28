@@ -222,6 +222,10 @@ class ArpPorts:
     # RP-D2: the Host's authenticated artifact reader (``Pin -> bytes``) for
     # ``HostRequest.payload_ref`` and Skill bundle installs; None → ARTIFACT_UNAVAILABLE.
     artifacts: Any | None = None
+    # NEXT-TG-1.0 §10: the original Mission authority's source reader
+    # (``mission_sources.MissionSourcePort``).  A MISSION-mode profile refuses creation
+    # by name without it; STANDALONE_CHAT never consults it.
+    mission_sources: Any | None = None
 
 
 __all__ = (

@@ -34,7 +34,7 @@ from simple_harness.execution.sqlite.base_agent import turns as base_agent_turns
 from simple_harness.execution.uow import UnitOfWorkConflict
 from simple_harness.runtime import RunStart
 
-from . import PROTOCOL, store
+from . import PROTOCOL, mission_sources, store
 from .codec import check
 from .errors import ArpError
 from .pins import Pin, original_receipt_pin
@@ -149,19 +149,24 @@ class NativeCreationService:
 
     # ---- C0 --------------------------------------------------------------------------
 
-    def _command_hash(self, *, owner_scope: str, creation_key: str, config: AgentConfig, caller: TrustedCaller, role: str) -> str:
-        return digest(
-            {
-                "kind": "create",
-                "protocol": PROTOCOL,
-                "owner_scope": owner_scope,
-                "creation_key": creation_key,
-                "role": role,
-                "config_hash": config_hash(config),
-                "profile_ref": self._profile.pin.to_json(),
-                "caller": caller.to_json(),
-            }
-        )
+    def _command_hash(
+        self, *, owner_scope: str, creation_key: str, config: AgentConfig, caller: TrustedCaller, role: str,
+        mission_record: Mapping[str, Any] | None = None,
+    ) -> str:
+        command = {
+            "kind": "create",
+            "protocol": PROTOCOL,
+            "owner_scope": owner_scope,
+            "creation_key": creation_key,
+            "role": role,
+            "config_hash": config_hash(config),
+            "profile_ref": self._profile.pin.to_json(),
+            "caller": caller.to_json(),
+        }
+        if mission_record is not None:
+            # The same creation key never replays into another task, occurrence or input.
+            command["mission_sources_hash"] = digest(dict(mission_record))
+        return digest(command)
 
     def prepare_intent(
         self, *, owner_scope: str, creation_key: str, agent_id: str, run_id: str, command_hash: str, caller: TrustedCaller
@@ -211,10 +216,15 @@ class NativeCreationService:
         if caller is None:
             raise ArpError("AUTHORITY_SOURCE_MISSING", "ARP creation requires an authenticated caller")
         profile = self.profile
-        if profile.owner_mode != "STANDALONE_CHAT":
-            # Mission-mode sources (TaskGraph / InputManifest / Assurance) are RP-B work;
-            # without them creation is refused instead of silently standalone (§2).
-            raise ArpError("SOURCE_UNAVAILABLE", "MISSION owner mode needs exact sources")
+        mission_record: dict[str, Any] | None = None
+        if profile.owner_mode == "MISSION":
+            # NEXT-TG-1.0 §10: the exact role-typed Mission sources, read from the original
+            # authority, or a named refusal — never a silent standalone creation.
+            mission_record = mission_sources.record_for_creation(
+                self._ports.mission_sources, self._runtime.uow.database.connection, caller=caller, role=role
+            )
+        elif profile.owner_mode != "STANDALONE_CHAT":
+            raise ArpError("ENUM", field_path="owner_mode")
         mode = profile.creation_mode(embedding_available=self._ports.embedding_available)
         agent_id = agent_id or self._agent_id_for(owner_scope, creation_key)
         run_id = agent_id
@@ -237,7 +247,8 @@ class NativeCreationService:
             code = "SESSION_PURGED" if previous.state == "PURGED" else "SESSION_NOT_ACTIVE"
             raise ArpError(code, f"the creation key's session is {previous.state}", detail={"state": previous.state})
         command_hash = self._command_hash(
-            owner_scope=owner_scope, creation_key=creation_key, config=config, caller=caller, role=role
+            owner_scope=owner_scope, creation_key=creation_key, config=config, caller=caller, role=role,
+            mission_record=mission_record,
         )
         # C0
         intent = self.prepare_intent(
@@ -363,6 +374,11 @@ class NativeCreationService:
                     now=now,
                 )
                 session = activated
+            if mission_record is not None:
+                store.append_original_receipt_locked(
+                    connection, run_id=run_id, kind=mission_sources.RECEIPT_KIND, receipt_key=session_id,
+                    body=mission_record, now=now,
+                )
             intent = store.finalize_creation_locked(connection, intent, state="BOUND")
         del mode  # LEXICAL_ONLY / HYBRID is recorded by the index partition owner (RP-B)
         return CreationReceipt(binding, session, protocol, intent, replayed)

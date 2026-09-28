@@ -36,7 +36,7 @@ from ...context.composer import _message_of
 from ...context.port import JournalContextPort
 from ...context.tokenizer import count_message, count_tools
 from ...wire import AgentProviderWire, restore_wire_messages, run_id_from_request
-from .. import store
+from .. import mission_sources, store
 from ..codec import check
 from ..catalogue import ToolExposureService, read_tool_snapshot
 from ..errors import ArpError
@@ -182,6 +182,9 @@ class ArpContextPort(JournalContextPort):
         highwater = self._uow.agent_journal_highwater(run_id)
         if frozen is not None:
             return self._replay(frozen, session, request)
+        # NEXT-TG-1.0 §10: a MISSION Session's recorded sources must still be current
+        # before a new request is frozen (and so before it can be handed off).
+        mission_sources.require_current(arp.ports.mission_sources, connection, session)
         request, tool_snapshot, tool_witnesses = self._expose(session, request)
         snapshot = self._capture(session, highwater)
         turn_id = snapshot.current_turn_id
@@ -406,6 +409,7 @@ class ArpContextPort(JournalContextPort):
                 }
             )
         publication = store.active_index_publication(self._connection(), session.session_id)
+        sources_pin = mission_sources.recorded_pin(self._connection(), session)
         read_set = {
             "journal_highwater": prepared.highwater,
             "group_snapshot": snapshot.snapshot_hash,
@@ -414,6 +418,7 @@ class ArpContextPort(JournalContextPort):
             "tool_snapshot": tool_snapshot_hash,
             "recall_result": digest(result),
             "skill_blocks": [[b.block_id, b.artifact_ref.content_hash] for b in prepared.skill_blocks],
+            **({} if sources_pin is None else {"mission_sources": sources_pin.content_hash}),
         }
         manifest = {
             "schema_version": 2,
@@ -425,7 +430,7 @@ class ArpContextPort(JournalContextPort):
             "session_generation": session.generation,
             "profile_ref": session.profile_ref.to_json(),
             "model_limits": dict(arp.meter.binding.model_limits),
-            "owner_contract_ref": Pin("policy", f"{session.profile_id}:owner-mode:{arp.ports.profile.owner_mode}", session.profile_revision, session.profile_hash).to_json(),
+            "owner_contract_ref": mission_sources.owner_contract_for(self._connection(), session).to_json(),
             "journal_highwater": prepared.highwater,
             "sections": sections,
             "recent_group_ids": [g.id for g in selection.recent],
@@ -445,7 +450,7 @@ class ArpContextPort(JournalContextPort):
             "tool_headroom_tokens": int(policy["tool_headroom_tokens"]),
             "counter_mode": arp.meter.binding.count_mode,
             "registry_epoch": 0 if prepared.tool_snapshot is None else int(prepared.tool_snapshot["registry_epoch"]),
-            "authority_refs": [policy_row.approval_ref.to_json()],
+            "authority_refs": [policy_row.approval_ref.to_json()] + ([] if sources_pin is None else [sources_pin.to_json()]),
             "source_read_set_ref": Pin("artifact", f"readset:{context_id}", 0, digest(read_set)).to_json(),
             "creation_root_id": session.creation_root_id,
             "effective_context_policy_ref": policy_row.pin.to_json(),

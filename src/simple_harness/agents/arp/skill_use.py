@@ -112,7 +112,9 @@ class SkillUseService:
         return Pin("input_manifest", f"session:{session.session_id}", session.generation, digest({"session": session.session_id, "generation": session.generation})), tool_snapshot
 
     def _owner_contract(self, session: store.SessionRow) -> Pin:
-        return Pin("policy", f"{session.profile_id}:owner-mode:{self.owner_mode}", session.profile_revision, session.profile_hash)
+        from .mission_sources import owner_contract_for
+
+        return owner_contract_for(self.catalogue.connection, session)
 
     @staticmethod
     def call_ref(session: store.SessionRow, call_id: str) -> Pin:
