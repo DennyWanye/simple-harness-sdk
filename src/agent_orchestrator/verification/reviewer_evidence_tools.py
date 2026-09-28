@@ -39,6 +39,8 @@ from ..storage.assurance_work import atomic
 # Host real model run 18 (2026-09-23): a MISSION_FINAL reviewer over the whole
 # root catalogue made 3+6+4+5 = 18 read-only evidence calls; 16 ended the turn.
 MAX_EVIDENCE_TOOL_CALLS = 32
+#: 剩余次数不多于此时，每次查看结果里附一句"尽快作答"的提醒。
+EVIDENCE_CALLS_WARNING = 8
 MAX_READ_BYTES = 256 * 1024
 DEFAULT_PAGE_CHARS = 4096
 MAX_PAGE_CHARS = 8192
@@ -248,14 +250,28 @@ class ReviewerEvidenceTools:
         try:
             reader, binding, identity, authorize = self._context(run_id, mission_id)
             if tool == "assurance_find_evidence":
-                return self._find(reader, binding, identity, dict(arguments))
+                return self._budget_notice(run_id, self._find(reader, binding, identity, dict(arguments)))
             if tool == "assurance_read_evidence":
-                return self._read(reader, binding, identity, authorize, dict(arguments))
+                return self._budget_notice(
+                    run_id, self._read(reader, binding, identity, authorize, dict(arguments)))
         except EvidenceToolRefusal:
             raise
         except AssuranceError as error:
             raise _refuse(error.code, "evidence read refused: " + error.code) from error
         raise _refuse("unknown_tool", tool)
+
+    def _budget_notice(self, run_id: str, result: dict) -> dict:
+        """快用完时在结果里提醒还剩几次（2026-09-29 第六局：查满被截断、没给结论）。"""
+        gateway = getattr(getattr(self.orchestrator, "assembled", None), "gateway", None)
+        counter = getattr(gateway, "executed_calls", None)
+        if counter is None:
+            return result
+        left = MAX_EVIDENCE_TOOL_CALLS - int(counter(run_id)) - 1  # 本次这一条还没记账
+        if left <= EVIDENCE_CALLS_WARNING:
+            result["budget_notice"] = (
+                f"查看次数只剩 {max(left, 0)} 次：请优先根据已看到的证据给出结论，"
+                "只在确实缺关键证据时再查。")
+        return result
 
     def _find(self, reader, binding, identity, arguments) -> dict:  # type: ignore[no-untyped-def]
         from ..orchestrator.assurance_check_use import _permission

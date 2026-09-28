@@ -4094,10 +4094,48 @@ class HierarchicalDispatch:
                 raise SynthesisReplyUnreadable(ContractError(
                     "拆分过粗：" + listed + "。每个要求写出的文件（file: 条件）单独成一个步骤，"
                     "有依赖的用 ordering 串起先后，汇总文件放最后一步；其余保持不变，重新输出方法。"))
+            unclear = self._publish_source_steps(mission_id, proposed)
+            if unclear:
+                # 2026-09-29 第 5 批：要发布的文件必须在计划里有唯一的产出步骤，系统发布时
+                # 只从那一步取。同样只在第一次退回；第二次照收，运行时按文件名回退。
+                raise SynthesisReplyUnreadable(ContractError(
+                    "发布来源不明确：" + "；".join(unclear) + "。每个要发布的文件对应的 file: 条件"
+                    "必须恰好链接到一个步骤（写出这个文件的那一步）；发布本身由系统完成，不要为发布"
+                    "单独设步骤；其余保持不变，重新输出方法。"))
         receipt = synthesizer.accept_response(text, policy=resolved)
         if receipt.admitted:
             self._publish_admitted_method(world, receipt.method_ref)
         return receipt
+
+    def _publish_source_steps(self, mission_id: str, method: Any) -> list[str]:
+        """Publish targets whose ``file:`` criterion is not linked to exactly one step.
+
+        The Host puts ``file:X`` in front of every ``action:file_publish.publish:X``
+        (``c-user-<n>`` names the Mission's n-th criterion, as for ``_coarse_file_steps``).
+        """
+        from .action_commits import parse_action_criterion
+
+        mission = self.store.get_mission(mission_id)
+        if mission is None:
+            return []
+        criteria = [str(item).strip() for item in mission.success_criteria]
+        steps: dict[str, set[str]] = {}
+        for link in getattr(method.composition, "criterion_links", ()) or ():
+            if link.child_step is not None:
+                steps.setdefault(str(link.parent_criterion_id), set()).add(str(link.child_step))
+        unclear = []
+        for criterion in criteria:
+            parsed = parse_action_criterion(criterion)
+            if parsed is None:
+                continue
+            source = f"file:{parsed[2]}"
+            if source not in criteria:
+                continue
+            linked = sorted(steps.get(f"c-user-{criteria.index(source) + 1}", ()))
+            if len(linked) != 1:
+                unclear.append(f"{parsed[2]} 链接到 {len(linked)} 个步骤"
+                               + (f"（{'、'.join(linked)}）" if linked else ""))
+        return unclear
 
     def _coarse_file_steps(self, mission_id: str, method: Any) -> list[tuple[str, list[str]]]:
         """Steps linked to three or more of the Mission's ``file:`` criteria.

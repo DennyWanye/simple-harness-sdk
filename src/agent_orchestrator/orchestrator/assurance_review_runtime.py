@@ -39,7 +39,10 @@ from .assurance_review_import import read_official_review_binding_locked
 from ..verification.reviewer_evidence_tools import MAX_EVIDENCE_TOOL_CALLS
 
 REVIEW_MODEL_CALLS = 10
-REVIEW_TOOL_CALLS = MAX_EVIDENCE_TOOL_CALLS
+#: 2026-09-29 第六局：最终审阅员每轮并发查 5 次左右，查满 32 次时循环直接截断，两次都没给
+#: 结论。循环上限比查看工具上限多留一轮的余量：工具先拒绝并提示"马上作答"，模型还能作答。
+REVIEW_ANSWER_MARGIN = 8
+REVIEW_TOOL_CALLS = MAX_EVIDENCE_TOOL_CALLS + REVIEW_ANSWER_MARGIN
 
 
 class AssuranceReviewRuntime:

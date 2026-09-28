@@ -793,7 +793,14 @@ class WorkspaceToolGateway:
                 code="tool_rate_limited",
                 outcome="rate_limited",
                 stage="rate",
-                message=f"this Attempt may execute at most {binding.max_tool_calls} tool calls",
+                message=(
+                    # 2026-09-29 第六局：最终审阅查满次数后被截断、两次都没给结论，整个任务
+                    # 判失败。审阅员查满时明确告诉它别再查、马上作答（循环上限留了余量）。
+                    f"查看次数已用完（最多 {binding.max_tool_calls} 次）：不要再调用任何工具，"
+                    "立即根据已经看到的证据，按要求的格式给出结论。"
+                    if binding.review_key is not None
+                    else f"this Attempt may execute at most {binding.max_tool_calls} tool calls"
+                ),
             )
         # Re-read the original Attempt control and temporary graph fence immediately
         # before physical work. It never changes an already handed-off effect.

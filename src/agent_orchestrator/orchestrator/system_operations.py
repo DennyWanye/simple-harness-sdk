@@ -132,6 +132,15 @@ def _sources(store: Any, htn: HtnStore, mission_id: str, leaves: list[Any],
     leaf finally had accepted (审阅 2026-09-29：旧步骤、旧版本的接受记录一直算"当前"，
     续写同一文件的正常计划会被判成多个匹配而卡住)。"""
 
+    # 2026-09-29 第 5 批：计划里声明写出这个文件的步骤（任务行 outputs 含它）恰好一个时，
+    # 只在它和它下游的步骤里、按路径完全相同找（下游续写步骤可以改它，取最下游的一版）；
+    # 没有声明或声明不唯一时照旧按路径/文件名在全部步骤里找。
+    declared = [leaf for leaf in leaves if target in tuple(leaf.task.outputs)]
+    exact_only = len(declared) == 1
+    if exact_only:
+        producer = str(declared[0].task.id)
+        leaves = [leaf for leaf in leaves
+                  if str(leaf.task.id) == producer or producer in leaf.upstream]
     current = {}
     for acceptance in htn.list_acceptances(mission_id):
         if str(acceptance.validity) == "CURRENT":
@@ -151,7 +160,7 @@ def _sources(store: Any, htn: HtnStore, mission_id: str, leaves: list[Any],
                 continue
             if artifact.path == target:
                 exact.append((artifact, acceptance, leaf))
-            elif source_matches(artifact.path, target):
+            elif not exact_only and source_matches(artifact.path, target):
                 by_name.append((artifact, acceptance, leaf))
     found = exact or by_name
     if len(found) > 1:

@@ -176,6 +176,10 @@ def test_the_system_prepares_the_approved_publish_from_the_reviewed_file(tmp_pat
     params = json.loads(action["params_json"]) if "params_json" in action else action["params"]
     assert params["artifact_path"] == "final.json"
     assert params["content_hash"] == artifact.content_hash
+    # 理由是系统按已批准效果写的：审批卡片不再标"模型生成，未核实"
+    assert action["reason_source"] == "system"
+    approval = world.store.get_approval(action["approval_request_id"])
+    assert approval["summary"]["reason_source"] == "system"
 
 
 def test_a_missing_file_asks_the_planner_or_stops_visibly(tmp_path):
@@ -248,8 +252,8 @@ def test_a_continued_file_is_taken_from_the_most_downstream_step():
         return SimpleNamespace(id=ident, path=path, content_hash=ident * 2, verification_status="VERIFIED")
 
     first, second, other = artifact("a1", "README.md"), artifact("a2", "README.md"), artifact("a3", "notes.md")
-    tasks = {"t1": SimpleNamespace(id="t1", dependency_ids=(), accepted_result_id="r1"),
-             "t2": SimpleNamespace(id="t2", dependency_ids=(), accepted_result_id="r2")}
+    tasks = {"t1": SimpleNamespace(id="t1", dependency_ids=(), accepted_result_id="r1", outputs=()),
+             "t2": SimpleNamespace(id="t2", dependency_ids=(), accepted_result_id="r2", outputs=())}
     results = {"r1": SimpleNamespace(artifacts=("a1", "a3")), "r2": SimpleNamespace(artifacts=("a2",))}
     artifacts = {a.id: a for a in (first, second, other)}
     store = SimpleNamespace(get_task=tasks.get, get_result=results.get, get_artifact=artifacts.get)
@@ -274,6 +278,43 @@ def test_a_continued_file_is_taken_from_the_most_downstream_step():
     edges.clear()
     graph = htn()
     assert len(_sources(store, graph, "m", _leaves(store, graph, "m"), "README.md")) == 2
+
+
+def test_the_declared_producer_decides_which_file_is_published():
+    """2026-09-29 第 5 批：计划里声明写出 README.md 的步骤（outputs 含它）是锚：在它和它下游
+    里按路径完全相同取最下游一版；并行分支里同名文件、只是文件名相同的文件都不再干扰。"""
+    from agent_orchestrator.contracts.htn import TaskForm
+    from agent_orchestrator.orchestrator.system_operations import _leaves, _sources
+
+    def artifact(ident, path):
+        return SimpleNamespace(id=ident, path=path, content_hash=ident * 2, verification_status="VERIFIED")
+
+    items = [artifact("a1", "README.md"), artifact("a2", "README.md"), artifact("a3", "README.md"),
+             artifact("a4", "docs/README.md")]
+    tasks = {
+        "t1": SimpleNamespace(id="t1", accepted_result_id="r1", outputs=("README.md",)),  # 声明产出
+        "t2": SimpleNamespace(id="t2", accepted_result_id="r2", outputs=()),  # t1 下游续写
+        "t3": SimpleNamespace(id="t3", accepted_result_id="r3", outputs=()),  # 并行分支
+    }
+    results = {"r1": SimpleNamespace(artifacts=("a1",)), "r2": SimpleNamespace(artifacts=("a2", "a4")),
+               "r3": SimpleNamespace(artifacts=("a3",))}
+    by_id = {a.id: a for a in items}
+    store = SimpleNamespace(get_task=tasks.get, get_result=results.get, get_artifact=by_id.get)
+    members = tuple(SimpleNamespace(occurrence_id=f"o{n}", task_id=f"t{n}", form=TaskForm.PRIMITIVE)
+                    for n in (1, 2, 3))
+    graph = SimpleNamespace(
+        active_plan_revision=lambda mission_id: SimpleNamespace(revision=1),
+        list_plan_memberships=lambda mission_id, revision: members,
+        list_order_constraints=lambda mission_id, revision: (),
+        list_data_requirements=lambda mission_id, revision: (
+            SimpleNamespace(producer_occurrence="o1", consumer_occurrence="o2"),),
+        list_acceptances=lambda mission_id: (SimpleNamespace(validity="CURRENT", artifact_refs=tuple(
+            SimpleNamespace(id=a.id, content_hash=a.content_hash) for a in items)),))
+    [(chosen, _, leaf)] = _sources(store, graph, "m", _leaves(store, graph, "m"), "README.md")
+    assert (chosen.id, leaf.task.id) == ("a2", "t2")
+    # 没有声明时照旧：三个同名版本里 t1→t2 与 t3 互不相连，判断不了（多个匹配交给规划器）
+    tasks["t1"].outputs = ()
+    assert len(_sources(store, graph, "m", _leaves(store, graph, "m"), "README.md")) > 1
 
 
 def test_only_the_confirming_person_can_carry_the_slot_authority(tmp_path):

@@ -51,7 +51,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -261,6 +261,7 @@ def occurrence_criteria(
     requirements: RequirementsRevision | None,
     *,
     owned: Sequence[str] = (),
+    claimed: Collection[str] = (),
 ) -> tuple[str, ...]:
     """The Task row's ``success_criteria``: the duty's criteria and their checks.
 
@@ -295,6 +296,13 @@ def occurrence_criteria(
         item.criterion_id for item in requirements.criteria if item.statement.startswith("action:")}
     content_refs = tuple(ref for ref in binding.requirement_refs if ref not in operations)
     references = tuple(ref for ref in content_refs if ref in set(owned))
+    if not references:
+        # 2026-09-29 第 5 批（审阅）：没被方法链接的步骤兜底承担全部内容要求，但方法已把
+        # "写出文件"（file:）交给别的步骤时不再兜给它——否则它要写出不归它的文件，反复失败。
+        statements = {} if requirements is None else {
+            item.criterion_id: item.statement for item in requirements.criteria}
+        content_refs = tuple(ref for ref in content_refs if not (
+            ref in claimed and statements.get(ref, "").startswith("file:")))
     for reference in references or content_refs:
         if reference not in criteria:
             criteria.append(reference)
@@ -527,6 +535,7 @@ def occurrence_task(
     criterion_linked: bool = False,
     require_content_review: bool = False,
     owned: Sequence[tuple[str, str]] = (),
+    claimed: Collection[str] = (),
 ) -> OccurrenceTask:
     """Build the Task row for one occurrence.  Pure: nothing is written here.
 
@@ -544,7 +553,7 @@ def occurrence_task(
 
     primitive = binding.form is TaskForm.PRIMITIVE
     owned_refs = [ref for ref, _ in owned if ref in set(binding.requirement_refs)] if primitive else []
-    criteria = occurrence_criteria(binding, requirements, owned=owned_refs)
+    criteria = occurrence_criteria(binding, requirements, owned=owned_refs, claimed=claimed)
     goal = binding.goal_signature.statement or f"satisfy {binding.goal_signature.signature_id}"
     if owned_refs:
         goal = scoped_goal(goal, criteria, [text for ref, text in owned if ref in owned_refs])

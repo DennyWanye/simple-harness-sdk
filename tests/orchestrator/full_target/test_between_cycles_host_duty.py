@@ -37,6 +37,7 @@ def _loop(inflight_rounds: int, duty, every: float = 0.0):
         recover=nothing,
         actions=SimpleNamespace(reconcile=nothing),
         _stall_carry_ons={},
+        _mission_marks={},  # 第 4 批：空闲前清掉安静标记、全量看一遍
         _cycle=cycle,
         _has_inflight=has_inflight,
         _poll=0,

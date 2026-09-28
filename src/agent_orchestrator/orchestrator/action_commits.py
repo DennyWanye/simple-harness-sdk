@@ -288,6 +288,7 @@ class ActionCommitsMixin:
         deployment: DeploymentPolicy,
         planning_origin: BoundPlanningOperationOrigin | None = None,
         operation_parameters: Any | None = None,
+        reason_source: str = "model (untrusted)",
     ) -> dict[str, Any]:
         """Register one verified candidate (D7-2 / D7-2').  Policy and scope refusals raise
         ``CandidateRejected`` and write nothing; the ledger's own rules (in flight, already
@@ -417,6 +418,7 @@ class ActionCommitsMixin:
                 "params": dict(cand["params"]),
                 "params_hash": phash,
                 "reason": cand["reason"],
+                **({"reason_source": reason_source} if reason_source != "model (untrusted)" else {}),
                 "level": decision.level,
                 "required_approvals": decision.required_approvals,
                 "idempotency_key": None if refused else f"{action_id}:v{version}",
@@ -579,7 +581,8 @@ class ActionCommitsMixin:
                         "target": record["target"],
                         "params": record["params"],
                         "reason": record["reason"],
-                        "reason_source": "model (untrusted)",
+                        # 2026-09-29：系统按已批准效果写的申请单理由不是模型写的，卡片不该标"未核实"
+                        "reason_source": record.get("reason_source", "model (untrusted)"),
                     },
                     "comments": [],
                     "created_at": self._store.now,

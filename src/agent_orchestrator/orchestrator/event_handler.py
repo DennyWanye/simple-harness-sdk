@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import sqlite3
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -470,6 +470,10 @@ class _AssuranceReviewUnavailable(ContractError):
 # an interrupted run) one planning question may absorb before they count again.
 PLANNER_TURN_FAILURE_GRACE = 6
 
+#: 没有新事件的任务多久无论如何全量处理一次（秒）：卡死检测、租约到期等按时间发生的事
+#: 靠它照常发生（2026-09-29 第 4 批）。
+MISSION_RECHECK_SECONDS = 10.0
+
 
 class PlannerTurnFailed(ContractError):
     """The Planner's turn ended without a reply; nothing it said was refused."""
@@ -645,6 +649,8 @@ class Orchestrator:
         self._creation_refusals_noted: set[str] = set()
         self.cancel_receipts: list[dict[str, Any]] = []
         self._rotation = 0  # D6-1: round-robin start across active Missions
+        # 任务号 → (上次无进展一轮时的全局事件游标, 时刻)；见 _missions_due（第 4 批）
+        self._mission_marks: dict[str, tuple[int, float]] = {}
         self._verifying: dict[str, asyncio.Task[bool]] = {}  # D6-9': bounded verification set
         self._pressure = BackpressureState()  # D6-2: the current backpressure signal
         self._connectors: dict[str, Any] = dict(
@@ -2530,6 +2536,10 @@ class Orchestrator:
                 backoff = min(max(self._poll, backoff * 2), WAIT_BACKOFF_MAX)
                 continue
             idle_rounds += 1
+            if idle_rounds == 1:
+                # 第 4 批（审阅 2026-09-29）："空闲"只能由一次全量处理得出：清掉安静标记，
+                # 下一轮每个任务都看一遍，仍无进展才算空闲返回。
+                self._mission_marks.clear()
             if idle_rounds >= 2:
                 # review P2-6: one more look at hand-offs whose lease lapsed (a crashed owner)
                 settled = await self.actions.reconcile()
@@ -3078,7 +3088,52 @@ class Orchestrator:
 
     # ---------------------------------------------------------------- cycle
     def _active_missions(self) -> list[Mission]:
-        return [m for m in self.store.list_missions() if m.status not in TERMINAL_MISSION]
+        # 2026-09-29（第 4 批）：每轮要调好几次；先按状态列筛，只解码未结束的任务，
+        # 不再每次把几十个已结束任务整份解码一遍。
+        ended = sorted(str(status) for status in TERMINAL_MISSION)
+        rows = self.store.connection.execute(
+            f"SELECT mission_id FROM missions WHERE status NOT IN ({','.join('?' * len(ended))})"
+            " ORDER BY created_at, mission_id",
+            ended,
+        ).fetchall()
+        missions = (self.store.get_mission(str(row[0])) for row in rows)
+        return [m for m in missions if m is not None and m.status not in TERMINAL_MISSION]
+
+    def _event_cursor(self) -> int:
+        """The newest event that is not a liveness heartbeat, across every Mission.
+
+        Global on purpose: a Mission waiting for a concurrency slot, a budget or a
+        backpressure drop is freed by *another* Mission's events, never by its own."""
+        row = self.store.connection.execute(
+            "SELECT seq FROM events WHERE type != 'HeartbeatReceived' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        return -1 if row is None else int(row[0])
+
+    def _missions_due(self, missions: Sequence[Mission], cursor: int) -> set[str]:
+        """2026-09-29（第 4 批：主循环只处理有变化的任务）：自上次"无进展"的一轮以来库里
+        有新事件（心跳不算；任何任务的事件都算，名额、额度是大家共用的）才逐项处理；每
+        ``MISSION_RECHECK_SECONDS`` 秒无论如何全量处理一次，好让卡死检测、租约到期、冷却
+        结束这类按时间发生的事照常发生；总时限已到的任务马上处理。"""
+        now = float(self.store.now)  # 仓库时钟：生产即墙钟，测试可拨快
+        due: set[str] = set()
+        for mission in missions:
+            mark = self._mission_marks.get(mission.id)
+            limit = mission.budget.max_runtime_seconds
+            if (mark is None or mission.status is MissionStatus.CREATED
+                    or mark[0] != cursor
+                    or now - mark[1] >= MISSION_RECHECK_SECONDS
+                    # 总时限到了要马上停：宁可多处理一轮（等人时间留给 _runtime_exhausted 扣）
+                    or (limit is not None and now - mission.created_at >= limit)):
+                due.add(mission.id)
+        return due
+
+    def _mark_quiet(self, mission_ids: Iterable[str], cursor: int) -> None:
+        """``cursor`` is the one read when the round *began*: an event written while the
+        round ran (a verification finishing, another Mission freeing a slot) must wake
+        the Mission next round, not be folded into its quiet mark (审阅 2026-09-29)."""
+        now = float(self.store.now)  # 仓库时钟：生产即墙钟，测试可拨快
+        for mission_id in mission_ids:
+            self._mission_marks[mission_id] = (cursor, now)
 
     def _raise_if_verification_crashed(self) -> None:
         # The task table is the sole completion owner. Do not discard successful
@@ -3511,17 +3566,24 @@ class Orchestrator:
             progressed = True
         if await self._wake_planning_waits():
             progressed = True
+        busy: set[str] = set()  # 本轮有进展的任务：下一轮照样处理，不记"安静"
+        round_cursor = self._event_cursor()
+        due = self._missions_due(self._active_missions(), round_cursor)
         # P2.3c part 2c: before anything is planned, look at what is still unknown.
         # It runs *first* because the Planner package is built out of the evidence
         # snapshot: gathering after the intent was created would show the model the
         # world as it was one round ago.
         for mission in self._active_missions():
+            if mission.id not in due:
+                continue
             from .planning_repair_requests import collect_triggers
             if collect_triggers(self, mission):
                 progressed = True
+                busy.add(mission.id)
             try:
                 if self._resume_planning_services(mission):
                     progressed = True
+                    busy.add(mission.id)
             except BudgetExhausted as error:
                 self._stop_planning_round(mission.id, reason="budget_exhausted",
                     detail={"phase": "planning_service_resume", "dimension": error.dimension,
@@ -3533,15 +3595,21 @@ class Orchestrator:
                 pass
             if self._gather_evidence(mission):
                 progressed = True
+                busy.add(mission.id)
             if await self._request_method_synthesis(mission):
                 progressed = True
+                busy.add(mission.id)
         for mission in self._active_missions():
+            if mission.id not in due:
+                continue
             if mission.status is MissionStatus.CREATED:
+                busy.add(mission.id)
                 if self._assembly_missing(mission, at="start_planning"):
                     continue
                 if await self._start_planning(mission):
                     progressed = True
             elif await self._refine_open_compounds(mission):
+                busy.add(mission.id)
                 # P2.3d / defect D5-B: a Mission used to be planned exactly once.  A
                 # Planner that proposed a *nested* compound left it at
                 # ``CompoundPhaseChanged{planning_ready, NEEDS_REFINEMENT}`` and nothing
@@ -3619,9 +3687,13 @@ class Orchestrator:
             self._rotation += 1
             missions = missions[start:] + missions[:start]
         for mission in missions:
+            if mission.id not in due:
+                continue
             self._raise_if_verification_crashed()
             if await self._decide(mission):
                 progressed = True
+                busy.add(mission.id)
+        self._mark_quiet(due - busy, round_cursor)
         return progressed
 
     def _gather_evidence(self, mission: Mission) -> bool:
@@ -9273,6 +9345,12 @@ class Orchestrator:
                     return
                 if reason == "cancelled":
                     self._commit_cancel_mission(attempt.mission_id)
+                elif reason == "deadline" and await self._runtime_exhausted(
+                    self.store.get_mission(attempt.mission_id), ()
+                ):
+                    # 2026-09-29：排队到点往往就是任务总时限到了：按任务总时限停（带用时明细），
+                    # 不再和主循环的时限检查抢先后。
+                    return
                 else:
                     # Runtime/deadline is the existing budget time-cap category.
                     # Other admission failures retain their exact configuration /

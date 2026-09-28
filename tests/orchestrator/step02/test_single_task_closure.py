@@ -214,6 +214,8 @@ def test_s2_07_invalid_and_forged_envelopes_are_rejected(tmp_path):
             "planner": [
                 proposal_step({**PROPOSAL, "budget": {"max_tokens": 50000, "max_attempts": 3}})
             ],
+            # 2026-09-29（第 1 批）：格式没写对不扣任务次数，同一步合计 6 次后停下；
+            # 三种格式错各来两遍（以前 3 次就因"次数用完"停，现在剧本不够会一直等）。
             "worker": [
                 ("workspace_write_file", {"path": "parse_kv.py", "content": GOOD}),
                 "这不是一个信封，只是自然语言。",  # attempt 1: no block
@@ -223,7 +225,7 @@ def test_s2_07_invalid_and_forged_envelopes_are_rejected(tmp_path):
                 envelope_step(
                     summary="引用不存在的产物", artifacts=["ghost.py"], claims=["x"]
                 ),  # attempt 3
-            ],
+            ] * 2,
             "critic": [],
         }
     )
@@ -235,20 +237,19 @@ def test_s2_07_invalid_and_forged_envelopes_are_rejected(tmp_path):
             store = orchestrator.store
             task = store.list_tasks(mission.id)[0]
             attempts = store.list_attempts(task.id)
-            assert [a.status for a in attempts] == [AttemptStatus.RETRY_WAIT] * 3
+            assert [a.status for a in attempts] == [AttemptStatus.RETRY_WAIT] * 6
             reasons = [a.failure["reason"] for a in attempts]
-            assert reasons == ["envelope_invalid"] * 3
+            assert reasons == ["envelope_invalid"] * 6
             assert "block_missing" in attempts[0].failure["error"]
             assert "identity" in attempts[1].failure["error"]
             assert "ghost.py" in attempts[2].failure["error"]
             # no formal result / claim was ever written
             assert all(store.find_result_for_attempt(a.id) is None for a in attempts)
             assert store.list_mission_claims(mission.id) == []
-            assert store.count_events(mission.id, "ResultRejected") == 3
+            assert store.count_events(mission.id, "ResultRejected") == 6
+            assert store.get_task(task.id).attempt_count == 0  # 格式错一次都不扣
             final = store.get_mission(mission.id)
-            assert (
-                final.status is MissionStatus.FAILED and final.stop_reason == "max_attempts_reached"
-            )
+            assert final.status is MissionStatus.FAILED and final.stop_reason == "runtime_unavailable", final.stop_reason
 
     asyncio.run(case())
 

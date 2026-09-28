@@ -68,3 +68,21 @@ def test_owned_criteria_pairs_links_with_the_bound_occurrences():
         "occ-a": [("c-user-1", "A")],
         "occ-b": [("c-user-2", "B"), ("c-user-3", "C")],
     }
+
+
+def test_an_unlinked_leaf_does_not_take_a_file_another_step_was_given():
+    """2026-09-29 第 5 批（审阅）：Host 为每个要发布的文件补了 file:X；方法把它链接给了别的
+    步骤时，没被链接的步骤兜底不再承担它，否则要写出不归它的文件、反复"文件缺失"。"""
+
+    def item(ref, statement):
+        return SimpleNamespace(criterion_id=ref, statement=statement,
+                               required_evidence_policy=SimpleNamespace(required_check_ids=()))
+
+    requirements = SimpleNamespace(criteria=(item("c-user-1", "先调研"), item("c-user-2", "file:README.md")))
+    leaf = _leaf(("c-user-1", "c-user-2"))
+    assert occurrence_criteria(leaf, requirements, claimed={"c-user-2"}) == ("c-user-1",)
+    # 没有别的步骤认领时照旧兜底（旧行为）
+    assert occurrence_criteria(leaf, requirements) == ("c-user-1", "c-user-2", "file:README.md")
+    # 被认领的普通内容要求照旧兜底：只排除写文件要求
+    text_only = SimpleNamespace(criteria=(item("c-user-1", "先调研"), item("c-user-2", "说明结论")))
+    assert occurrence_criteria(leaf, text_only, claimed={"c-user-2"}) == ("c-user-1", "c-user-2")

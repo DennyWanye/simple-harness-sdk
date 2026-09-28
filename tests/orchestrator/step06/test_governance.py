@@ -469,3 +469,28 @@ def test_s6_05_extra_tools_other_workspaces_and_claimed_authorization_are_all_re
             )
 
     asyncio.run(case())
+
+
+def test_a_reviewer_at_the_cap_is_told_to_conclude_now(tmp_path):
+    """2026-09-29 第六局：审阅员查满次数时，拒绝理由明确叫它别再查、马上按格式作答。"""
+
+    from agent_orchestrator.artifacts.workspace import WorkspaceManager
+    from agent_orchestrator.runtime.tool_gateway import WorkspaceBinding, WorkspaceToolGateway
+    from simple_harness.contracts import CallId
+    from simple_harness.tools import ToolCall
+
+    workspaces = WorkspaceManager(tmp_path / "ws")
+    workspaces.create("m:task-1:attempt-1", seed={"a.md": "x"})
+    gateway = WorkspaceToolGateway(workspaces)
+    gateway.bind("run-1", WorkspaceBinding("m:task-1:attempt-1", "work", True,
+                                           ("workspace_list",), max_tool_calls=1, review_key="rk"))
+    gateway.assurance_review_refusal = lambda _run, _binding: None  # 审阅权限在别处测
+
+    async def case():
+        return [await gateway.execute(ToolCall(call_id=CallId(f"c{n}"), name="workspace_list",
+                                               arguments={}), {"run_id": "run-1"}) for n in range(2)]
+
+    first, second = asyncio.run(case())
+    assert first.error_code is None
+    assert second.error_code == "tool_rate_limited"
+    assert "立即根据已经看到的证据" in str(second.to_json() if hasattr(second, "to_json") else second)

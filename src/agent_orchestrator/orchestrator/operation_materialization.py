@@ -501,6 +501,9 @@ class OperationMaterializationCommitsMixin:
                 deployment=runtime.deployment,
                 planning_origin=origin,
                 operation_parameters=payloads.parameters,
+                # 系统按已批准效果准备的申请单（AUTHORIZED_SLOT）：理由是系统写的
+                reason_source=("system" if str(row["source_kind"]) == "AUTHORIZED_SLOT"
+                               else "model (untrusted)"),
             )
             if action["state"] == "REFUSED":
                 raise OperationCompletionError("OP_INTENT_CONFLICT", str(action.get("refused")))
