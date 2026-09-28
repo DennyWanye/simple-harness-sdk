@@ -1816,6 +1816,56 @@ def test_recovery_lease_is_single_owner_then_expiry_allows_takeover(tmp_path) ->
     database.close()
 
 
+def test_startup_recovery_takes_over_once_the_previous_owner_lease_expires(tmp_path) -> None:
+    """真机 2026-09-28：应用退出后十几秒就重启，旧进程的运行租约还没过期；启动恢复
+    跳过了那个正在调模型的运行且此后不再重试，规划回合永久挂住、任务停住。
+    旧租约过期后，新进程必须自己接手（不靠再调一次 recover()）。"""
+
+    async def case() -> None:
+        clock = {"now": 3.0}
+        driver = Driver()
+        value, uow, database = runtime(
+            tmp_path, driver=driver, owner="owner-2", clock=lambda: clock["now"],
+            lease_ttl_seconds=5.0,
+        )
+        uow.create_with_start_snapshot(
+            execution_session_id="session-1",
+            run_id="run-recover",
+            request_id="request-recover",
+            profile_key="agent.general",
+            driver_kind="react",
+            snapshot={
+                "schema_version": 1,
+                "profile_key": "agent.general",
+                "driver_kind": "react",
+                "turn_id": "turn-run-recover",
+                "tool_catalog_generation": 1,
+                "input": {},
+            },
+            event_id="run-recover:created",
+            now=1.0,
+        )
+        # 旧进程（owner-1）认领后"崩溃"：租约留到 7.0 才过期
+        uow.claim_runtime_activation(
+            run_id="run-recover", owner_id="owner-1", namespace="runtime.kernel",
+            now=2.0, lease_ttl_seconds=5.0,
+        )
+        await value.start()
+        await asyncio.sleep(0.2)
+        assert driver.calls == 0  # 旧租约还有效，不抢
+        clock["now"] = 8.0
+        for _ in range(100):
+            if value.client.query(RunId("run-recover")).state is RunState.COMPLETED:
+                break
+            await asyncio.sleep(0.03)
+        assert value.client.query(RunId("run-recover")).state is RunState.COMPLETED
+        assert driver.calls == 1
+        await value.close()
+        database.close()
+
+    asyncio.run(case())
+
+
 def test_catalog_stale_terminalizes_once_without_driver(tmp_path) -> None:
     async def case() -> None:
         driver = Driver()

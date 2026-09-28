@@ -1,5 +1,5 @@
 {
-  "deployment_id": "04972d3bc52087dd5b0e521f2a04d46386ef2006006a2582d6aa1f842e1e378a",
+  "deployment_id": "a6f39522cf718f33f2a770ec8bf224616e864bbc7093a01980506a7e7edf1bd9",
   "schema": "taskgraph-htn-wiring-derivation-v1",
   "source_files": {
     "agent_orchestrator/__init__.py": "eb50152258b356bc7866e55823fc45c7209cb6150efe205dd03c40c33beedbc2",
@@ -467,7 +467,7 @@
     "agent_orchestrator/verification/scoped_acceptance.py": "438f1ce9236e85034ebeba7d1207cddc84aa592d4366614237b6a5d9025359b0",
     "agent_orchestrator/verification/scoped_composition.py": "24b13b0f6f8584a1b2020306ee169deb267de92ae2af93e800bbbd123597b352",
     "agent_orchestrator/verification/verifier_router.py": "54e77ceeb4c13ab47ab986b6326f84d83d418b66e6c132e05cb2f73dd1186a5d",
-    "agent_orchestrator/version.py": "9cada35ec8f30b29d0ed76a249eb32d31f56b5af8b45f0d1764cd1cd71d56973",
+    "agent_orchestrator/version.py": "99185fb421af8549bdcc24709ba1f1f00a5c56bb027e1a736f9ff318761162bd",
     "simple_harness/__init__.py": "27bdb10ed441a6b231520cf222a009c75af3635a51b73db54251de6fcec2dd1b",
     "simple_harness/agents/__init__.py": "19ec48c922870a37bc0ad0580c75f97eacc98c59980bab62cd16d96839a03ca6",
     "simple_harness/agents/arp/__init__.py": "9f68be0f87b2fa155f7980bbc9be19dacc008b2f3ec1268b1f36f1ade42d21cf",
@@ -653,7 +653,7 @@
     "simple_harness/runtime/drivers/workflow.py": "a8fd30d0451a5b8b3d7bb6ef4980ad7cbe6dd7e79d5618bfe59d5815b5d3b84f",
     "simple_harness/runtime/evidence_protocol.py": "c65f4195b0e91ccc72207f60e0b9365cb7e194d679cd9f53e73ce1160d04b8a2",
     "simple_harness/runtime/information_classification_protocol.py": "18462eb314e18ce357e0f5a5541441e5c23d053da601866c4783b39377f2340c",
-    "simple_harness/runtime/kernel.py": "b6a17a6885559c5a75372678cf4ec50a4c1ad97f5f489a0dc32e7052fbc0322c",
+    "simple_harness/runtime/kernel.py": "a6f901e0f067b0f8e31843d64c59b4d21272273acaf5f05fa4a940ca67f3453a",
     "simple_harness/runtime/live_index.py": "86977a0d48a21740a892a9b237c7da67358fd05ac3b1518a9775eebb5110b7c4",
     "simple_harness/runtime/memory_action_protocol.py": "a56f4e7e5741ef5ea68029aa82631851bab5878790e9b8b5f059851fe2b6d1fe",
     "simple_harness/runtime/memory_protocol.py": "234a7ec30151678543e8360d842880c859f9b3b0080515737e57577d6361d437",
@@ -699,7 +699,7 @@
     "simple_harness/tools/runtime_catalog.py": "d5b69cf5bfe81df82cb936e0c6085a2e66e4c597413159ced974b15afb2fbcd2",
     "simple_harness/tools/schema.py": "c582e7b9e9da66428580a2c8495e32a0bd39a6cd250fc42a2aae48d0bdfe39fb",
     "simple_harness/tools/sidecar.py": "40248ff1e49bc3d410bbc852f62591890f358c4fcef80f15cd5c67ed51230393",
-    "simple_harness/version.py": "ecc0f64c1b4e6e7c1792c134ca3bfab09b67fe77e26d7d57556cc0f57ac13bbf",
+    "simple_harness/version.py": "3d2bf56ffe6d2ba0b35bf25bd3e6c9ef5a74836cc58de1baa64d23e117288bca",
     "simple_harness/workflow/__init__.py": "a94748ba3dc727c9f4cbdb78c21afc356ec4fc4272161dbc291db30af12e8025",
     "simple_harness/workflow/adapters.py": "a412322b8575638206cb03410a1cea2b1c14a30bb6c21f5579c65faa33359032",
     "simple_harness/workflow/checkpoint.py": "df380364085afc819e047998355978c6f2e18c6943ebddace481c722e5298886",

@@ -2083,6 +2083,7 @@ class Runtime:
                     "state_version": run.version,
                 },
             )
+            retry_on_conflict = False
             try:
                 prior_ready = await self._uow.run_atomic(
                     lambda tx, run_id=run.run_id: self._uow.read_spawn_ready_activation(  # type: ignore[misc]
@@ -2096,6 +2097,7 @@ class Runtime:
                         and self._uow.read_pending_agent_turn(run.run_id) is not None
                     ):
                         # BaseAgent RESULT_PENDING: finalize first, never re-drive.
+                        retry_on_conflict = True  # a later drive also finalizes first
                         await self._activate(run.run_id)
                         await self._finalize_pending_agent_turn(run.run_id)
                         activated = self._uow.read_run(run.run_id)
@@ -2124,6 +2126,7 @@ class Runtime:
                         if activated is None:
                             raise UnitOfWorkConflict("workflow spawn child Run disappeared")
                     else:
+                        retry_on_conflict = True
                         activated = await self._activate(run.run_id)
                 else:
                     ready_activation = await self._uow.run_atomic(
@@ -2141,6 +2144,11 @@ class Runtime:
                     if activated is None:
                         raise UnitOfWorkConflict("workflow spawn parent Run disappeared")
             except UnitOfWorkConflict:
+                if retry_on_conflict:
+                    # The previous owner's lease has not expired yet (a quick restart
+                    # after a crash).  Keep the wake so the drain loop takes the Run
+                    # over once it expires; startup recovery runs only once.
+                    self._pending_wakes.add(run.run_id)
                 continue
             if activated.state is RunState.CANCEL_REQUESTED:
                 await self._terminalize_cancelled(activated, reason="startup_recovery")
