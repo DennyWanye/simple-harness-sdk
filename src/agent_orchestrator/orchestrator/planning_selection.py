@@ -61,7 +61,7 @@ def _interrupted_review(request: Mapping[str, Any], context: Mapping[str, Any]) 
 
 def _runtime_lost_retry(package: Mapping[str, Any]) -> dict[str, Any] | None:
     requests = package.get("repair_requests") or ()
-    if len(requests) != 1 or package.get("rejected_refinements"):
+    if len(requests) != 1 or package.get("rejected_refinements") or package.get("planning_rejected"):
         return None
     item = requests[0]
     request = item.get("request") or {}
@@ -111,7 +111,9 @@ def local_decision(package: Mapping[str, Any]) -> dict[str, Any] | None:
     retry = _runtime_lost_retry(package)
     if retry is not None:
         return retry
-    if package.get("repair_requests") or package.get("rejected_refinements"):
+    # 2026-09-28 真机：同一原生决定被准入拒绝后，下一轮原样再生成、再被拒，三轮耗尽规划
+    # 次数。这一问已有被拒记录时交给模型（它能看到拒绝原因），不再原样重复。
+    if package.get("repair_requests") or package.get("rejected_refinements") or package.get("planning_rejected"):
         return None
     choices = package.get("method_selection", ())
     if not choices:

@@ -86,3 +86,12 @@ def test_an_interrupted_review_redoes_the_step_but_a_real_rejection_does_not():
     mixed["repair_requests"][0]["request"]["context"]["detail"]["failures"].append(
         {"layer": "code_test", "status": "FAIL", "summary": "pytest failed"})
     assert local_decision(mixed) is None
+
+
+def test_a_refused_native_decision_is_not_repeated():
+    refused = copy.deepcopy(PACKAGE)
+    refused["planning_rejected"] = [{"reason": "proposal_not_grounded", "detail": {}}]
+    assert local_decision(refused) is None
+    selection = {"repair_requests": [], "rejected_refinements": [], "method_selection": [{"route": "DETERMINISTIC"}],
+                 "planning_rejected": [{"reason": "proposal_not_grounded", "detail": {}}]}
+    assert local_decision(selection) is None

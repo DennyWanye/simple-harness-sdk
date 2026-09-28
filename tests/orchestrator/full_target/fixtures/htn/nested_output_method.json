@@ -1,0 +1,166 @@
+{
+ "applicable_when": [],
+ "basis_refs": [],
+ "composition": {
+  "criterion_links": [
+   {
+    "child_criterion_id": "c-wordfreq-topwords-api",
+    "child_step": "wordfreq",
+    "evidence_requirement": "wordfreq.py 中存在 top_words(text, n) 函数定义并带 docstring，其文本与签名可被直接读取核对",
+    "parent_criterion_id": "c-user-1"
+   },
+   {
+    "child_criterion_id": "c-wordfreq-normalize-and-rank",
+    "child_step": "wordfreq",
+    "evidence_requirement": "wordfreq.py 中忽略大小写与标点的分词/计数实现，以及按次数降序返回前 n 个单词及次数的实际运行结果",
+    "parent_criterion_id": "c-user-2"
+   },
+   {
+    "child_criterion_id": "c-tests-pytest-cases",
+    "child_step": "tests",
+    "evidence_requirement": "test_wordfreq.py 中至少 4 个 pytest 用例的源码，以及这些用例运行通过（或暴露失败）的输出",
+    "parent_criterion_id": "c-user-3"
+   },
+   {
+    "child_criterion_id": "c-readme-usage",
+    "child_step": "readme",
+    "evidence_requirement": "README.md 用法章节中出现的 top_words 函数名与调用示例文本",
+    "parent_criterion_id": "c-user-4"
+   },
+   {
+    "child_criterion_id": "c-readme-real-example-output",
+    "child_step": "readme",
+    "evidence_requirement": "README.md 中一段由真实运行 wordfreq.py 得到的示例输出，并附产生该输出的调用命令，二者一致可复现",
+    "parent_criterion_id": "c-user-5"
+   },
+   {
+    "child_criterion_id": "c-publish-authorized-dir",
+    "child_step": "publish",
+    "evidence_requirement": "publish 步骤在授权目录中落地的 README.md 与 wordfreq.py 两份交付物及其发布回执",
+    "parent_criterion_id": "c-user-6"
+   }
+  ],
+  "finalizer_step": "publish",
+  "independent_review_required": true,
+  "outputs": {}
+ },
+ "expected_effects": [],
+ "exploration_assumptions": [],
+ "goal_type_ref": {
+  "content_hash": "c9d55ec9c58616b4adc4ffce84c84397f6d312120018515c1eea92e671034d7d",
+  "id": "desktop.user-goal",
+  "version": 1
+ },
+ "method_id": "synth-5a5e701214f1c4afdefc52d1",
+ "method_version": 1,
+ "ordering": [
+  {
+   "after": "tests",
+   "before": "wordfreq"
+  },
+  {
+   "after": "readme",
+   "before": "wordfreq"
+  },
+  {
+   "after": "readme",
+   "before": "tests"
+  },
+  {
+   "after": "publish",
+   "before": "readme"
+  },
+  {
+   "after": "publish",
+   "before": "wordfreq"
+  }
+ ],
+ "output_schema_ref": {
+  "content_hash": "01f2f9c28aa1d4d36a81ff042620b6677d25bf07c2bf4acc37b58658778a4fca",
+  "id": "desktop.workspace-outputs",
+  "version": 1
+ },
+ "parameter_schema_ref": {
+  "content_hash": "78df8cb8d69528a2b368c38301770a7c8b29f349a91af7f4d0aa637ffde06893",
+  "id": "desktop.goal-parameters",
+  "version": 1
+ },
+ "required_capabilities": [
+  "workspace.prepare"
+ ],
+ "schema_version": 1,
+ "steps": [
+  {
+   "arguments": {},
+   "form": "primitive",
+   "local_id": "wordfreq",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "workspace.prepare"
+   ],
+   "task_type_ref": {
+    "content_hash": "487256fd92df35ec776a67ebca29533c61d67bbe85798935d52dbacc75f95f64",
+    "id": "desktop.prepare-delivery",
+    "version": 1
+   }
+  },
+  {
+   "arguments": {},
+   "form": "primitive",
+   "local_id": "tests",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "workspace.prepare"
+   ],
+   "task_type_ref": {
+    "content_hash": "487256fd92df35ec776a67ebca29533c61d67bbe85798935d52dbacc75f95f64",
+    "id": "desktop.prepare-delivery",
+    "version": 1
+   }
+  },
+  {
+   "arguments": {},
+   "form": "primitive",
+   "local_id": "readme",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "workspace.prepare"
+   ],
+   "task_type_ref": {
+    "content_hash": "487256fd92df35ec776a67ebca29533c61d67bbe85798935d52dbacc75f95f64",
+    "id": "desktop.prepare-delivery",
+    "version": 1
+   }
+  },
+  {
+   "arguments": {
+    "delivery": {
+     "items": [
+      {
+       "op": "output",
+       "port": "delivery",
+       "step": "wordfreq"
+      },
+      {
+       "op": "output",
+       "port": "delivery",
+       "step": "readme"
+      }
+     ],
+     "op": "array"
+    }
+   },
+   "form": "primitive",
+   "local_id": "publish",
+   "obligation_relation": "refines_parent",
+   "required_capabilities": [
+    "workspace.prepare"
+   ],
+   "task_type_ref": {
+    "content_hash": "f752c0cb2fcd7d21e8c6ab02d25870f91ea220580b1f673fc50c1de71a6dcfcc",
+    "id": "desktop.continue-delivery",
+    "version": 1
+   }
+  }
+ ]
+}

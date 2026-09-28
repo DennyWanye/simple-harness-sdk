@@ -454,7 +454,11 @@ def resolve_arguments(
 
     out: dict[str, Any] = {}
     for name, argument in step.arguments.items():
-        if isinstance(argument, OutputValue):
+        # 2026-09-28 真机：合成方法的发布步骤把两个上游产出放进一个 delivery 列表。数据流
+        # （method_data_flow，准入/编译/导出共用）早已逐个读出嵌套产出并变成 DATA 需求，
+        # 只有这里把嵌套的产出当成必须当场有值而拒绝——同一原生决定被拒三次、任务失败。
+        # 含产出的参数整体留作符号，与顶层产出同等对待。
+        if any(isinstance(node, OutputValue) for node in iter_values(argument)):
             continue
         out[name] = _resolve_value(argument, parameters, path=f"{path}.{name}")
     return out
