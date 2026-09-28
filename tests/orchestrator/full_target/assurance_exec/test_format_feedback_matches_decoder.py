@@ -44,21 +44,47 @@ def test_every_hinted_code_is_one_the_decoder_raises():
         assert f'"{code}"' in source, code
 
 
-def test_a_stop_after_an_unreadable_final_review_says_so():
+def _exhausted_store(payloads):
+    import json
+    from types import SimpleNamespace
+
+    rows = [(json.dumps(p),) for p in payloads]
+    return SimpleNamespace(connection=SimpleNamespace(
+        execute=lambda sql, params: SimpleNamespace(fetchall=lambda: list(rows))))
+
+
+def _orch(payloads):
     from types import SimpleNamespace
 
     from agent_orchestrator.orchestrator.event_handler import Orchestrator
 
-    events = [
-        SimpleNamespace(type="AssuranceReviewFormatExhausted",
-                        payload={"review_key": "assurance-content:x", "reason": "R"}),
-        SimpleNamespace(type="AssuranceReviewFormatExhausted",
-                        payload={"review_key": "assurance-mission-final:k",
-                                 "reason": "REVIEW_FORMAT_REPAIR_EXHAUSTED"}),
-    ]
-    fake = SimpleNamespace(store=SimpleNamespace(iter_events=lambda mission_id: iter(events)))
-    assert Orchestrator._final_review_unreadable_detail(fake, "m1") == {
+    fake = SimpleNamespace(store=_exhausted_store(payloads))
+    fake._exhausted_reviews = Orchestrator._exhausted_reviews.__get__(fake)
+    return fake
+
+
+def test_a_stop_after_an_unreadable_final_review_says_so():
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator
+
+    content = {"review_key": "assurance-content:x", "reason": "R"}
+    final = {"review_key": "assurance-mission-final:k", "reason": "REVIEW_FORMAT_REPAIR_EXHAUSTED"}
+    assert Orchestrator._final_review_unreadable_detail(_orch([content, final]), "m1") == {
         "final_review": {"reason": "REVIEW_FORMAT_REPAIR_EXHAUSTED",
                          "review_key": "assurance-mission-final:k"}}
-    fake = SimpleNamespace(store=SimpleNamespace(iter_events=lambda mission_id: iter(events[:1])))
-    assert Orchestrator._final_review_unreadable_detail(fake, "m1") == {}
+    assert Orchestrator._final_review_unreadable_detail(_orch([content]), "m1") == {}
+
+
+def test_an_operation_outcome_review_that_ran_out_is_not_a_legal_wait(monkeypatch):
+    """2026-09-29 真机第七局：一份发布的结果审阅两次都没做成（第二次被重启打断），任务一直
+    挂在"等发布结果"上。重试用完后不再算合法等待，交给卡死检测停下，并在停止说明里写明。"""
+    from types import SimpleNamespace
+
+    import agent_orchestrator.orchestrator.scoped_content_review as scoped
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator
+
+    outcome = {"review_key": "assurance-operation-outcome:a9", "reason": "REVIEW_TURN_RETRY_EXHAUSTED"}
+    fake = _orch([outcome])
+    monkeypatch.setattr(scoped, "uses_completion_protocol", lambda store, mission_id: True)
+    assert Orchestrator._has_pending_operation_completion(fake, SimpleNamespace(id="m1")) is False
+    assert Orchestrator._final_review_unreadable_detail(fake, "m1") == {
+        "operation_outcome_review": outcome}

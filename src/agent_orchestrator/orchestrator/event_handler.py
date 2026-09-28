@@ -2650,6 +2650,10 @@ class Orchestrator:
         from .scoped_content_review import uses_completion_protocol
         if not uses_completion_protocol(self.store, mission.id):
             return False
+        if self._exhausted_reviews(mission.id, "assurance-operation-outcome:"):
+            # 2026-09-29 真机第七局：一份发布的结果审阅两次都没做成（第二次被重启打断），
+            # 这项效果永远核不完；再把它当合法等待，任务就一直挂着。交给卡死检测明确停下。
+            return False
         from ..storage.htn_store import HtnStore
         from .completion_status import read_occurrence_completion
         try:
@@ -11656,7 +11660,10 @@ class Orchestrator:
     def _provider_blocked(liveness: Liveness) -> bool:
         """The turn is waiting on a Provider hand-off whose outcome is unknown.
 
-        Only the run's own *wait blocker* of kind ``provider`` counts.  The bridge also
+        Only the run's own *wait blocker* of kind ``provider`` counts — or ``tool``
+        (2026-09-29 真机第八局：重启打断了执行者正在做的工具操作，那一轮挂在"工具结果未知"
+        上，只认 ``provider`` 时这一轮永远不结束；执行者的工具只作用在它自己的尝试工作区，
+        放弃这次尝试换新工作区重做不会造成重复副作用）.  The bridge also
         reports ``provider_slot_wait`` (queued behind the concurrency limit) and
         ``provider_response_wait`` (a call that is genuinely in progress) as
         ``blocked``; both are the executor making progress and neither is timed here.
@@ -11667,7 +11674,7 @@ class Orchestrator:
             liveness.exists
             and not liveness.settled
             and isinstance(blocker, Mapping)
-            and str(blocker.get("kind", "")) == "provider"
+            and str(blocker.get("kind", "")) in {"provider", "tool"}
         )
 
     async def _resolve_provider_blocked_service(
@@ -12890,17 +12897,29 @@ class Orchestrator:
         undecodable after its one format repair. Say so in the report.
         """
 
-        for event in self.store.iter_events(mission_id):
-            if event.type == "AssuranceReviewFormatExhausted" and str(
-                event.payload.get("review_key", "")
-            ).startswith("assurance-mission-final:"):
-                return {
-                    "final_review": {
-                        "reason": str(event.payload.get("reason", "")),
-                        "review_key": str(event.payload.get("review_key", "")),
-                    }
-                }
-        return {}
+        detail: dict[str, Any] = {}
+        for prefix, name in (("assurance-mission-final:", "final_review"),
+                             ("assurance-operation-outcome:", "operation_outcome_review")):
+            found = self._exhausted_reviews(mission_id, prefix)
+            if found:
+                detail[name] = found[0]
+        return detail
+
+    def _exhausted_reviews(self, mission_id: str, prefix: str) -> list[dict[str, str]]:
+        """Reviews under ``prefix`` whose retries ran out (no verdict will come)."""
+
+        rows = self.store.connection.execute(
+            "SELECT payload_json FROM events WHERE mission_id=? AND type='AssuranceReviewFormatExhausted' "
+            "ORDER BY seq",
+            (mission_id,),
+        ).fetchall()
+        found = []
+        for (raw,) in rows:
+            payload = json.loads(raw or "{}")
+            if str(payload.get("review_key", "")).startswith(prefix):
+                found.append({"reason": str(payload.get("reason", "")),
+                              "review_key": str(payload.get("review_key", ""))})
+        return found
 
     def _root_review_stop_detail(
         self, mission: Mission, new_mode: HierarchicalDispatch
