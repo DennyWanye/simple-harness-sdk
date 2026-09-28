@@ -36,12 +36,6 @@ OPERATION_CANDIDATE_FILE = f"actions/{OPERATION_CANDIDATE_PORT}.json"
 _USER_REQUIREMENT_ID = re.compile(r"c-user-[1-9][0-9]*")
 
 
-def candidate_file(index: int) -> str:
-    """The n-th operation candidate file of a step (0: the port's own file)."""
-
-    return OPERATION_CANDIDATE_FILE if index == 0 else f"actions/{OPERATION_CANDIDATE_PORT}-{index + 1}.json"
-
-
 def _task_action_scope(
     mission_criteria: Sequence[str], task_criteria: Sequence[str]
 ) -> set[tuple[str, str, str]]:
@@ -149,12 +143,7 @@ def declared_action_outputs(store: Any, mission_id: str, task: Any) -> tuple[str
     binding = HtnStore(store).task_semantics_of(mission_id, task.id)
     if binding is not None and any(port.port_key == OPERATION_CANDIDATE_PORT
                                    for port in binding.output_ports):
-        # 2026-09-28 真机第五局：规划把两个发布交给同一步，而一步只有一个申请单文件，
-        # 这一步永远交不齐。一步负责几个操作就声明几个申请单文件。
-        mission = store.get_mission(mission_id)
-        owned = 0 if mission is None else len(
-            _task_action_scope(mission.success_criteria, task.success_criteria))
-        return (*outputs, *(candidate_file(index) for index in range(max(1, owned))))
+        return (*outputs, OPERATION_CANDIDATE_FILE)
     return outputs
 
 
@@ -176,23 +165,6 @@ def worker_action_contract(
     )
     if contract is None:
         return None
-    files = [candidate_file(index) for index in range(len(contract["operations"]))]
-    if system_writes_candidate(contract) and set(files) <= set(outputs):
-        # 2026-09-28 用户决定：用户在确认页已选定"发布哪个文件到哪里"，申请单由系统照此
-        # 生成（with_system_candidate，第 i 个操作写第 i 个申请单文件），模型只负责把
-        # 文件内容做对。
-        targets = ", ".join(repr(op["target"]) for op in contract["operations"])
-        return {
-            **contract,
-            "output_files": files,
-            "system_writes_candidate": True,
-            "notice": (
-                "The system writes the action candidate files for you from the operations "
-                "the user confirmed. Do not write any file under actions/. The files "
-                f"published are {targets} in your workspace: put the final content at "
-                "exactly those paths and list them in your Result artifacts."
-            ),
-        }
     return {
         **contract,
         "output_files": outputs,
@@ -205,69 +177,6 @@ def worker_action_contract(
             "your Result artifacts as well."
         ),
     }
-
-
-def system_writes_candidate(contract: Mapping[str, Any] | None) -> bool:
-    """Every operation is a file publish whose only model-facing parameter is the file."""
-
-    if contract is None or not contract.get("operations"):
-        return False
-    return all(operation["connector"] == "file_publish" and operation["operation"] == "publish"
-               and operation["required_model_params"] == ["artifact_path"]
-               for operation in contract["operations"])
-
-
-def with_system_candidate(
-    listed: Sequence[Any], workspace: Any, contract: Mapping[str, Any] | None
-) -> list[Any]:
-    """Write the step's one publish candidate from the confirmed operation.
-
-    2026-09-28 真机第四局：12 次步骤尝试里 8 次浪费在模型写申请单上（漏字段、文件名不对、
-    写成非对象、回合用完）。申请单的每个字段都已由用户确认的操作决定：连接器、操作、
-    目标，以及要发布的文件——目标的文件名。系统照写，模型写在 actions/ 下的申请单一律
-    不收；找不到要发布的文件时不写，照旧由规则检查退回。之后的范围、部署、规则检查、
-    产物绑定与审批一个不少。
-    """
-
-    from ..artifacts.workspace import WorkspaceError
-
-    if not (contract and contract.get("system_writes_candidate")):
-        return list(listed)
-    reported = [item.strip() for item in listed if isinstance(item, str)]
-    out = [item for item in listed
-           if not (isinstance(item, str) and item.startswith("actions/") and item.endswith(".json"))]
-    written = False
-    for operation, candidate_path in zip(contract["operations"], contract["output_files"]):
-        target = str(operation["target"])
-        # 这一步自己列出的产物优先；它没列（原样转交上游文件）时才看工作区里的同名文件。
-        # 提示已告诉模型要发布的文件必须放在目标路径上（审阅 2026-09-28）。
-        names = (target, target.rsplit("/", 1)[-1])
-        source = None
-        for path in sorted(names, key=lambda name: name not in reported):
-            try:
-                if workspace.resolve(path).is_file():
-                    source = path
-                    break
-            except (WorkspaceError, OSError):
-                continue
-        if source is None:
-            continue
-        candidate = {
-            "connector": operation["connector"],
-            "operation": operation["operation"],
-            "target": target,
-            "params": {"artifact_path": source},
-            "reason": f"用户在确认页选定的操作：发布 {source} 到 {target}",
-        }
-        try:
-            workspace.write_text(candidate_path, json.dumps(candidate, ensure_ascii=False, indent=2))
-        except (WorkspaceError, OSError):
-            continue  # 写不进去（被做成链接/目录等）：这一份照旧交给规则检查退回
-        written = True
-        for path in (source, candidate_path):
-            if path not in out:
-                out.append(path)
-    return out if written else list(listed)
 
 
 def with_candidate_targets(listed: Sequence[Any], workspace: Any) -> list[Any]:
@@ -334,9 +243,7 @@ def planner_action_contract(
 
 
 __all__ = (
-    "candidate_file",
     "ACTION_CANDIDATE_CONTEXT_VERSION", "OPERATION_CANDIDATE_FILE", "OPERATION_CANDIDATE_PORT",
     "declared_action_outputs",
     "worker_action_contract", "planner_action_contract",
-    "system_writes_candidate", "with_system_candidate",
 )

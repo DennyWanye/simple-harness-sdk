@@ -5085,8 +5085,15 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 ],
                 owner=owner,
             )
-        candidates, rejection = self._action_candidates(
-            stored, task, mission, connectors=connectors, deployment=deployment
+        from .scoped_content_review import uses_completion_protocol
+
+        # 2026-09-29（plans/2026-09-28-system-operations）：完成协议下操作申请单由系统按
+        # 已批准效果生成，步骤结果里的 actions/*.json 只是普通文件，不检查也不退回。
+        candidates, rejection = (
+            ([], None) if uses_completion_protocol(self._store, mission.id)
+            else self._action_candidates(
+                stored, task, mission, connectors=connectors, deployment=deployment
+            )
         )
         if rejection is not None:  # D7-2'': re-checked on the accepted bytes, in the Commit
             return self.fail_result(result_id, failures=[rejection], owner=owner)

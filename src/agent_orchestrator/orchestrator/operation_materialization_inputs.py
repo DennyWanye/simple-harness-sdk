@@ -256,12 +256,20 @@ def build_operation_materialization_inputs(
 
     raw = _candidate(sources.raw_candidate_bytes)
     try:
-        candidate, _ = check_candidate(
+        candidate, decision = check_candidate(
             raw,
             criteria=mission.success_criteria,
             connectors=connectors,
             deployment=deployment,
         )
+        from ..contracts.operation_intents import OperationIntentSourceKind
+
+        if (sources.command.intent_source.kind is OperationIntentSourceKind.AUTHORIZED_SLOT
+                and decision.required_approvals < 1):
+            # 2026-09-29：系统只代办需要人批准的操作；不需要批准的会被自动执行，不能由系统
+            # 代为提交（审阅：AppWorld 注册了 L1 操作）。
+            raise OperationMaterializationInputError(
+                "OP_CAPABILITY_UNSUPPORTED", "a system-prepared operation must require human approval")
         effective = bind_artifact_params(
             candidate["params"], _actual_accepted_artifacts(store, sources)
         )

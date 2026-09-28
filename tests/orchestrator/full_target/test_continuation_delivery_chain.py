@@ -158,6 +158,12 @@ def test_the_operation_candidate_port_brings_the_candidate_contract(monkeypatch)
     assert OPERATION_CANDIDATE_FILE.startswith("actions/") and OPERATION_CANDIDATE_FILE.endswith(".json")
 
 
+# 旧式任务（不在完成协议下）：申请单仍由步骤自己写，规则检查照旧（2026-09-29 起完成协议下
+# 申请单由系统按已批准效果生成，步骤写的一律忽略）。
+_LEGACY_STORE = SimpleNamespace(connection=SimpleNamespace(
+    execute=lambda *args: SimpleNamespace(fetchone=lambda: None)))
+
+
 def test_the_rule_check_accepts_the_candidate_the_contract_asked_for(tmp_path):
     """opt.35 真机：候选按说明写到 actions/action_candidate.json，规则检查却因任务输出列表
     为空判"未声明"，同一步重试。规则检查与候选说明必须用同一份声明。
@@ -169,6 +175,7 @@ def test_the_rule_check_accepts_the_candidate_the_contract_asked_for(tmp_path):
     (tmp_path / OPERATION_CANDIDATE_FILE).write_text("{}", encoding="utf-8")
     fake = SimpleNamespace(
         commit=SimpleNamespace(domain_for=lambda mission_id: SimpleNamespace(id="code-v1")),
+        store=_LEGACY_STORE,
         _action_candidate_outputs=lambda mission, task: (OPERATION_CANDIDATE_FILE,),
         _connectors={}, _config=SimpleNamespace(deployment_policy=None),
     )
@@ -282,6 +289,7 @@ def test_an_undeclared_file_under_actions_is_policed_only_when_it_claims_an_acti
         json.dumps({"connector": "file_publish", "operation": "publish"}), encoding="utf-8")
     fake = SimpleNamespace(
         commit=SimpleNamespace(domain_for=lambda mission_id: SimpleNamespace(id="code-v1")),
+        store=_LEGACY_STORE,
         _action_candidate_outputs=lambda mission, task: (OPERATION_CANDIDATE_FILE,),
         _connectors={}, _config=SimpleNamespace(deployment_policy=None),
     )

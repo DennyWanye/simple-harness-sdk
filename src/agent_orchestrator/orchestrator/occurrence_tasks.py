@@ -289,8 +289,13 @@ def occurrence_criteria(
     # Desktop 2026-09-26: a leaf the adopted method links to some of the duty's
     # criteria owes only those.  Every leaf used to carry every criterion — each
     # step of a five-file plan had to write all five files to pass its checks.
-    references = tuple(ref for ref in binding.requirement_refs if ref in set(owned))
-    for reference in references or binding.requirement_refs:
+    # 2026-09-29（plans/2026-09-28-system-operations）：操作要求（action:…）由系统在任务
+    # 层面准备，不属于任何步骤——方法链接与回退两条路径都去掉，步骤只承担内容要求。
+    operations = set() if requirements is None else {
+        item.criterion_id for item in requirements.criteria if item.statement.startswith("action:")}
+    content_refs = tuple(ref for ref in binding.requirement_refs if ref not in operations)
+    references = tuple(ref for ref in content_refs if ref in set(owned))
+    for reference in references or content_refs:
         if reference not in criteria:
             criteria.append(reference)
         for check in declared.get(reference, ()):

@@ -74,10 +74,7 @@ def prepare_operation_intent_sources(
         raise _fail("OP_INTENT_COMMAND_INVALID", "SubmitOperationIntentV2 is required")
     if not isinstance(principal, Principal) or not str(tenant_id).strip():
         raise _fail("OP_INTENT_CALLER_UNAUTHENTICATED", "authenticated caller is required")
-    if command.intent_source.kind is OperationIntentSourceKind.AUTHORIZED_SLOT:
-        raise _fail(
-            "OP_INTENT_SOURCE_UNRESOLVED", "no authoritative AUTHORIZED_SLOT producer exists"
-        )
+    system = command.intent_source.kind is OperationIntentSourceKind.AUTHORIZED_SLOT
 
     with store.read_view():
         mission = store.get_mission(command.mission_id)
@@ -127,6 +124,18 @@ def prepare_operation_intent_sources(
         requirements = htn.get_requirements_revision(
             command.mission_id, owner.requirements_ref.revision
         )
+        operation = None
+        if system:
+            # 2026-09-29：系统按已批准效果准备的申请单（system_operations）。候选引用指向那份
+            # 审过的真实文件本身；申请单 JSON 由系统从效果生成，不来自任何模型产出。
+            from .system_operations import authorized_slot_operation
+
+            try:
+                operation = authorized_slot_operation(
+                    store, command, principal, effect, requirements
+                )
+            except ContractError as error:
+                raise _fail("OP_INTENT_SOURCE_UNRESOLVED", str(error)) from error
 
         artifact = store.get_artifact(command.candidate_artifact_ref.id)
         if (
@@ -135,14 +144,21 @@ def prepare_operation_intent_sources(
             or artifact.version != command.candidate_artifact_ref.revision
             or artifact.content_hash != command.candidate_artifact_ref.content_hash
             or artifact.verification_status != "VERIFIED"
-            or artifact.size_bytes > 262144
+            or (not system and artifact.size_bytes > 262144)
             or Path(artifact.storage_uri) != artifact_store.path_for(artifact.content_hash)
         ):
             raise _fail("OP_INTENT_CANDIDATE_UNAVAILABLE", "candidate Artifact differs")
-        try:
-            raw = artifact_store.read(artifact.content_hash)
-        except (ArtifactStoreError, OSError) as error:
-            raise _fail("OP_INTENT_CANDIDATE_UNAVAILABLE", str(error)) from error
+        if operation is not None:
+            from .system_operations import source_matches, system_candidate_bytes
+
+            if not source_matches(artifact.path, operation[2]):
+                raise _fail("OP_INTENT_SOURCE_UNRESOLVED", "source file does not match the target")
+            raw = system_candidate_bytes(operation, artifact.path)
+        else:
+            try:
+                raw = artifact_store.read(artifact.content_hash)
+            except (ArtifactStoreError, OSError) as error:
+                raise _fail("OP_INTENT_CANDIDATE_UNAVAILABLE", str(error)) from error
 
         acceptances: list[Acceptance] = []
         producer_rows: list[tuple[Acceptance, AcceptanceContributionScopeV1]] = []

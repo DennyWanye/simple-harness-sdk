@@ -9572,18 +9572,13 @@ class Orchestrator:
         # and it is checked *here* — against the ports this occurrence declares and
         # the files this Attempt actually wrote — so a bad claim is a bounded repair
         # on the same Attempt rather than a wrong artifact bound downstream.
-        if isinstance(raw.get("artifacts"), list):
-            from ..runtime.action_schema import with_candidate_targets, with_system_candidate
-
-            workspace = self.assembled.workspaces.get(attempt.id)
-            task = self.store.get_task(attempt.task_id)
-            mission = self.store.get_mission(attempt.mission_id)
-            if task is not None and mission is not None:
-                contract = self._worker_action_contract(mission, task)
-                raw["artifacts"] = with_system_candidate(raw["artifacts"], workspace, contract)
-                self._claim_system_candidate(raw, attempt, mission, contract)
-            raw["artifacts"] = with_candidate_targets(raw["artifacts"], workspace)
         claims = self._port_claims_from(raw, attempt)
+        if isinstance(raw.get("artifacts"), list):
+            from ..runtime.action_schema import with_candidate_targets
+
+            raw["artifacts"] = with_candidate_targets(
+                raw["artifacts"], self.assembled.workspaces.get(attempt.id)
+            )
         client_ids = {raw.get("id"), raw.get("result_id")} - {None}
         if len(client_ids) > 1:
             raise ContractError("result carries both id and result_id with different values")
@@ -9622,31 +9617,6 @@ class Orchestrator:
         if claims:
             self._port_claims[result_id] = claims
         return envelope, client_result_id
-
-    def _claim_system_candidate(
-        self, raw: dict[str, Any], attempt: Attempt, mission: Mission, contract: Any
-    ) -> None:
-        """The candidate port names the file the system wrote (2026-09-28 真机第五局审阅：
-        申请单端口必填，模型按提示不写申请单也就不会认领它，结果会被判"必填端口空着")."""
-        from ..runtime.action_schema import OPERATION_CANDIDATE_PORT
-
-        if not (contract and contract.get("system_writes_candidate")):
-            return
-        first = contract["output_files"][0]
-        if first not in raw["artifacts"]:
-            return
-        new_mode = self._new_mode(mission)
-        if new_mode is None or OPERATION_CANDIDATE_PORT not in {
-            item["port"]
-            for item in new_mode.declared_output_ports_for(attempt.mission_id, attempt.task_id)
-        }:
-            return
-        outputs = raw.get("outputs")
-        if outputs is None:
-            outputs = {}
-        if isinstance(outputs, dict):
-            outputs[OPERATION_CANDIDATE_PORT] = first
-            raw["outputs"] = outputs
 
     def _port_claims_from(self, raw: dict[str, Any], attempt: Attempt) -> tuple[PortClaim, ...]:
         """Pop ``outputs`` off the block and check it, or refuse the block.
@@ -10322,7 +10292,12 @@ class Orchestrator:
         whatever the Task's verification policy says.  ``None`` = no candidate at all."""
 
         from .action_commits import allowed_actions
+        from .scoped_content_review import uses_completion_protocol
 
+        if uses_completion_protocol(self.store, mission.id):
+            # 2026-09-29：申请单由系统按已批准效果生成；步骤写的 actions/*.json 一律忽略，
+            # 不再因"写了不该写的申请单"整份退回（真机第五局 12 次尝试因此耗光）。
+            return None
         paths = [artifact.path for artifact in artifacts if is_action_path(artifact.path)]
         criteria = (
             [c for c in task.success_criteria if c.startswith("action:")]
@@ -12333,6 +12308,10 @@ class Orchestrator:
         )
 
         if ensure_assured_proposal_reviews(self, mission.id):
+            return True
+        from .system_operations import prepare_system_operations
+
+        if prepare_system_operations(self, mission.id):
             return True
         if recover_materializations(self, mission.id):
             return True
