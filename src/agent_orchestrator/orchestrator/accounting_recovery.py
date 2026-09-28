@@ -189,11 +189,12 @@ def import_late_accounting(orch) -> bool:
                 guard.recover(pool.bridge.runtime.uow)
             except (ProviderAdmissionDenied, UnitOfWorkConflict) as error:
                 orch._note(f"accounting grant recovery: {error}")
-    rows = store.connection.execute(
-        "SELECT i.intent_id FROM dispatch_intents i JOIN budget_reservations r"
-        " ON r.subject_id=i.subject_id WHERE r.state='RESERVED'"
-        " AND i.state IN ('SETTLED','FAILED') ORDER BY i.created_at",
-    ).fetchall()
+    # 2026-09-28 真机：几十个"用量未知、按上限预留"的旧调用每轮都被完整重读一遍（约三成
+    # CPU），而它们的事实只来自编排库与各执行池库。两边都没有任何写入时结果必然相同，跳过；
+    # 本轮自己写过库（导入了用量）就不记代次，下一轮照常重读。
+    generation = _holds_generation(orch)
+    quiet = generation is not None and generation == getattr(orch, "_late_accounting_quiet", None)
+    rows = () if quiet else _open_holds(store)
     progressed = False
     for row in rows:
         try:
@@ -228,5 +229,31 @@ def import_late_accounting(orch) -> bool:
                 progressed = progressed or bool(imported) or settled
         except (BudgetError, ValueError, KeyError, TypeError, UnitOfWorkConflict, SourceUnavailable) as error:
             orch._note(f"accounting subject {row[0]} held: {error}")
+    after = _holds_generation(orch)
+    orch._late_accounting_quiet = after if after is not None and after == generation else None
     from .taskgraph_action_settlement import settle_resolved_actions
     return settle_resolved_actions(orch) or progressed
+
+
+def _open_holds(store) -> list:
+    return store.connection.execute(
+        "SELECT i.intent_id FROM dispatch_intents i JOIN budget_reservations r"
+        " ON r.subject_id=i.subject_id WHERE r.state='RESERVED'"
+        " AND i.state IN ('SETTLED','FAILED') ORDER BY i.created_at",
+    ).fetchall()
+
+
+def _connection_generation(connection) -> tuple[int, int, int] | None:
+    if connection.in_transaction:  # uncommitted rows may still roll back
+        return None
+    version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+    return (id(connection), int(connection.total_changes), version)
+
+
+def _holds_generation(orch) -> tuple | None:
+    """Changes whenever anything the open-hold facts are read from may have changed."""
+
+    parts: list = [orch.store.read_generation()]
+    for key in sorted(orch.assembled.pools):
+        parts.append(_connection_generation(orch.assembled.pools[key].bridge.runtime.uow.database.connection))
+    return None if any(part is None for part in parts) else tuple(parts)

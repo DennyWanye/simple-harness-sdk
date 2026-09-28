@@ -679,7 +679,8 @@ def test_bind_existing_goal_payload_negatives(payload: dict) -> None:
     "payload",
     [
         {"blockers": [{"code": "OTHER"}], "resumable_if": []},
-        {"blockers": [{"code": "NOT_A_CODE", "detail": "x"}], "resumable_if": []},
+        # 2026-09-28 用户决定：列表外的文字原因按 OTHER 接收（原话进 detail）；非文字仍拒绝
+        {"blockers": [{"code": 7, "detail": "x"}], "resumable_if": []},
         {"blockers": [{"code": "NO_USABLE_METHOD", "detail": "x"}], "resumable_if": ["nope"]},
         {
             "blockers": [{"code": "NO_USABLE_METHOD", "detail": "x"}] * (MAX_PD_BLOCKERS + 1),

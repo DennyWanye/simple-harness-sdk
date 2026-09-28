@@ -242,7 +242,7 @@ class AssuredRuntime:
         for name in ('_run_critic', '_dispatch', '_dispatch_until_submitted', '_await_service_turn',
                      '_critic_subject_stopped', '_bind_critic', '_require_assurance_execution_root',
                      '_settle_intent', '_import_usage', '_service_agent_ids', '_settle_service_if_known', 'profile_of',
-                     '_ask_root_reviewer', '_root_review'):
+                     '_ask_root_reviewer', '_root_review', '_cancel_turn'):
             setattr(orch, name, MethodType(getattr(Orchestrator, name), orch))
         orch._assured_review_intent = Orchestrator._assured_review_intent
 

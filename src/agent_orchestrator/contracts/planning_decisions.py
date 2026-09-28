@@ -1472,9 +1472,20 @@ class BlockedItemV1:
     detail: str | None
 
     def __post_init__(self) -> None:
-        code = enum_of(BlockerCode, self.code, "blocked_item.code")
+        raw_detail = self.detail
+        try:
+            code = enum_of(BlockerCode, self.code, "blocked_item.code")
+        except ContractError:
+            # 2026-09-28 真机：规划器两次写 "RUNTIME_UNAVAILABLE"（判断本身合理），因不在
+            # 列表里被当格式错，格式重试用完、任务失败。不认识的原因按 OTHER 接收，原话留在
+            # detail 里；非字符串仍按原样拒绝。
+            if not isinstance(self.code, str) or not self.code.strip():
+                raise
+            code = BlockerCode.OTHER
+            original = f"原因（模型原话）：{self.code.strip()}"
+            raw_detail = original if raw_detail is None else f"{original}；{raw_detail}"
         object.__setattr__(self, "code", code)
-        detail = None if self.detail is None else text(self.detail, "blocked_item.detail")
+        detail = None if raw_detail is None else text(raw_detail, "blocked_item.detail")
         if code is BlockerCode.OTHER and detail is None:
             raise ContractError("blocked_item.detail is required when code=OTHER")
         object.__setattr__(self, "detail", detail)

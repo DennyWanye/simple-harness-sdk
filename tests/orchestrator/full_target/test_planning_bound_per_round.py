@@ -124,3 +124,17 @@ def test_no_reply_on_the_format_retry_asks_again_instead_of_ending_the_round() -
     assert _reject(no_reply, prior=spent) == [("stop", "planner_turn_failures_exhausted")]
     assert _reject(no_reply, prior=spent, format_retry_left=1) == [("stop", "planner_turn_failures_exhausted")]
     assert _reject(no_reply, prior=[], format_retry_left=1) == [("reopen", "planning_format_retry")]
+
+
+def test_an_unknown_blocker_code_is_other_with_the_model_words_kept() -> None:
+    from agent_orchestrator.contracts.planning_decisions import BlockedItemV1, BlockerCode
+
+    item = BlockedItemV1.from_json({"code": "RUNTIME_UNAVAILABLE", "detail": "上次执行结果丢失"})
+    assert item.code is BlockerCode.OTHER
+    assert item.detail == "原因（模型原话）：RUNTIME_UNAVAILABLE；上次执行结果丢失"
+    assert BlockedItemV1.from_json({"code": "RUNTIME_UNAVAILABLE"}).detail == "原因（模型原话）：RUNTIME_UNAVAILABLE"
+    assert BlockedItemV1.from_json({"code": "capability_missing"}).code is BlockerCode.CAPABILITY_MISSING
+    with pytest.raises(ContractError):
+        BlockedItemV1.from_json({"code": 7})
+    with pytest.raises(ContractError):
+        BlockedItemV1.from_json({"code": "OTHER"})  # OTHER 本身仍须说明

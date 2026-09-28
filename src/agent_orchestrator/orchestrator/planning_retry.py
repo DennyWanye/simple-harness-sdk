@@ -40,19 +40,18 @@ def retry_binding(store: Any, mission_id: str, task_id: str,
             or str(latest.status) in {"CANCELLED", "SUPERSEDED"} or not latest.failure
             or any(a.status not in TERMINAL_ATTEMPT for a in attempts)):
         raise ContractError("retry must name the latest failed Attempt with no open sibling")
-    # An unknown *outcome* (did the call happen at all?) must be reconciled first.
     # An unknown *charge* on a call that definitely failed is not a reason to freeze:
     # user count rule (2026-09-24) — overcount, never undercount, never freeze.  Its
     # reservation stays held at the upper bound (ReservationHeld) and the retry is a
     # new Attempt with its own reservation.  2026-09-25 UI 全量点击: a worker turn that
     # failed on a malformed tool call left an unknown charge and the document Mission
     # stalled because every RETRY_SAME_METHOD was refused here.
-    if latest.failure.get("reason") == "provider_outcome_unknown":
-        raise ContractError("unknown provider outcome cannot be retried by a planning decision")
+    # 2026-09-28 用户决定：结果不明（进程重启打断、原调用无法核对）也可原样重做——未记录
+    # 的回复不会执行任何工具；原调用的预留按上限保留（只可多算），新执行另行预留。
     if latest.failure.get("reason") == "runtime_unavailable":
         # Runtime failure is not permanently unrepairable. An explicit retry may
-        # proceed after its profile recovered, while unknown accounting still
-        # refuses above and the runtime block keeps execution suspended below.
+        # proceed after its profile recovered; an unknown charge keeps its hold at the
+        # upper bound and the runtime block keeps execution suspended below.
         health = store.get_scheduler_state("profile_health") or {}
         profile = health.get("profiles", {}).get(latest.runtime_profile_id, {})
         until = profile.get("unavailable_until")

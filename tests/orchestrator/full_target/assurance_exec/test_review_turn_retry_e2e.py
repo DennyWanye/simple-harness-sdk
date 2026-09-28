@@ -159,3 +159,44 @@ def test_provider_server_error_first_turn_is_retried_once_and_imported(tmp_path)
             assert state is not None and state[0] == "RESERVED"
 
     asyncio.run(body())
+
+
+def test_an_interrupted_review_reports_unreconciled_and_keeps_its_hold(tmp_path):
+    """2026-09-28 真机：进程重启打断审阅，审阅员回合卡在"调用结果不明"。保障层规定只有旧回合
+    正式导入（未提交回执）后才能开第二次审阅，而 DeepSeek 的原调用在运行中无法核对，所以这里
+    仍报 "awaits original-call reconciliation"、原调用预留按上限继续扣着；这一步由系统原样重做
+    （planning_selection._interrupted_review），不交给规划器。"""
+    from _assured_fixture import AssuredRuntime
+    from agent_orchestrator.orchestrator.event_handler import Orchestrator
+    from simple_harness.providers.errors import ProviderTransportError
+
+    class _Loss:
+        pass
+
+    base = _provider_class()
+
+    class LossyProvider(base):
+        async def invoke(self, request, *, cancel):
+            if self.script and isinstance(self.script[0], _Loss):
+                self.script.pop(0)
+                self.requests.append(request)
+                raise ProviderTransportError(public_message="scripted transport loss after handoff")
+            return await super().invoke(request, cancel=cancel)
+
+    async def body():
+        async with AssuredRuntime(tmp_path, [], provider_class=LossyProvider) as rt:
+            rt.provider.script[:] = [_Loss(), canonical(ACCEPT_REPLY)]
+
+            async def give_up_when_blocked(intent, liveness):
+                return "give_up" if Orchestrator._provider_blocked(liveness) else None
+
+            rt.orch._resolve_provider_blocked_service = give_up_when_blocked
+            with pytest.raises(ContractError, match="awaits original-call reconciliation"):
+                await asyncio.wait_for(rt.run_critic(), 30)
+            rows = _invocations(rt)
+            first = rt.store.get_intent(rows[0]["dispatch_intent_id"])
+            state = rt.store.connection.execute(
+                "SELECT state FROM budget_reservations WHERE subject_id=?", (first.subject_id,)).fetchone()
+            assert state is not None and state[0] == "RESERVED"
+
+    asyncio.run(body())

@@ -29,7 +29,88 @@ def selection_context(dispatch: Any, mission_id: str, reports: Any, *, policy: s
                 (item[1].route == "SELECTION_ALREADY_ATTEMPTED", item[0]))]
 
 
+# 2026-09-28 用户决定：执行被打断（进程重启、调用结果无法核对）时由系统原样重做该步，
+# 不交给规划器——规划器面对"结果不明"时既不能重试也无路可走，真机两局因此失败。
+# 只在失败的是第 1–4 次执行时这样做，之后仍交给规划器（服务一直坏着不会无限重做）。
+NATIVE_RUNTIME_RETRY_MAX_ORDINAL = 4
+
+
+INTERRUPTED_REVIEW = "Assurance review awaits original-call reconciliation"
+
+
+def _lost_execution(request: Mapping[str, Any], context: Mapping[str, Any]) -> bool:
+    return (request.get("trigger_source") == "RUNTIME_UNAVAILABLE"
+            and context.get("reason") == "provider_outcome_unknown")
+
+
+def _interrupted_review(request: Mapping[str, Any], context: Mapping[str, Any]) -> bool:
+    """The step's only failure is its content review whose call was interrupted.
+
+    The strict review rules cannot open a second review while the interrupted call is
+    still unreconciled (a DeepSeek call never becomes reconcilable), so the step is
+    redone instead — the user's intent "an interruption must not end the step".
+    """
+    if (request.get("trigger_source") != "VERIFIER_ACCEPTANCE_REJECT"
+            or context.get("event_type") != "VerificationFailed"):
+        return False
+    failures = (context.get("detail") or {}).get("failures") or ()
+    return bool(failures) and all(
+        f.get("layer") == "critic_review" and f.get("status") == "ERROR"
+        and INTERRUPTED_REVIEW in str(f.get("summary", "")) for f in failures)
+
+
+def _runtime_lost_retry(package: Mapping[str, Any]) -> dict[str, Any] | None:
+    requests = package.get("repair_requests") or ()
+    if len(requests) != 1 or package.get("rejected_refinements"):
+        return None
+    item = requests[0]
+    request = item.get("request") or {}
+    context = request.get("context") or {}
+    if not (_lost_execution(request, context) or _interrupted_review(request, context)):
+        return None
+    if (item.get("impact") or {}).get("unresolved_operations"):
+        return None
+    protocol = package.get("planning_protocol") or {}
+    if "RETRY_SAME_METHOD" not in (protocol.get("enabled_repair_kinds") or ()):
+        return None
+    refs = [str(r) for r in (request.get("trigger_refs") or ()) if ":attempt-" in str(r)]
+    if len(refs) != 1:
+        return None
+    failed = refs[0]
+    task_id, marker, ordinal = failed.rpartition(":attempt-")
+    if not marker or not ordinal.isdigit() or int(ordinal) > NATIVE_RUNTIME_RETRY_MAX_ORDINAL:
+        return None
+    subject = next((s for s in package.get("planning_subjects", ()) if s.get("task_id") == task_id), None)
+    if subject is None:
+        return None
+    occurrence = subject["occurrence_id"]
+    instance_ids = {
+        str(child.get("instance_id"))
+        for instance in package.get("active_method_instances", ())
+        for child in instance.get("child_bindings", ())
+        if occurrence in (child.get("occurrence_id"), child.get("goal_occurrence_id"))
+    }
+    if len(instance_ids) != 1:
+        return None
+    instance_id = next(iter(instance_ids))
+    ref = [r for r in package.get("visible_refs", ())
+           if r.get("kind") == "method_instance" and r.get("id") == instance_id]
+    if len(ref) != 1:
+        return None
+    document: dict[str, Any] = {"schema_version": 1, "subject_key": subject["subject_key"],
+        "decision_type": "REPAIR", "reason_refs": [ref[0]], "assumptions": [], "uncertainties": [],
+        "alternatives": [], "replan_triggers": [],
+        "rationale": ("上一次执行或它的审阅被中断，模型调用的结果无法核对（未记录的回复不会执行任何工具）；"
+                      "系统按规则原样重做该步，原调用的用量按上限记账。"),
+        "payload": {"repair_kind": "RETRY_SAME_METHOD", "failed_attempt_id": failed,
+                    "method_instance_ref": ref[0]}}
+    return PlanningDecisionEnvelopeV1.from_json(document).to_json()
+
+
 def local_decision(package: Mapping[str, Any]) -> dict[str, Any] | None:
+    retry = _runtime_lost_retry(package)
+    if retry is not None:
+        return retry
     if package.get("repair_requests") or package.get("rejected_refinements"):
         return None
     choices = package.get("method_selection", ())
