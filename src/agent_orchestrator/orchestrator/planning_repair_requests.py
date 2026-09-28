@@ -51,6 +51,13 @@ def collect_triggers(handler: Any, mission: Any) -> bool:
     active_tasks = {str(spec.task_id) for spec in dispatch.network(mission.id).occurrences}
     h4 = int(binding["package_version"]) >= 7
     seen = {e.payload.get("source_key") for e in store.iter_events(mission.id) if e.type == REQUESTED}
+    from .failure_classes import classify_failure
+
+    def failure_class(attempt_id: str | None) -> dict[str, str]:
+        # 2026-09-28：请求里带上"谁的错"，非模型原因由系统原地重做（planning_selection）。
+        attempt = store.get_attempt(attempt_id) if attempt_id else None
+        return {} if attempt is None or not attempt.failure else {
+            "failure_class": classify_failure(attempt.failure)}
     sources = {"ResultRejected": "WorkerRejected", "VerificationFailed": "VerifierAcceptanceRejected",
                "HierarchicalRootReviewRejected": "VerifierAcceptanceRejected"}
     if h4:
@@ -68,7 +75,8 @@ def collect_triggers(handler: Any, mission: Any) -> bool:
         refs = tuple(dict.fromkeys(str(x) for x in (event.attempt_id, event.task_id) if x)) or (mission.id,)
         produced |= record_request(dispatch, mission.id, event_type=sources[event.type],
             trigger_refs=refs, source_key=source_key,
-            detail={"source_event": event.idempotency_key, "event_type": event.type, "detail": dict(event.payload)})
+            detail={"source_event": event.idempotency_key, "event_type": event.type,
+                    "detail": dict(event.payload), **failure_class(event.attempt_id)})
     htn = dispatch.semantics()
     for state in ("PENDING", "RECHECKING"):
         for dirty in htn.list_dirty(mission.id, state=state):
@@ -96,7 +104,8 @@ def collect_triggers(handler: Any, mission: Any) -> bool:
             source_key = "runtime:" + attempt.id
             if failure and failure.get("reason") in {"runtime_unavailable", "provider_outcome_unknown"} and source_key not in seen:
                 produced |= record_request(dispatch, mission.id, event_type="RuntimeUnavailable",
-                    trigger_refs=(attempt.id,), source_key=source_key, detail=dict(failure))
+                    trigger_refs=(attempt.id,), source_key=source_key,
+                    detail={**dict(failure), **failure_class(attempt.id)})
     # A committed retry is bound to the exact task/plan/input/operation read.
     # If it becomes stale before dispatch, reopen a system request; silently
     # retaining the old addressed trigger would leave the Task blocked forever.

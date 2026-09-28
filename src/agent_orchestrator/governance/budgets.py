@@ -276,6 +276,18 @@ class BudgetLedger:
         )
         return reservation_id
 
+    def release_attempt(self, account_id: str) -> None:
+        """Give back one attempt on ``account_id`` and every ancestor (2026-09-28：非模型原因
+        的失败不扣次数)。只退次数；token、费用与工具次数照常结清。"""
+
+        if not self._store.connection.in_transaction:
+            raise BudgetError("attempt release requires a Commit transaction")
+        chain = self._chain(account_id)
+        if any(snapshot.attempts_created < 1 for snapshot in chain):
+            raise BudgetError(f"no attempt to release on {account_id}")
+        for snapshot in chain:
+            self._apply(snapshot.account_id, attempts_created=-1)
+
     def reservation(self, subject_id: str) -> dict[str, Any] | None:
         row = self._store.connection.execute(
             "SELECT * FROM budget_reservations WHERE subject_id = ?", (subject_id,)

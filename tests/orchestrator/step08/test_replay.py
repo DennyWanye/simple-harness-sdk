@@ -534,7 +534,9 @@ def test_re_review_a_rejected_result_then_a_retry_replays_completely(tmp_path, b
             assert store.count_events(mission.id, "ResultRejected") == 1
             task = store.list_tasks(mission.id)[0]
             attempts = store.list_attempts(task.id)
-            assert task.attempt_count == 2
+            # 2026-09-28 用户决定：格式没写对不扣次数——两次尝试照常存在，但只计 1 次
+            assert len(attempts) == 2 and task.attempt_count == 1
+            assert store.count_events(mission.id, "AttemptChargeReleased") == 1
             assert attempts[0].failure["reason"] == "envelope_invalid"
             assert store.find_result_for_attempt(attempts[0].id) is None
             return mission.id

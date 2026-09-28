@@ -29,13 +29,10 @@ def selection_context(dispatch: Any, mission_id: str, reports: Any, *, policy: s
                 (item[1].route == "SELECTION_ALREADY_ATTEMPTED", item[0]))]
 
 
-# 2026-09-28 用户决定：执行被打断（进程重启、调用结果无法核对）时由系统原样重做该步，
-# 不交给规划器——规划器面对"结果不明"时既不能重试也无路可走，真机两局因此失败。
-# 只在失败的是第 1–4 次执行时这样做，之后仍交给规划器（服务一直坏着不会无限重做）。
-NATIVE_RUNTIME_RETRY_MAX_ORDINAL = 4
-
-
-INTERRUPTED_REVIEW = "Assurance review awaits original-call reconciliation"
+# 2026-09-28 用户决定：不是模型自己做错的失败（格式没写对、服务出错、执行或审阅被打断）
+# 由系统原样重做该步，不交给规划器，也不扣任务次数（failure_classes）。同一步合计的上限
+# 在创建尝试时把关（NonModelFailuresExhausted），服务一直坏着不会无限重做。
+from .failure_classes import INTERRUPTED_REVIEW, NON_MODEL
 
 
 def _lost_execution(request: Mapping[str, Any], context: Mapping[str, Any]) -> bool:
@@ -59,17 +56,23 @@ def _interrupted_review(request: Mapping[str, Any], context: Mapping[str, Any]) 
         and INTERRUPTED_REVIEW in str(f.get("summary", "")) for f in failures)
 
 
+def _not_models_fault(request: Mapping[str, Any], context: Mapping[str, Any]) -> bool:
+    return (context.get("failure_class") in NON_MODEL
+            or _lost_execution(request, context) or _interrupted_review(request, context))
+
+
 def _runtime_lost_retry(package: Mapping[str, Any]) -> dict[str, Any] | None:
-    requests = package.get("repair_requests") or ()
-    if len(requests) != 1 or package.get("rejected_refinements") or package.get("planning_rejected"):
+    if package.get("rejected_refinements") or package.get("planning_rejected"):
         return None
-    item = requests[0]
+    # 审阅 2026-09-28：包里是整个任务的全部待处理请求，两步同时失败时不止一条——挑第一条
+    # 非模型原因的原地处理，其余留给后续几轮。
+    item = next((entry for entry in package.get("repair_requests") or ()
+                 if _not_models_fault((entry.get("request") or {}),
+                                      ((entry.get("request") or {}).get("context") or {}))
+                 and not (entry.get("impact") or {}).get("unresolved_operations")), None)
+    if item is None:
+        return None
     request = item.get("request") or {}
-    context = request.get("context") or {}
-    if not (_lost_execution(request, context) or _interrupted_review(request, context)):
-        return None
-    if (item.get("impact") or {}).get("unresolved_operations"):
-        return None
     protocol = package.get("planning_protocol") or {}
     if "RETRY_SAME_METHOD" not in (protocol.get("enabled_repair_kinds") or ()):
         return None
@@ -78,7 +81,7 @@ def _runtime_lost_retry(package: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     failed = refs[0]
     task_id, marker, ordinal = failed.rpartition(":attempt-")
-    if not marker or not ordinal.isdigit() or int(ordinal) > NATIVE_RUNTIME_RETRY_MAX_ORDINAL:
+    if not marker or not ordinal.isdigit():
         return None
     subject = next((s for s in package.get("planning_subjects", ()) if s.get("task_id") == task_id), None)
     if subject is None:
@@ -100,8 +103,8 @@ def _runtime_lost_retry(package: Mapping[str, Any]) -> dict[str, Any] | None:
     document: dict[str, Any] = {"schema_version": 1, "subject_key": subject["subject_key"],
         "decision_type": "REPAIR", "reason_refs": [ref[0]], "assumptions": [], "uncertainties": [],
         "alternatives": [], "replan_triggers": [],
-        "rationale": ("上一次执行或它的审阅被中断，模型调用的结果无法核对（未记录的回复不会执行任何工具）；"
-                      "系统按规则原样重做该步，原调用的用量按上限记账。"),
+        "rationale": ("上一次失败不是模型自己做错（格式、服务出错或执行/审阅被中断）；"
+                      "系统按规则原样重做该步，不扣任务次数，原调用的用量照常记账。"),
         "payload": {"repair_kind": "RETRY_SAME_METHOD", "failed_attempt_id": failed,
                     "method_instance_ref": ref[0]}}
     return PlanningDecisionEnvelopeV1.from_json(document).to_json()

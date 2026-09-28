@@ -60,10 +60,43 @@ def _variant(**change):
 
 
 def test_anything_else_still_goes_to_the_planner():
-    assert local_decision(_variant(reason="executor_stalled")) is None
-    assert local_decision(_variant(attempt="task-742189979604bf7b96ea9335250e4a2c:attempt-5")) is None
+    assert local_decision(_variant(reason="executor_stalled")) is None  # 没有分类标记的旧请求
     assert local_decision(_variant(unresolved=["op-1"])) is None
     assert local_decision(_variant(kinds=["DECLARE_RUNTIME_BLOCKED"])) is None
+
+
+def _rejected(failure_class, attempt="task-742189979604bf7b96ea9335250e4a2c:attempt-5"):
+    return {"request": {"trigger_source": "WORKER_REJECTED",
+                        "context": {"event_type": "ResultRejected", "failure_class": failure_class,
+                                    "detail": {"reason": "turn_failed"}},
+                        "trigger_refs": [attempt, "task-742189979604bf7b96ea9335250e4a2c"]},
+            "impact": {"unresolved_operations": [], "unknown_coverage": []}}
+
+
+def test_a_failure_that_is_not_the_models_fault_is_retried_by_the_system():
+    """2026-09-28 用户决定：格式、服务、打断不扣次数，由系统原地重做（不再按第几次限制，
+    同一步的上限在创建尝试时把关）。"""
+    for category in ("FORMAT", "INFRA", "INTERRUPTED"):
+        package = copy.deepcopy(PACKAGE)
+        package["repair_requests"] = [_rejected(category)]
+        decision = local_decision(package)
+        assert decision is not None, category
+        assert decision["payload"]["failed_attempt_id"].endswith(":attempt-5")
+    model = copy.deepcopy(PACKAGE)
+    model["repair_requests"] = [_rejected("MODEL")]
+    assert local_decision(model) is None
+
+
+def test_the_first_non_model_request_is_taken_when_several_are_pending():
+    """审阅 2026-09-28：包里是整个任务的全部请求，两步同时失败时不止一条。"""
+    package = copy.deepcopy(PACKAGE)
+    package["repair_requests"] = [
+        _rejected("MODEL", "task-742189979604bf7b96ea9335250e4a2c:attempt-3"),
+        _rejected("INFRA", "task-742189979604bf7b96ea9335250e4a2c:attempt-4"),
+    ]
+    decision = local_decision(package)
+    assert decision is not None
+    assert decision["payload"]["failed_attempt_id"].endswith(":attempt-4")
 
 
 def test_an_interrupted_review_redoes_the_step_but_a_real_rejection_does_not():

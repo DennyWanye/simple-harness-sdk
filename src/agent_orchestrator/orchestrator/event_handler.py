@@ -14362,13 +14362,25 @@ class Orchestrator:
                 max_running_attempts=self._config.max_running_attempts,
             )
         except CommitRejected as error:
-            from .commit_service import InconclusiveRetryExhausted
+            from .commit_service import InconclusiveRetryExhausted, NonModelFailuresExhausted
 
             if isinstance(error, InconclusiveRetryExhausted):
                 if self.commit.stop_inconclusive_task(task.id):
                     await self._release_mission(mission.id)
                     self._note(f"task {task.id} stopped: insufficient_evidence (retry limit)")
                     return True
+            if isinstance(error, NonModelFailuresExhausted):
+                # 2026-09-28：格式、服务、打断这类不扣次数的失败同一步已到上限——多半是服务
+                # 或格式本身有问题，停下这一步并写明，不无限重做。
+                self._commit_stop_task(
+                    task.id,
+                    stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                    detail={"reason": "non_model_failures_exhausted",
+                            "failures": error.failure_count, "cap": error.cap},
+                )
+                await self._release_mission(mission.id)
+                self._note(f"task {task.id} stopped: non_model_failures_exhausted ({error.failure_count})")
+                return True
             self._note(f"task {task.id}: no new attempt ({error})")
             return False
         except BudgetExhausted as error:

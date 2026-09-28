@@ -213,6 +213,19 @@ class MissionConflict(CommitRejected):
     """Same (tenant, idempotency_key) with a different specification."""
 
 
+class NonModelFailuresExhausted(CommitRejected):
+    """同一步不扣次数的失败（格式、服务、打断）已到上限；什么都没预留。"""
+
+    def __init__(self, task_id: str, failure_count: int, cap: int) -> None:
+        self.task_id = task_id
+        self.failure_count = failure_count
+        self.cap = cap
+        super().__init__(
+            f"task {task_id} failed {failure_count} times for reasons that are not the model's"
+            f" own mistakes (format, service or interruption); cap {cap}"
+        )
+
+
 class InconclusiveRetryExhausted(CommitRejected):
     """The frozen uncertainty rework allowance is spent; no budget was reserved."""
 
@@ -3249,6 +3262,11 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 )
             if task.status not in {TaskStatus.READY, TaskStatus.ACTIVE, TaskStatus.VERIFYING}:
                 raise CommitRejected(f"task {task_id} is {task.status}; no new Attempt")
+            from .failure_classes import NON_MODEL_FAILURE_CAP, non_model_failures
+
+            spent = non_model_failures(self._store.list_attempts(task_id))
+            if spent >= NON_MODEL_FAILURE_CAP:
+                raise NonModelFailuresExhausted(task_id, spent, NON_MODEL_FAILURE_CAP)
             if task.paused and task.pause_reason == "provider_admission:usage_unresolved":
                 raise CommitRejected("provider admission is waiting for unresolved usage")
             from .planning_runtime_block import pending_block
@@ -3869,6 +3887,49 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
             )
             return updated
 
+    def _release_attempt_charge(self, attempt: Attempt) -> bool:
+        """A failure that is not the model's own mistake gives its attempt back.
+
+        2026-09-28 用户决定：格式没写对、服务出错、执行被打断不扣任务次数。账本（任务→
+        任务总账→全局）与 ``task.attempt_count`` 同一事务里一起退——能否再试、剩余次数、
+        人工重试上限读的是后者。只退普通预留扣的次数：选择合成与系统尾部额度扣的不退，
+        否则等于凭空多给次数。按尝试幂等。
+        """
+
+        from .failure_classes import classify_failure, NON_MODEL
+
+        category = classify_failure(attempt.failure)
+        if category not in NON_MODEL:
+            return False
+        if self._store.connection.execute(
+            "SELECT 1 FROM events WHERE idempotency_key = ?",
+            (f"AttemptChargeReleased:{attempt.id}",),
+        ).fetchone() is not None:
+            return False
+        intent = self._store.get_intent_for_subject(attempt.id)
+        if intent is not None and intent.config.get("selection_round_id"):
+            return False
+        if self.system_task_hold(attempt.task_id) is not None:
+            return False
+        reservation = self._ledger.reservation(attempt.id)
+        if reservation is None or reservation["account_id"] != task_account(attempt.task_id):
+            return False
+        self._ledger.release_attempt(reservation["account_id"])
+        task = self._require_task(attempt.task_id)
+        self._store.update_task(
+            next_task(task, attempt_count=max(0, task.attempt_count - 1)),
+            expected_version=task.version,
+        )
+        self._emit(
+            "AttemptChargeReleased",
+            attempt.mission_id,
+            key=attempt.id,
+            task_id=attempt.task_id,
+            attempt_id=attempt.id,
+            payload={"failure_class": category, "reason": (attempt.failure or {}).get("reason")},
+        )
+        return True
+
     def mark_attempt_lost(self, attempt_id: str, *, reason: str) -> Attempt:
         with self._store.transaction():
             attempt = self._require_attempt(attempt_id)
@@ -3876,6 +3937,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 return attempt
             updated = next_attempt(attempt, AttemptStatus.LOST, failure={"reason": reason})
             self._store.update_attempt(updated, expected_version=attempt.version)
+            self._release_attempt_charge(updated)
             from .taskgraph_dispatch import taskgraph_enabled
             # Loss is a control-plane observation, not proof that the SDK call
             # stopped. Preserve the transition even when physical settlement is
@@ -3907,6 +3969,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 attempt, AttemptStatus.TIMED_OUT, failure={"reason": reason, **dict(detail)}
             )
             self._store.update_attempt(updated, expected_version=attempt.version)
+            self._release_attempt_charge(updated)
             from .taskgraph_dispatch import taskgraph_enabled
             # A stalled live turn must first lose execution rights and receive
             # cancellation. Trying to settle it here would reject the whole
@@ -4450,6 +4513,7 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 attempt, AttemptStatus.RETRY_WAIT, failure={"reason": reason, **dict(detail)}
             )
             self._store.update_attempt(updated, expected_version=attempt.version)
+            self._release_attempt_charge(updated)
             self._emit(
                 "ResultRejected",
                 attempt.mission_id,
@@ -5962,6 +6026,8 @@ class CommitService(MissionTailCommitsMixin, ProtectedTailCommitsMixin, Selectio
                 active = next_task(task, TaskStatus.ACTIVE)
                 self._store.update_task(active, expected_version=task.version)
             self._settle_subject(attempt.id, attempt.mission_id, task_id=task.id)
+            if self._release_attempt_charge(self._require_attempt(attempt.id)):
+                active = self._require_task(task.id)
             self._emit(
                 "VerificationFailed",
                 attempt.mission_id,
