@@ -29,7 +29,9 @@ _MODEL_TURN_CODES = frozenset({
 _INFRA_TURN_KINDS = frozenset({"provider_unavailable", "provider_error"})
 # 单轮墙钟超时：2026-09-29 真机第八局，应用停机/重启期间这一轮的时限走完，重启后报超时。
 # 这不是模型把内容做错；按被打断处理（原地重做、不扣次数、同一步合计有上限）。
-_INTERRUPTED_TURN_CODES = frozenset({"react_wall_clock_exceeded"})
+# 执行层内部异常：第九局重启后"模型调用已交出、结果未知"（ProviderInvocationConflictError）
+# 以 base_agent_driver_exception 结束这一轮——运行时自己的异常，从来不是模型做错。
+_INTERRUPTED_TURN_CODES = frozenset({"react_wall_clock_exceeded", "base_agent_driver_exception"})
 _INTERRUPTED_REASONS = frozenset({
     "executor_stalled", "executor_turn_missing", "executor_agent_missing",
     "provider_outcome_unknown",

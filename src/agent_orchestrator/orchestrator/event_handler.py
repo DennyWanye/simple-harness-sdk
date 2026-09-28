@@ -11660,10 +11660,10 @@ class Orchestrator:
     def _provider_blocked(liveness: Liveness) -> bool:
         """The turn is waiting on a Provider hand-off whose outcome is unknown.
 
-        Only the run's own *wait blocker* of kind ``provider`` counts — or ``tool``
-        (2026-09-29 真机第八局：重启打断了执行者正在做的工具操作，那一轮挂在"工具结果未知"
-        上，只认 ``provider`` 时这一轮永远不结束；执行者的工具只作用在它自己的尝试工作区，
-        放弃这次尝试换新工作区重做不会造成重复副作用）.  The bridge also
+        Only the run's own *wait blocker* of kind ``provider`` counts — or ``tool`` whose
+        effect is durably ``unknown`` (2026-09-29 真机第八局：重启打断了执行者正在做的工具操作，
+        那一轮挂在"工具结果未知"上永远不结束；执行者的工具只作用在它自己的尝试工作区，放弃重做
+        不会造成重复副作用）。正在执行的工具同样是 kind=tool，但状态不是 unknown，不算。  The bridge also
         reports ``provider_slot_wait`` (queued behind the concurrency limit) and
         ``provider_response_wait`` (a call that is genuinely in progress) as
         ``blocked``; both are the executor making progress and neither is timed here.
@@ -11674,7 +11674,9 @@ class Orchestrator:
             liveness.exists
             and not liveness.settled
             and isinstance(blocker, Mapping)
-            and str(blocker.get("kind", "")) in {"provider", "tool"}
+            and (str(blocker.get("kind", "")) == "provider"
+                 or (str(blocker.get("kind", "")) == "tool"
+                     and str(blocker.get("effect_state", "")) == "unknown"))
         )
 
     async def _resolve_provider_blocked_service(

@@ -60,6 +60,9 @@ def test_the_table_says_whose_fault_each_real_failure_is():
     # 2026-09-29 真机第八局：停机/重启期间单轮时限走完，重启后报墙钟超时——被打断，不是模型做错
     assert classify_failure(turn(error={"error_code": "react_wall_clock_exceeded",
                                         "source_kind": "termination"}, error_kind="other")) == INTERRUPTED
+    # 第九局：重启后调用已交出、结果未知，执行层以内部异常结束这一轮
+    assert classify_failure(turn(error={"error_code": "base_agent_driver_exception",
+                                        "source_kind": "runtime"}, error_kind="other")) == INTERRUPTED
     # 调了不存在的工具、参数不合规定：同样标着 tool_parse，但属于模型的错
     assert classify_failure(turn(error={"error_code": "tool_not_exposed", "source_kind": "tool_parse"})) == MODEL
     assert classify_failure(turn(error={"error_code": "invalid_tool_arguments",

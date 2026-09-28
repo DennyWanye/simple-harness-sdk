@@ -154,11 +154,30 @@ class AgentBridge:
                 if waiting
                 else ({"kind": "provider_response_wait", "billable": True, "bounded": True}
                       if response_waiting
-                      else (None if snapshot.blocker is None else dict(snapshot.blocker)))
+                      else (None if snapshot.blocker is None else self._with_effect_state(snapshot.blocker)))
             ),
             progress=progress,
             settled=state in {AgentTurnState.COMMITTED, AgentTurnState.FAILED},
         )
+
+    def _with_effect_state(self, blocker: Mapping[str, Any]) -> dict[str, Any]:
+        """A ``tool`` wait blocker plus its effect's durable state.
+
+        2026-09-29 真机第八局：正在执行的工具与"重启后结果未知"的工具在阻塞信息上一模一样
+        （都是 kind=tool），只有工具操作本身的状态能区分（进行中 vs ``unknown``）。
+        """
+        out = dict(blocker)
+        if out.get("kind") != "tool" or not out.get("ledger_identity"):
+            return out
+        from simple_harness.contracts.identity import EffectId
+
+        try:
+            record = self._runtime.uow.read_effect(EffectId(str(out["ledger_identity"])))
+        except Exception:  # noqa: BLE001 - unreadable == unknown state not asserted
+            return out
+        if record is not None:
+            out["effect_state"] = str(getattr(record.state, "value", record.state))
+        return out
 
     def usage_facts(
         self, *, agent_id: str, include_unknown: bool = False
