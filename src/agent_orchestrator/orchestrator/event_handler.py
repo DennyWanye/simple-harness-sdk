@@ -466,6 +466,26 @@ class _AssuranceReviewUnavailable(ContractError):
         super().__init__(f"Assurance {purpose} review unavailable: {error}")
 
 
+# 2026-09-28: how many Planner turns that produced no reply (provider error, timeout,
+# an interrupted run) one planning question may absorb before they count again.
+PLANNER_TURN_FAILURE_GRACE = 6
+
+
+class PlannerTurnFailed(ContractError):
+    """The Planner's turn ended without a reply; nothing it said was refused."""
+
+
+def planning_failure_detail(error: Exception, detail: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(error, PlannerTurnFailed):
+        detail["turn_failed"] = True
+    return detail
+
+
+def _turn_failed(event: Any) -> bool:
+    detail = event.payload.get("detail") if isinstance(event.payload, Mapping) else None
+    return isinstance(detail, Mapping) and detail.get("turn_failed") is True
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -6696,7 +6716,7 @@ class Orchestrator:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, intent.mission_id)
             await self._planning_rejected(
-                intent, reason="planner_turn_missing", detail={"agent_id": intent.agent_id}
+                intent, reason="planner_turn_missing", detail={"agent_id": intent.agent_id, "turn_failed": True}
             )
             return True
         if intent.kind == "manager":
@@ -7007,9 +7027,24 @@ class Orchestrator:
         if reason == "proposal_unreadable" and "planning_decision_attempt_ordinal" in intent.config:
             # A later repair/refinement request still owns one format retry. Its
             # global Planner ordinal is scheduling identity, not retry allowance.
-            if self._planning_format_retry_remaining(intent=intent, mission=mission):
+            turn_failed = detail.get("turn_failed") is True
+            if turn_failed and not self._planner_turn_failure_forgiven(mission.id):
+                # Past the grace the model service is treated as down: every "fresh
+                # request" below would otherwise be reopened for ever (review 2026-09-28).
+                self._stop_planning_round(
+                    mission.id, reason="planner_turn_failures_exhausted",
+                    detail={"attempts": ordinal, **dict(detail)},
+                    stop_reason=MissionStopReason.RUNTIME_UNAVAILABLE,
+                )
+            elif self._planning_format_retry_remaining(intent=intent, mission=mission):
                 await self._planner_round_on_committed_plan(
                     mission.id, ordinal=ordinal + 1, phase="planning_format_retry"
+                )
+            elif turn_failed:
+                # No reply at all is not a second malformed answer: ask again (a fresh
+                # request) instead of ending the round on "format retry exhausted".
+                await self._planner_round_on_committed_plan(
+                    mission.id, ordinal=ordinal + 1, phase="planner_turn_retry"
                 )
             else:
                 self._stop_planning_round(
@@ -7231,13 +7266,13 @@ class Orchestrator:
             return
         try:
             if result.state is not AgentTurnState.COMMITTED:
-                raise ContractError(f"planner turn failed: {dict(result.error or {})}")
+                raise PlannerTurnFailed(f"planner turn failed: {dict(result.error or {})}")
             proposal = parse_task_graph_proposal(text)
         except ContractError as error:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
             await self._planning_rejected(
-                intent, reason="proposal_unreadable", detail={"error": str(error)}
+                intent, reason="proposal_unreadable", detail=planning_failure_detail(error, {"error": str(error)})
             )
             return
         try:
@@ -7659,12 +7694,34 @@ class Orchestrator:
         its own count.  Before the first commit this is the old count."""
 
         count = 0
+        forgiven = 0
         for event in self.store.list_events(mission_id):
             if event.type in {"TaskGraphRejected", "PlanningRejected"}:
+                # 2026-09-28 真机：12 轮规划里 5 轮是模型服务端报错与重启打断，规划器根本
+                # 没被听到却照样扣次数，任务因此失败。没有回复的回合不算"答错"，但设宽限，
+                # 服务一直坏着时超出部分照样计数，不会无限重试。
+                if _turn_failed(event) and forgiven < PLANNER_TURN_FAILURE_GRACE:
+                    forgiven += 1
+                    continue
                 count += 1
             elif event.type == "PlanningDecisionEvaluated" and event.payload.get("status") == "COMMITTED":
                 count = 0
+                forgiven = 0
         return count
+
+    def _planner_turn_failure_forgiven(self, mission_id: str) -> bool:
+        """The latest refusal was a turn that produced no reply and is inside the grace."""
+
+        forgiven = 0
+        latest_forgiven = False
+        for event in self.store.list_events(mission_id):
+            if event.type in {"TaskGraphRejected", "PlanningRejected"}:
+                latest_forgiven = _turn_failed(event) and forgiven < PLANNER_TURN_FAILURE_GRACE
+                forgiven += 1 if latest_forgiven else 0
+            elif event.type == "PlanningDecisionEvaluated" and event.payload.get("status") == "COMMITTED":
+                forgiven = 0
+                latest_forgiven = False
+        return latest_forgiven
 
     def _awaiting_retry_decision(self, mission_id: str, task: Any) -> bool:
         """An ACTIVE leaf whose latest attempt ended failed and that waits for the
@@ -7707,7 +7764,7 @@ class Orchestrator:
 
         try:
             if result.state is not AgentTurnState.COMMITTED:
-                raise ContractError(f"planner turn failed: {dict(result.error or {})}")
+                raise PlannerTurnFailed(f"planner turn failed: {dict(result.error or {})}")
             from .planning_protocol_binding import planning_protocol_for_mission
 
             protocol = planning_protocol_for_mission(self.store, mission.id)
@@ -7769,7 +7826,7 @@ class Orchestrator:
         except ContractError as error:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
-            detail: dict[str, Any] = {"error": str(error)[:300]}
+            detail: dict[str, Any] = planning_failure_detail(error, {"error": str(error)[:300]})
             # §18.5 C8: a malformed block is repaired *within* the existing bounded
             # ladder — the one instruction that says what was wrong travels in the
             # durable rejection (which ``_planning_rejections`` feeds to the next

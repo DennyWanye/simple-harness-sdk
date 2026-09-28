@@ -44,6 +44,8 @@ class TaskGraphStore:
             _fail("TaskGraphStore requires Store")
         self._store = store
         self._external_ref_verifier = external_ref_verifier
+        # (mission, revision) -> (read generation it was verified under, result)
+        self._verified: dict[tuple[str, int], tuple[tuple[int, int, int], HistoricalRevision]] = {}
 
     @property
     def store(self) -> Store:
@@ -271,7 +273,24 @@ class TaskGraphStore:
             command_id=command_id, created_at=created_at, pins=pins)
 
     def read_revision(self, mission_id: str, revision: int) -> HistoricalRevision:
-        """Validate every ancestor under one snapshot; never trust a parent's hash column alone."""
+        """Validate every ancestor under one snapshot; never trust a parent's hash column alone.
+
+        A result verified while nothing in the store changed is the result: it is reused
+        only under an equal :meth:`Store.read_generation` (any write, anywhere, re-verifies).
+        """
+        generation = self._store.read_generation()
+        key = (mission_id, int(revision))
+        cached = self._verified.get(key)
+        if generation is not None and cached is not None and cached[0] == generation:
+            return cached[1]
+        selected = self._read_revision_verified(mission_id, revision)
+        if generation is not None and self._store.read_generation() == generation:
+            if len(self._verified) >= 256:
+                self._verified.clear()
+            self._verified[key] = (generation, selected)
+        return selected
+
+    def _read_revision_verified(self, mission_id: str, revision: int) -> HistoricalRevision:
         with self._store.read_view():
             selected = self._read_one_revision(mission_id, revision)
             child = selected.record

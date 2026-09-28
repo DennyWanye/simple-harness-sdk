@@ -496,6 +496,22 @@ class Store:
     def connection(self) -> sqlite3.Connection:
         return self._connection
 
+    def read_generation(self) -> tuple[int, int, int] | None:
+        """Changes whenever anything this Store reads may have changed; ``None`` inside a
+        write transaction (its uncommitted rows may still roll back).
+
+        Own writes move ``total_changes``; another connection's commit moves
+        ``PRAGMA data_version``; a replaced connection moves the identity.  A reader may
+        reuse a result it verified under an equal generation (2026-09-28: the loop
+        re-verified whole TaskGraph revisions many times per idle cycle, ~100% CPU).
+        """
+
+        with self._lock:
+            if self._depth and not self._reading:
+                return None
+            version = int(self._connection.execute("PRAGMA data_version").fetchone()[0])
+            return (id(self._connection), int(self._connection.total_changes), version)
+
     # ---------------------------------------------------------- fault injection
     def arm(self, *points: str, skip: int = 0, times: int = 1) -> None:
         """Arm crash points; ``skip`` lets the first ``skip`` hits pass (crash on the next);
