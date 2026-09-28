@@ -70,6 +70,9 @@ class SkillUseService:
     count: Callable[[str], int] | None = None
     skill_capacity: Callable[[], int] | None = None
     loaded_blocks: Callable[[store.SessionRow], tuple[Any, ...]] | None = None
+    # NEXT-TG-1.0 §11: the shared catalogue owner; every use first needs the same pin to be
+    # usable there, so one suspension on the owner refuses the next use in every pool.
+    authority: Any | None = None
 
     # ---- lookups ----------------------------------------------------------------------------
 
@@ -91,6 +94,8 @@ class SkillUseService:
         lock = self.skills.latest_lock(revision)
         if lock is None or not lock["complete"]:
             raise ArpError("DEPENDENCY_UNRESOLVED", "skill has no complete dependency lock")
+        if self.authority is not None:
+            self.authority.require_usable(revision.pin)
         return revision, activation, lock
 
     def _turn_id(self, session: store.SessionRow) -> str:
@@ -114,7 +119,7 @@ class SkillUseService:
     def _owner_contract(self, session: store.SessionRow) -> Pin:
         from .mission_sources import owner_contract_for
 
-        return owner_contract_for(self.catalogue.connection, session)
+        return owner_contract_for(self.uow.database.connection, session)
 
     @staticmethod
     def call_ref(session: store.SessionRow, call_id: str) -> Pin:

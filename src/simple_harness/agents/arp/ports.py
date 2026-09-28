@@ -226,6 +226,10 @@ class ArpPorts:
     # (``mission_sources.MissionSourcePort``).  A MISSION-mode profile refuses creation
     # by name without it; STANDALONE_CHAT never consults it.
     mission_sources: Any | None = None
+    # NEXT-TG-1.0 §11: set on a *member* pool — the deployment's shared Skill catalogue
+    # (``shared_catalogue.SharedSkillCatalogue``).  The owner pool and a lone pool leave it
+    # None and keep writing their own catalogue.
+    catalogue_authority: Any | None = None
 
 
 __all__ = (

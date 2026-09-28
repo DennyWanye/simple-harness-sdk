@@ -622,6 +622,7 @@ class Orchestrator:
         self._collection_refusals: dict[str, str] = {}
         #: planning intents already noted as waiting for their TaskGraph binding.
         self._taskgraph_waits_noted: set[str] = set()
+        self._creation_refusals_noted: set[str] = set()
         self.cancel_receipts: list[dict[str, Any]] = []
         self._rotation = 0  # D6-1: round-robin start across active Missions
         self._verifying: dict[str, asyncio.Task[bool]] = {}  # D6-9': bounded verification set
@@ -5839,9 +5840,20 @@ class Orchestrator:
             except AssuranceError as error:
                 self._note(f"intent {claimed.intent_id}: Assurance create waits ({error.code})")
                 return False
-            agent_id, _run_id, _ = await self.bridge_for(claimed).create(
-                creation_key=claimed.creation_key, config_json=config["agent_config"], intent=claimed
-            )
+            from simple_harness.agents.arp.errors import ArpError
+
+            try:
+                agent_id, _run_id, _ = await self.bridge_for(claimed).create(
+                    creation_key=claimed.creation_key, config_json=config["agent_config"], intent=claimed
+                )
+            except ArpError as error:
+                # NEXT-TG-1.0 §10: a named refusal of the native plane (e.g. the Mission
+                # sources moved) stops this intent only — never the loop every other
+                # Mission runs on.  The intent stays claimed for its own recovery paths.
+                if claimed.intent_id not in self._creation_refusals_noted:
+                    self._creation_refusals_noted.add(claimed.intent_id)
+                    self._note(f"intent {claimed.intent_id}: Agent creation refused ({error.code})")
+                return False
             expected = await self.bridge_for(claimed).expected_turn_id(
                 agent_id=agent_id, input_id=claimed.input_id
             )

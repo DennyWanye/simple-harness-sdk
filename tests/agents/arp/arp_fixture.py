@@ -139,6 +139,7 @@ def build(
     script_runner: object | None = None,
     artifacts: object | None = None,
     mission_sources: object | None = None,
+    catalogue_authority: object | None = None,
     **port_overrides: Any,
 ):
     root = bootstrap_root(tmp_path / "root", root_id="root-test")
@@ -171,6 +172,7 @@ def build(
         script_runner=script_runner,
         artifacts=artifacts,
         mission_sources=mission_sources,
+        catalogue_authority=catalogue_authority,
         **({} if clock_ms is None else {"clock_ms": clock_ms}),
     )
     return build_arp_runtime(ports, arp)

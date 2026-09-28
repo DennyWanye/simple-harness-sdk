@@ -223,6 +223,9 @@ class NativeCreationService:
             mission_record = mission_sources.record_for_creation(
                 self._ports.mission_sources, self._runtime.uow.database.connection, caller=caller, role=role
             )
+            frozen_config = mission_record["sources"].get("agent_config_hash")
+            if role != "child" and frozen_config is not None and frozen_config != digest(config.to_json()):
+                raise ArpError("REF_IDENTITY_MISMATCH", "the Agent configuration differs from the one the intent froze")
         elif profile.owner_mode != "STANDALONE_CHAT":
             raise ArpError("ENUM", field_path="owner_mode")
         mode = profile.creation_mode(embedding_available=self._ports.embedding_available)

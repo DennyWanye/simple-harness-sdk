@@ -328,10 +328,20 @@ class SkillImporter:
     instructions_schema: Pin
     verification_policy: Pin
     clock_ms: Callable[[], int]
+    # NEXT-TG-1.0 §11: set on a member pool of a shared catalogue; its Skills arrive only
+    # as mirrors of the owner (``shared_catalogue.SharedSkillCatalogue.sync``).
+    managed_by: Any | None = None
 
     # -- import --
 
-    def import_bundle(self, command: Mapping[str, Any], data: bytes, *, caller: TrustedCaller, command_id: str, run_id: str | None = None) -> SkillImportResult:
+    def import_bundle(
+        self, command: Mapping[str, Any], data: bytes, *, caller: TrustedCaller, command_id: str, run_id: str | None = None,
+        mirror: bool = False,
+    ) -> SkillImportResult:
+        if self.managed_by is not None and not mirror:
+            from .shared_catalogue import managed_elsewhere
+
+            raise managed_elsewhere()
         value = check("SkillInstallCommand", plain(command))
         artifact = Pin.from_json(value["bundle_artifact_ref"])
         if hashlib.sha256(data).hexdigest() != artifact.content_hash:
@@ -452,6 +462,19 @@ class SkillImporter:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target)
+
+    def bundle_bytes(self, skill: cat.RevisionRow) -> bytes:
+        """The exact bundle bytes a Skill revision was imported from (verified)."""
+
+        if skill.entry_kind != "SKILL" or skill.bundle_root_ref is None:
+            raise ArpError("REF_KIND_MISMATCH", "not a skill revision with a bundle")
+        path = self._bundle_path(skill.bundle_root_ref.content_hash)
+        if not path.exists():
+            raise ArpError("JOURNAL_SOURCE_UNAVAILABLE", "bundle bytes are not available on this root")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != skill.bundle_root_ref.content_hash:
+            raise ArpError("SOURCE_HASH_CONFLICT", "stored bundle bytes differ from the revision")
+        return data
 
     def read_file(self, skill: cat.RevisionRow, relative_path: str) -> bytes:
         """Exact bytes of one bundle file, verified against the definition's hash."""

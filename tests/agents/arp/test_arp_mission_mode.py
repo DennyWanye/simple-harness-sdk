@@ -103,6 +103,10 @@ def test_creation_without_exact_sources_is_refused_by_name_and_writes_nothing(tm
             with pytest.raises(ArpError) as refused:
                 await runtime.create(CONFIG, creation_key="k1", caller=mission_caller("intent-1"))
             assert _code(refused) == "UNION_MISMATCH"
+            reader.by_intent["intent-1"] = {**sources("intent-1"), "agent_config_hash": "0" * 64}
+            with pytest.raises(ArpError) as refused:  # another configuration than the intent froze
+                await runtime.create(CONFIG, creation_key="k1", caller=mission_caller("intent-1"))
+            assert _code(refused) == "REF_IDENTITY_MISMATCH"
             reader.by_intent["intent-1"] = sources("intent-1")
             reader.stale = "REQUEST_SOURCE_STALE"  # the authority withdrew it since binding
             with pytest.raises(ArpError) as refused:
@@ -117,15 +121,18 @@ def test_creation_without_exact_sources_is_refused_by_name_and_writes_nothing(tm
 def test_sources_are_recorded_once_and_the_key_never_replays_into_other_sources(tmp_path) -> None:
     async def case() -> None:
         reader = RecordingSources()
-        reader.by_intent["intent-1"] = sources("intent-1")
+        reader.by_intent["intent-1"] = {**sources("intent-1"), "agent_config_hash": digest(CONFIG.to_json())}
         runtime = build(tmp_path, profile=mission_profile(), mission_sources=reader)
         async with runtime:
             agent = await runtime.create(CONFIG, creation_key="k1", caller=mission_caller("intent-1"))
             connection = runtime.uow.database.connection
             session = store.read_live_session(connection, agent.agent_id)
             record = mission_sources.read_record(connection, session.session_id)
-            assert record["sources"] == sources("intent-1") and record["sources_hash"] == digest(sources("intent-1"))
+            reader.by_intent["intent-1"] = sources("intent-1")
+            frozen = {**sources("intent-1"), "agent_config_hash": digest(CONFIG.to_json())}
+            assert record["sources"] == frozen and record["sources_hash"] == digest(frozen)
             assert record["role"] == "root" and record["delegated_from"] is None
+            reader.by_intent["intent-1"] = frozen
             again = await runtime.create(CONFIG, creation_key="k1", caller=mission_caller("intent-1"))
             assert again.agent_id == agent.agent_id  # the same intent replays the same Agent
             reader.by_intent["intent-1"] = sources("intent-1", occurrence="occ-2")  # moved occurrence

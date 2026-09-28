@@ -44,6 +44,14 @@ class SkillLifecycleService:
     skills: Any  # SkillImporter (dependency locks)
     acceptance: Any | None
     clock_ms: Callable[[], int]
+    # NEXT-TG-1.0 §11: a member pool of a shared catalogue takes no lifecycle command.
+    managed_by: Any | None = None
+
+    def _owner_only(self) -> None:
+        if self.managed_by is not None:
+            from .shared_catalogue import managed_elsewhere
+
+            raise managed_elsewhere()
 
     def __post_init__(self) -> None:
         if self.acceptance is None:
@@ -90,6 +98,7 @@ class SkillLifecycleService:
     # ---- begin_trial (§9.6) -------------------------------------------------------------------
 
     def begin_trial(self, command: Mapping[str, Any], *, caller: TrustedCaller, command_id: str, run_id: str | None = None) -> dict[str, Any]:
+        self._owner_only()
         if not isinstance(caller, TrustedCaller):
             raise ArpError("AUTHORITY_SOURCE_MISSING", "skill commands need an authenticated caller")
         value = check("SkillTrialCommand", plain(command))
@@ -195,6 +204,7 @@ class SkillLifecycleService:
         certificate be tied to the evaluation (together with the Mission's idempotency key
         and the issue-after-dispatch rule in ``assurance_acceptance``); it never marks the
         evaluation as passed."""
+        self._owner_only()
 
         if not isinstance(caller, TrustedCaller):
             raise ArpError("AUTHORITY_SOURCE_MISSING", "skill commands need an authenticated caller")
@@ -281,6 +291,7 @@ class SkillLifecycleService:
                 raise ArpError("SOURCE_HASH_CONFLICT", "this evaluation was admitted under another acceptance")
 
     def admit(self, command: Mapping[str, Any], *, caller: TrustedCaller, command_id: str, run_id: str | None = None) -> cat.ActivationRow:
+        self._owner_only()
         if not isinstance(caller, TrustedCaller):
             raise ArpError("AUTHORITY_SOURCE_MISSING", "skill commands need an authenticated caller")
         value = check("SkillAdmitCommand", plain(command))
@@ -308,6 +319,7 @@ class SkillLifecycleService:
         return False
 
     def suspend(self, command: Mapping[str, Any], *, caller: TrustedCaller, command_id: str, run_id: str | None = None) -> cat.ActivationRow:
+        self._owner_only()
         if not isinstance(caller, TrustedCaller):
             raise ArpError("AUTHORITY_SOURCE_MISSING", "skill commands need an authenticated caller")
         value = check("SkillSuspendCommand", plain(command))
@@ -321,6 +333,7 @@ class SkillLifecycleService:
         return self.catalogue.transition(revision.pin, state="SUSPENDED", caller=caller, command_id=command_id, run_id=run_id)
 
     def transition(self, command: Mapping[str, Any], *, caller: TrustedCaller, command_id: str, run_id: str | None = None) -> cat.ActivationRow:
+        self._owner_only()
         if not isinstance(caller, TrustedCaller):
             raise ArpError("AUTHORITY_SOURCE_MISSING", "skill commands need an authenticated caller")
         value = check("SkillLifecycleCommand", plain(command))

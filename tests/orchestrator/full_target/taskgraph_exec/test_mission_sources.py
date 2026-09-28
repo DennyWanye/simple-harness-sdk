@@ -182,3 +182,67 @@ def test_a_review_package_of_another_purpose_is_refused(monkeypatch):
     with pytest.raises(ArpError) as refused:
         reader.bind(caller=_caller(rows["intent-r"]), role="root")
     assert refused.value.code == "REF_IDENTITY_MISMATCH" and refused.value.detail["purpose"] == "MISSION_FINAL"
+
+
+def test_the_final_judge_binds_its_judgment_view_not_an_attempt():
+    """The Mission's final-judgment Critic names a judgment view as its ``attempt_id``; the
+    reader binds that view through the orchestrator's own judge check (review finding:
+    it used to be refused as a forged Attempt and stall the loop)."""
+    mission_id = "mission-j"
+    view_id = f"{mission_id}-judge-orchestrator-1"
+    intent = SimpleNamespace(intent_id="intent-judge", mission_id=mission_id, kind="critic", subject_id=f"{mission_id}:judge:1",
+                             creation_key="k", input_id="attempt-input", input_hash="a" * 64, state="CLAIMED",
+                             config={"attempt_id": view_id, "role": None})
+    workspace = {"kind": "judge", "mission_id": mission_id, "attempt_id": None, "state": "ACTIVE", "detail": {"artifacts": ["art-1"]}}
+
+    class _Rows:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    store = SimpleNamespace(
+        read_view=nullcontext, get_intent=lambda i: intent,
+        get_mission=lambda m: SimpleNamespace(id=m, tenant_id="t", status="ACTIVE", version=1),
+        get_attempt=lambda a: None,
+        get_workspace=lambda w: workspace if w == f"{view_id}-verify" else None,
+        get_artifact=lambda a: SimpleNamespace(mission_id=mission_id, task_id="task-1"),
+        connection=SimpleNamespace(execute=lambda sql, args: _Rows([(None, None)])),
+    )
+    reader = MissionSourceReader(lambda: SimpleNamespace(store=store, commit=None))
+    sources = reader.bind(caller=_caller(intent), role="root")
+    assert sources["source_kind"] == "critic" and sources["mission_judge"] == {
+        "view_id": view_id, "task_ids": ["task-1"], "artifacts": ["art-1"]}
+    workspace["kind"] = "work"  # not a registered judgment: refused by name, not a crash
+    assert _code(lambda: reader.bind(caller=_caller(intent), role="root")) == "REF_IDENTITY_MISMATCH"
+
+
+def test_a_refused_agent_creation_stops_that_intent_only_never_the_loop(tmp_path):
+    """Review finding: a named native-plane refusal raised out of ``_dispatch`` and broke
+    every cycle.  Now the intent is noted once and the loop keeps running."""
+    async def case():
+        async with enabled_world(tmp_path, key="tg-refused-create", worker_steps=()) as world:
+            await world.commit_seed()
+            loop = world.loop
+            original = loop.bridge_for
+
+            class _Refusing:
+                def __init__(self, inner):
+                    self.inner = inner
+
+                async def create(self, **kwargs):
+                    raise ArpError("REQUEST_SOURCE_STALE", "moved")
+
+                def __getattr__(self, name):
+                    return getattr(self.inner, name)
+
+            loop.bridge_for = lambda intent: _Refusing(original(intent)) if intent.kind == "attempt" else original(intent)
+            for _ in range(4):
+                await loop._cycle()  # never raises
+            row = loop.store.connection.execute(
+                "SELECT state FROM dispatch_intents WHERE mission_id=? AND kind='attempt'", (world.mission.id,)).fetchone()
+            assert row is not None and row[0] == "CLAIMED"
+            assert len(loop._creation_refusals_noted) == 1 and world.provider.by_role.get("worker", 0) == 0
+
+    asyncio.run(case())

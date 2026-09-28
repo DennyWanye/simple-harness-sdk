@@ -34,6 +34,7 @@ from typing import Any, Callable, Mapping
 from simple_harness.agents.arp.errors import ArpError
 from simple_harness.agents.arp.mission_sources import SCHEMA
 from simple_harness.agents.arp.ports import TrustedCaller
+from simple_harness.agents.arp.strict import digest as strict_digest
 
 from ..contracts.state_machines import TERMINAL_ATTEMPT, TERMINAL_MISSION
 
@@ -143,12 +144,19 @@ class MissionSourceReader:
                 "occurrence_id": context.get("occurrence_id"), "plan_revision": context.get("plan_revision"),
             },
             "frozen_config": {k: config[k] for k in _FROZEN_CONFIG if k in config},
+            # the Agent must be created with exactly the configuration the intent froze
+            "agent_config_hash": None if not isinstance(config.get("agent_config"), Mapping) else strict_digest(dict(config["agent_config"])),
         }
         if config.get("review_package_id"):
             return {**base, **self._reviewer(store, intent)}
         if intent.kind == "attempt":
             return {**base, **self._worker(store, commit, intent)}
         if intent.kind == "critic":
+            judge = self._mission_judge(store, intent)
+            if judge is not None:
+                # the Mission's final judgment: its "attempt" is the judgment view, not an Attempt
+                return {**base, "source_kind": "critic", "mission_judge": judge,
+                        "input_manifest": {"not_applicable": "mission_judge_reads_its_judgment_view"}}
             return {**base, "source_kind": "critic", "reviewed_attempt": self._attempt_identity(store, intent, config.get("attempt_id")),
                     "input_manifest": {"not_applicable": "critic_reviews_an_attempt_result"}}
         if config.get("role") == "method_synthesizer":
@@ -159,6 +167,27 @@ class MissionSourceReader:
                     "input_manifest": {"not_applicable": "planner_has_no_worker_attempt"}}
         return {**base, "source_kind": "service",
                 "input_manifest": {"not_applicable": f"{intent.kind}_service_turn"}}
+
+    @staticmethod
+    def _mission_judge(store: Any, intent: Any) -> dict[str, Any] | None:
+        """The final-judgment Critic, validated by the orchestrator's own judge check
+        (registered judgment view + its Mission-account reservation), or None."""
+        view_id = intent.config.get("attempt_id")
+        if (not isinstance(view_id, str) or not view_id.startswith(f"{intent.mission_id}-judge-")
+                or not str(intent.subject_id).startswith(f"{intent.mission_id}:judge:")
+                or store.get_attempt(view_id) is not None):
+            return None
+        from ..orchestrator.taskgraph_dispatch import _mission_judge_tasks
+        from ..storage.store import StoreError
+
+        try:
+            task_ids = _mission_judge_tasks(store, intent, view_id)
+        except StoreError as error:
+            raise ArpError("REF_IDENTITY_MISMATCH", "the judgment view is not this Mission's registered judgment",
+                           detail={"reason": str(error)[:200]}) from error
+        workspace = store.get_workspace(f"{view_id}-verify")
+        return {"view_id": view_id, "task_ids": sorted(task_ids),
+                "artifacts": sorted(str(a) for a in workspace["detail"].get("artifacts", []))}
 
     @staticmethod
     def _attempt_identity(store: Any, intent: Any, attempt_id: Any) -> dict[str, Any]:
