@@ -485,6 +485,13 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
             ).fetchall()
         ]
         usage = self.commit._ledger.usage_flags(mission.id)
+        # NEXT-TG-1.0 §12 E5 (real forced exit, 2026-09-28): a review turn whose original
+        # provider call was cut off by a crash waits only for that call's reconciliation,
+        # which a relay that reports nothing can never answer.  Its charge is UNKNOWN and
+        # is exactly what the upper-bound rule below counts; it does not hold the judged
+        # Mission open for ever.  The intent itself is left to original recovery.
+        awaiting = self._awaiting_original_reconciliation(open_intents)
+        draining_intents = [i for i in open_intents if i not in awaiting]
         body.update(
             open_intents=open_intents[:256],
             open_reservations=open_reservations[:256],
@@ -497,7 +504,7 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
         # Before, one unknown call kept the reservation held forever and the Mission
         # sat ACTIVE with every criterion met.
         upper = self._upper_bound_plan(mission.id, open_reservations) if (
-            not reasons and not unknown_effects and not open_intents
+            not reasons and not unknown_effects and not draining_intents
             and (open_reservations or not usage["usage_fully_known"])
         ) else None
         if upper is not None:
@@ -508,9 +515,9 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
             body.update(state="BLOCKED_UNKNOWN", reasons=["EFFECT_UNKNOWN"])
         elif upper is not None:
             body.update(state="READY", reasons=[])
-        elif open_intents or open_reservations or not usage["usage_fully_known"]:
+        elif draining_intents or open_reservations or not usage["usage_fully_known"]:
             draining = []
-            if open_intents:
+            if draining_intents:
                 draining.append("OPEN_INTENTS")
             if open_reservations:
                 draining.append("OPEN_RESERVATIONS")
@@ -520,6 +527,22 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
         else:
             body.update(state="READY", reasons=[])
         return body
+
+    def _awaiting_original_reconciliation(self, open_intents: list[str]) -> set[str]:
+        """Open review intents whose only wait is an unanswerable original provider call:
+        still SUBMITTED, recorded as ``AssuranceProviderReconciliationRequired`` (the turn
+        was stopped, nothing is reissued), and their subject's charge is UNKNOWN."""
+        awaiting: set[str] = set()
+        for intent_id in open_intents:
+            intent = self.store.get_intent(intent_id)
+            if intent is None or intent.state != "SUBMITTED":
+                continue
+            recorded = self.store.connection.execute(
+                "SELECT 1 FROM commit_receipts WHERE kind='AssuranceProviderReconciliationRequired' "
+                "AND subject_id=? LIMIT 1", (intent_id,)).fetchone()
+            if recorded is not None and self.commit._ledger.has_unknown_usage(intent.subject_id):
+                awaiting.add(intent_id)
+        return awaiting
 
     def _upper_bound_plan(self, mission_id: str, open_reservations: list[str]) -> dict | None:
         """The subjects to count at their upper bound, or None when anything else drains.

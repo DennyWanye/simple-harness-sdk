@@ -89,3 +89,41 @@ def test_a_resume_under_new_code_re_evaluates_the_closeout():
     from agent_orchestrator.orchestrator.assurance_consumers import CLOSEOUT_SOURCE_EVENTS
 
     assert "PolicyInterpreterDrift" in CLOSEOUT_SOURCE_EVENTS
+
+
+def test_a_review_waiting_only_for_an_unanswerable_original_call_does_not_hold_the_closeout(tmp_path):
+    """Real forced exit (2026-09-28): the backend was killed while a content review's model
+    call was in flight.  After restart the review was recorded as waiting for original-call
+    reconciliation (nothing reissued), the Task was redone and the Mission judged — but the
+    SUBMITTED review intent kept the closeout DRAINING for ever.  Such an intent is exempt
+    from the drain when its charge is UNKNOWN; its charge is counted at the upper bound."""
+    from agent_orchestrator.storage.store import DispatchIntent
+
+    store, commit, mission = _world(tmp_path)
+    ledger = commit._ledger
+
+    def intent(key: str, state: str) -> str:
+        store.insert_intent(DispatchIntent(
+            intent_id=f"intent-{key}", kind="critic", subject_id=f"subject-{key}", mission_id=mission.id,
+            state=state, version=1, creation_key=key, input_id="in", input_hash="a" * 64, config={},
+            expected_turn_id="turn", agent_id="agent", receipt=None, lease_owner=None, lease_expires_at=None,
+            replays=0, created_at=store.now))
+        return f"intent-{key}"
+
+    def waiting(intent_id: str) -> None:
+        store.insert_receipt(commit_id="assurance-provider-wait:" + intent_id, kind="AssuranceProviderReconciliationRequired",
+                             subject_id=intent_id, base_version=0, proposal_hash="0" * 64, receipt={"intent_id": intent_id})
+
+    cut_off, no_record, known, claimed = (intent("cut", "SUBMITTED"), intent("plain", "SUBMITTED"),
+                                          intent("known", "SUBMITTED"), intent("claimed", "CLAIMED"))
+    for i in (cut_off, known, claimed):
+        waiting(i)
+    with store.transaction():
+        for key in ("cut", "plain", "claimed"):
+            ledger.reserve(account_id=f"budget:{mission.id}", subject_id=f"subject-{key}", tokens=5_000, cost_micros=0, counts_attempt=False)
+            ledger.import_usage(subject_id=f"subject-{key}", mission_id=mission.id, facts=[UsageFact(f"call-{key}", 0, 0, 0, unknown=True)])
+        ledger.reserve(account_id=f"budget:{mission.id}", subject_id="subject-known", tokens=5_000, cost_micros=0, counts_attempt=False)
+    fake = SimpleNamespace(commit=commit, store=store)
+    awaiting = AssuranceCloseoutConsumer._awaiting_original_reconciliation(fake, [cut_off, no_record, known, claimed])
+    assert awaiting == {cut_off}  # recorded wait + UNKNOWN charge + still SUBMITTED, nothing else
+    store.close()
