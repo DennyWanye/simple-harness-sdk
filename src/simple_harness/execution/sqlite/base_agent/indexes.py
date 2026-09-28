@@ -286,16 +286,34 @@ def settle_index_job(
 def journal_rows_missing_fts(
     connection: sqlite3.Connection, *, limit: int
 ) -> tuple[tuple[str, int, str], ...]:
-    """``(agent_id, seq, message_json)`` of indexable rows with no trigram FTS row."""
+    """``(agent_id, seq, message_json)`` of indexable rows with no trigram FTS row.
 
-    rows = connection.execute(
-        "SELECT j.agent_id, j.seq, j.message_json FROM base_agent_session_journal_v1 j "
-        "WHERE j.kind IN ('user_input','assistant','tool_result') AND NOT EXISTS ("
-        f"SELECT 1 FROM {FTS_TRIGRAM} f WHERE f.agent_id=j.agent_id AND f.seq=j.seq) "
-        "ORDER BY j.agent_id, j.seq LIMIT ?",
-        (int(limit),),
-    ).fetchall()
-    return tuple((str(r[0]), int(r[1]), str(r[2])) for r in rows)
+    The FTS columns are UNINDEXED, so a correlated ``NOT EXISTS`` scanned the whole FTS
+    table once per Journal row (2026-09-28 真机：7 千行 1.6–11 秒，每 5 秒一次).  One pass
+    over each table and a set difference give the same rows in the same order.
+    """
+
+    indexed = {
+        (str(agent_id), int(seq))
+        for agent_id, seq in connection.execute(f"SELECT agent_id, seq FROM {FTS_TRIGRAM}")
+    }
+    missing: list[tuple[str, int]] = []
+    for agent_id, seq in connection.execute(
+        "SELECT agent_id, seq FROM base_agent_session_journal_v1 "
+        "WHERE kind IN ('user_input','assistant','tool_result') ORDER BY agent_id, seq"
+    ):
+        if (str(agent_id), int(seq)) not in indexed:
+            missing.append((str(agent_id), int(seq)))
+            if len(missing) >= int(limit):
+                break
+    rows = []
+    for agent_id, seq in missing:
+        body = connection.execute(
+            "SELECT message_json FROM base_agent_session_journal_v1 WHERE agent_id=? AND seq=?",
+            (agent_id, seq),
+        ).fetchone()
+        rows.append((agent_id, seq, str(body[0])))
+    return tuple(rows)
 
 
 def index_errors(
