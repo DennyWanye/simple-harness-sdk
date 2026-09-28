@@ -27,6 +27,9 @@ _MODEL_TURN_CODES = frozenset({
     "tool_not_exposed", "tool_not_exposed_for_agent", "invalid_tool_arguments",
 })
 _INFRA_TURN_KINDS = frozenset({"provider_unavailable", "provider_error"})
+# 单轮墙钟超时：2026-09-29 真机第八局，应用停机/重启期间这一轮的时限走完，重启后报超时。
+# 这不是模型把内容做错；按被打断处理（原地重做、不扣次数、同一步合计有上限）。
+_INTERRUPTED_TURN_CODES = frozenset({"react_wall_clock_exceeded"})
 _INTERRUPTED_REASONS = frozenset({
     "executor_stalled", "executor_turn_missing", "executor_agent_missing",
     "provider_outcome_unknown",
@@ -59,6 +62,8 @@ def classify_failure(failure: Mapping[str, Any] | None) -> str:
         error = error if isinstance(error, Mapping) else {}
         if error.get("error_code") in _MODEL_TURN_CODES:
             return MODEL
+        if error.get("error_code") in _INTERRUPTED_TURN_CODES:
+            return INTERRUPTED
         if failure.get("error_kind") in _INFRA_TURN_KINDS or error.get("source_kind") == "tool_parse":
             return INFRA
         return MODEL
