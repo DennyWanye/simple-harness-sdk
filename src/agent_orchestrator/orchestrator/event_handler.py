@@ -9574,11 +9574,16 @@ class Orchestrator:
         # on the same Attempt rather than a wrong artifact bound downstream.
         claims = self._port_claims_from(raw, attempt)
         if isinstance(raw.get("artifacts"), list):
-            from ..runtime.action_schema import with_candidate_targets
+            from ..runtime.action_schema import with_candidate_targets, with_system_candidate
 
-            raw["artifacts"] = with_candidate_targets(
-                raw["artifacts"], self.assembled.workspaces.get(attempt.id)
-            )
+            workspace = self.assembled.workspaces.get(attempt.id)
+            task = self.store.get_task(attempt.task_id)
+            mission = self.store.get_mission(attempt.mission_id)
+            if task is not None and mission is not None:
+                raw["artifacts"] = with_system_candidate(
+                    raw["artifacts"], workspace, self._worker_action_contract(mission, task)
+                )
+            raw["artifacts"] = with_candidate_targets(raw["artifacts"], workspace)
         client_ids = {raw.get("id"), raw.get("result_id")} - {None}
         if len(client_ids) > 1:
             raise ContractError("result carries both id and result_id with different values")
@@ -10376,6 +10381,19 @@ class Orchestrator:
         from ..runtime.action_schema import declared_action_outputs
 
         return declared_action_outputs(self.store, mission.id, task)
+
+    def _worker_action_contract(self, mission: Mission, task: Task) -> dict[str, Any] | None:
+        """What the Worker is told about operation candidates, and whether the system
+        writes the candidate itself (the same answer for its package and its result)."""
+        from ..runtime.action_schema import worker_action_contract
+
+        return worker_action_contract(
+            mission_criteria=mission.success_criteria,
+            task_criteria=task.success_criteria,
+            task_outputs=self._action_candidate_outputs(mission, task),
+            connectors=self._connectors,
+            deployment=self._config.deployment_policy,
+        )
 
     def _revises_its_inputs(self, mission_id: str, task_id: str) -> bool:
         """Every declared input port is also an output port of the same schema."""
@@ -13910,8 +13928,6 @@ class Orchestrator:
                 or not _under_source_root(path, source_binding["source_roots"])
             ]
         try:
-            from ..runtime.action_schema import worker_action_contract
-
             package = build_worker_package(
                 mission,
                 task,
@@ -13936,15 +13952,7 @@ class Orchestrator:
                 role=role.name,
                 domain=self.commit.domain_for(mission.id),
                 source_versions=source_versions,
-                action_candidate_contract=(
-                    worker_action_contract(
-                        mission_criteria=mission.success_criteria,
-                        task_criteria=task.success_criteria,
-                        task_outputs=self._action_candidate_outputs(mission, task),
-                        connectors=self._connectors,
-                        deployment=self._config.deployment_policy,
-                    )
-                ),
+                action_candidate_contract=self._worker_action_contract(mission, task),
             )
         except ContextRejected as error:
             self._commit_stop_task(
