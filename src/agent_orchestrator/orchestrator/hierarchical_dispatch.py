@@ -5053,6 +5053,20 @@ class HierarchicalDispatch:
         # complete — each by its real producer, artifact id and hash.  The nearest
         # version of a path wins; ORDER-only predecessors still contribute nothing.
         occupied = {item.path for item in overlaid}
+        # 2026-09-29 真机第十一局：接力型上游一步写出三个文件、全部通过核验，端口只选了
+        # README.md，上面只补原工作区文件和测试文件，wordfreq.py 被丢掉，下一步找不到模块。
+        # 接力型上游交付的是它通过核验的全部文件（操作申请单除外）。
+        own: list[UpstreamInput] = []
+        for task_id in dict.fromkeys(item.task_id for item in inputs):
+            if task_id in read_only or not _is_continuation(
+                    self.semantics().task_semantics_of(mission_id, task_id)):
+                continue
+            for artifact in artifacts[task_id]:
+                if artifact.path in occupied or artifact.path.startswith("actions/"):
+                    continue
+                occupied.add(artifact.path)
+                own.append(UpstreamInput(task_id, artifact.path, artifact.content_hash, artifact.id))
+        overlaid = sorted([*overlaid, *own], key=lambda entry: entry.path)
         carried: dict[str, UpstreamInput] = {}
         for task_id in dict.fromkeys(item.task_id for item in inputs):
             for item in self.carried_inputs(mission_id, task_id):
@@ -5571,6 +5585,14 @@ __all__ = (
 )
 
 
+def _is_continuation(semantic: Any) -> bool:
+    """Every input port is also an output port (e.g. ``desktop.continue-delivery``)."""
+    if semantic is None or not semantic.input_ports:
+        return False
+    outputs = {(port.port_key, port.schema_ref) for port in semantic.output_ports}
+    return all((port.port_key, port.schema_ref) in outputs for port in semantic.input_ports)
+
+
 def carried_inputs(store: Any, mission_id: str, producer_task_id: str) -> list[UpstreamInput]:
     """What a continuation producer's accepted Attempt received, re-verified.
 
@@ -5579,11 +5601,7 @@ def carried_inputs(store: Any, mission_id: str, producer_task_id: str) -> list[U
     own producer accepted, with the same path and content hash; anything else
     (a candidate's selection material, a later-rejected file) is not carried.
     """
-    semantic = HtnStore(store).task_semantics_of(mission_id, producer_task_id)
-    if semantic is None or not semantic.input_ports:
-        return []
-    outputs = {(port.port_key, port.schema_ref) for port in semantic.output_ports}
-    if not all((port.port_key, port.schema_ref) in outputs for port in semantic.input_ports):
+    if not _is_continuation(HtnStore(store).task_semantics_of(mission_id, producer_task_id)):
         return []
     producer = store.get_task(producer_task_id)
     if producer is None or producer.mission_id != mission_id or not producer.accepted_result_id:

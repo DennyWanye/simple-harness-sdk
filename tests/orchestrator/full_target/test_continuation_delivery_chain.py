@@ -79,7 +79,8 @@ def continuation(monkeypatch):
             inputs = kinds.get(task_id)
             if inputs is None:
                 return None
-            return SimpleNamespace(input_ports=inputs, output_ports=(_port("delivery"),))
+            return SimpleNamespace(input_ports=inputs, output_ports=(_port("delivery"),),
+                                   side_effect_kind=None)
 
     monkeypatch.setattr(hd, "HtnStore", _Htn)
 
@@ -304,3 +305,32 @@ def test_an_undeclared_file_under_actions_is_policed_only_when_it_claims_an_acti
     assert [p for p in problems_for("actions/sneaky.json") if "not a declared output" in p]
     assert claims_an_action(b"{not json") and claims_an_action(b"[1]")
     assert not claims_an_action(b'{"note": "x"}')
+
+
+def test_a_continuation_producer_hands_on_every_file_it_had_accepted(continuation):
+    """2026-09-29 真机第十一局：写文件那一步一次写出 README.md / test_wordfreq.py /
+    wordfreq.py 并全部通过核验，端口只选了 README.md；交接时只补"原工作区文件和测试
+    文件"，wordfreq.py 被丢掉，下一步跑 pytest 找不到模块，整局失败。接力型上游通过
+    核验的全部文件都要交给下一步；非接力型上游仍只给端口文件（ORDER/DATA 规则不变）。
+
+    **Mutation**: drop the own-accepted-files pass in ``overlay_attempt_inputs`` → red."""
+    store = _Store()
+    store.artifacts.update({
+        "a-readme": _artifact("t-tests", "README.md", "3" * 64, "a-readme"),
+        "a-mod2": _artifact("t-tests", "wordfreq.py", "4" * 64, "a-mod2"),
+        "a-act": _artifact("t-tests", "actions/action_candidate.json", "5" * 64, "a-act"),
+    })
+    store.tasks["t-tests"].accepted_artifacts = ("a-tests", "a-readme", "a-mod2", "a-act")
+    store.get_mission = lambda mission_id: SimpleNamespace(final_report={})
+    fake = SimpleNamespace(store=store, carried_inputs=lambda mission_id, task_id: hd.carried_inputs(
+        store, mission_id, task_id), semantics=lambda: hd.HtnStore(store))
+    port = [UpstreamInput("t-tests", "README.md", "3" * 64, "a-readme")]
+    got = hd.HierarchicalDispatch.overlay_attempt_inputs(fake, M, port)
+    assert [(item.task_id, item.path) for item in got] == [
+        ("t-tests", "README.md"), ("t-module", "slugify.py"),
+        ("t-tests", "test_slugify.py"), ("t-tests", "wordfreq.py")]
+    # 非接力型上游（没有输入端口）：只有端口文件与测试文件，新写的其他文件不交接
+    store.artifacts["a-extra"] = _artifact("t-module", "notes.md", "6" * 64, "a-extra")
+    store.tasks["t-module"].accepted_artifacts = ("a-module", "a-extra")
+    only = [UpstreamInput("t-module", "slugify.py", "1" * 64, "a-module")]
+    assert [item.path for item in hd.HierarchicalDispatch.overlay_attempt_inputs(fake, M, only)] == ["slugify.py"]
