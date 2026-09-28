@@ -3116,7 +3116,8 @@ class HierarchicalDispatch:
         if statements:
             request = replace(request, criterion_evidence=tuple(
                 {"id": item["id"],
-                 "evidence_requirement": statements.get(item["id"], item["evidence_requirement"])}
+                 "evidence_requirement": (synthesis_statement(statements[item["id"]])
+                                          if item["id"] in statements else item["evidence_requirement"])}
                 for item in request.criterion_evidence))
         fresh_id = "synth-" + content_hash_of({"goal_task_id": str(goal_task_id)})[:24]
         occupied = [int(item.contract.method_version) for item in self.semantics().list_methods()
@@ -5583,6 +5584,22 @@ __all__ = (
     "record_assembly_missing",
     "root_not_identified",
 )
+
+
+def synthesis_statement(statement: str) -> str:
+    """A criterion's text as the method synthesiser reads it.
+
+    2026-09-29 第十三局：合成器不知道发布由系统做（只在打回时才说），给写文件的步骤都写了
+    "在发布目录中给出落点路径"、又自设了发布步骤，审阅员照这句把写模块那步判不通过。
+    ``file:``/``action:`` 要求的原文后面附一句谁负责。
+    """
+    if statement.startswith("action:"):
+        return (statement + "（操作要求：内容全部通过后由系统执行，不属于任何步骤；不要为它单独设步骤，"
+                "也不要在任何步骤的 evidence_requirement 里要求发布结果、发布目录或落点路径）")
+    if statement.startswith("file:"):
+        return (statement + "（在任务工作区写出这个文件即满足；发布由系统完成，evidence_requirement "
+                "不要写发布目录或落点路径）")
+    return statement
 
 
 def _is_continuation(semantic: Any) -> bool:

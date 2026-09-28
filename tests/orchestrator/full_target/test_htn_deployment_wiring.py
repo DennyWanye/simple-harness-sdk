@@ -878,7 +878,7 @@ def test_each_criterion_id_is_shown_with_its_own_statement(synth: SynthWorld) ->
             criterion_id=known,
             revision=1,
             origin=CriterionOrigin.USER_EXPLICIT,
-            statement="file:wordfreq.py",
+            statement="wordfreq.py 定义 top_words(text, n)",
             requirement_class=RequirementClass.REQUIRED_OUTCOME,
             evaluation_kind=EvaluationKind.SEMANTIC,
         ),),
@@ -886,9 +886,42 @@ def test_each_criterion_id_is_shown_with_its_own_statement(synth: SynthWorld) ->
     ))
     after = {item["id"]: item["evidence_requirement"]
              for item in synth.dispatch.synthesis_request(synth.mission.id, "task-root").criterion_evidence}
-    assert after[known] == "file:wordfreq.py"
+    assert after[known] == "wordfreq.py 定义 top_words(text, n)"
     old = {item["id"]: item["evidence_requirement"] for item in before.criterion_evidence}
     assert all(after[item] == old[item] for item in unknown)
+
+
+def test_file_and_operation_criteria_say_publishing_is_the_systems(synth: SynthWorld) -> None:
+    """2026-09-29 第十三局：合成器不知道发布由系统做（只在打回时才说），给写模块、写
+    README 的步骤都写了"在发布目录中给出落点路径"，又自设了发布步骤；审阅员照这句判
+    写模块那步不通过，连败两次后向人要发布目录。file:/action: 要求原文后面附上说明。
+
+    **Mutation**: drop either note, or stop applying it in ``synthesis_request`` → red."""
+    from agent_orchestrator.contracts.resolution import (
+        AllExpr, Criterion, CriterionExpr, CriterionOrigin, EvaluationKind,
+        RequirementClass, RequirementsRevision,
+    )
+    from agent_orchestrator.orchestrator.hierarchical_dispatch import synthesis_statement
+
+    file_note = synthesis_statement("file:wordfreq.py")
+    assert file_note.startswith("file:wordfreq.py") and "发布由系统完成" in file_note
+    action_note = synthesis_statement("action:file_publish.publish:wordfreq.py")
+    assert action_note.startswith("action:file_publish.publish:wordfreq.py")
+    assert "由系统执行" in action_note and "不要为它单独设步骤" in action_note
+    assert synthesis_statement("README 说明用法") == "README 说明用法"
+
+    key = synth.dispatch.synthesis_request(synth.mission.id, "task-root").criterion_evidence[0]["id"]
+    HtnStore(synth.service.store).insert_requirements_revision(RequirementsRevision(
+        revision_id="requirements-1",  # type: ignore[arg-type]
+        mission_id=synth.mission.id, revision=1,
+        criteria=(Criterion(
+            criterion_id=key, revision=1, origin=CriterionOrigin.USER_EXPLICIT,
+            statement="file:wordfreq.py", requirement_class=RequirementClass.REQUIRED_OUTCOME,
+            evaluation_kind=EvaluationKind.SEMANTIC),),
+        success_expression=AllExpr((CriterionExpr(key),)),
+    ))
+    shown = synth.dispatch.synthesis_request(synth.mission.id, "task-root").criterion_evidence[0]
+    assert shown["evidence_requirement"] == file_note
 
 
 def test_an_unusable_capability_is_reported_as_unavailable(synth: SynthWorld) -> None:
