@@ -33,6 +33,14 @@ from simple_harness.providers import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _recheck_ended_missions_every_cycle(monkeypatch):
+    # 这里测的是"迟到的用量能否导入"；已结束任务每 5 分钟才重核一次的节流另有测试
+    # （test_late_accounting_quiet.py），此处关掉节流，每轮都核。
+    from agent_orchestrator.orchestrator import accounting_recovery
+    monkeypatch.setattr(accounting_recovery, "ENDED_MISSION_RECHECK_SECONDS", 0.0)
+
+
 def open_orch(root, provider):
     return Orchestrator(
         OrchestratorConfig(evidence_root=root),

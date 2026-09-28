@@ -5,6 +5,7 @@ produce that evidence elsewhere; no provider observation/dispatch occurs here.
 Terminal business records are deliberately not an admission prerequisite.
 """
 
+import time
 from collections.abc import Mapping
 
 from simple_harness import RunId
@@ -19,7 +20,12 @@ from simple_harness.execution.uow import UnitOfWorkConflict
 from ..contracts.models import jsonable, sha256_hex
 from ..governance.budgets import BudgetError, UsageFact
 from ..governance.provider_prices import ProviderPrice
+from ..contracts.state_machines import TERMINAL_MISSION
 from ..runtime.planning_operations import SourceUnavailable
+from ..runtime.provider_budget_guard import ProviderBudgetGuard
+
+# 已结束任务的旧预留/旧授权多久重核一次（秒）。
+ENDED_MISSION_RECHECK_SECONDS = 300.0
 
 
 def _require(condition, message):
@@ -179,6 +185,15 @@ def import_late_accounting(orch) -> bool:
     store = orch.store
     if not store.has_table("provider_token_grants"):
         return False
+    # 2026-09-28 真机（第四轮）：运行中每轮都有写入，下面的"安静代次"永远不成立，已结束
+    # 任务留下的几十个"用量未知"旧预留与旧授权每轮仍被完整重核一遍。它们不会再有新调用，
+    # 只可能等到迟到的对账记录：每 5 分钟重核一次；未结束任务的照旧每轮都核。
+    now = time.monotonic()
+    last_full = getattr(orch, "_late_accounting_ended_at", None)
+    full = last_full is None or now - last_full >= ENDED_MISSION_RECHECK_SECONDS
+    live = None if full else _live_missions(store)
+    if full:
+        orch._late_accounting_ended_at = now
     # Guard recovery reads effective receipts and validates original price. An
     # actual overrun is committed before it raises; its real cost must still be
     # imported. Other failures stay fail-closed and are checked per subject below.
@@ -186,61 +201,85 @@ def import_late_accounting(orch) -> bool:
         guard = pool.bridge.runtime.ports.provider_admission
         if guard is not None:
             try:
-                guard.recover(pool.bridge.runtime.uow)
+                if live is not None and isinstance(guard, ProviderBudgetGuard):
+                    guard.recover(pool.bridge.runtime.uow, missions=live)
+                else:
+                    guard.recover(pool.bridge.runtime.uow)
             except (ProviderAdmissionDenied, UnitOfWorkConflict) as error:
                 orch._note(f"accounting grant recovery: {error}")
     # 2026-09-28 真机：几十个"用量未知、按上限预留"的旧调用每轮都被完整重读一遍（约三成
     # CPU），而它们的事实只来自编排库与各执行池库。两边都没有任何写入时结果必然相同，跳过；
-    # 本轮自己写过库（导入了用量）就不记代次，下一轮照常重读。
+    # 本轮自己写过库（导入了用量）就不记代次，下一轮照常重读。只核了未结束任务的一轮不能
+    # 证明已结束任务的结果不变，所以"全量安静"单独记。
     generation = _holds_generation(orch)
-    quiet = generation is not None and generation == getattr(orch, "_late_accounting_quiet", None)
+    marker = "_late_accounting_full_quiet" if full else "_late_accounting_quiet"
+    quiet = generation is not None and generation == getattr(orch, marker, None)
     rows = () if quiet else _open_holds(store)
+    if live is not None:
+        rows = [row for row in rows if row[1] in live]
     progressed = False
     for row in rows:
-        try:
-            with store.transaction():
-                intent = store.get_intent(row[0])
-                reservation = orch.commit.ledger.reservation(intent.subject_id)
-                if reservation is None or reservation["state"] == "SETTLED":
-                    continue
-                from .taskgraph_dispatch import taskgraph_enabled
-                graph_enabled = taskgraph_enabled(store, intent.mission_id)
-                from ..storage.assurance_store import AssuranceStore
-                assured = AssuranceStore(store).lane(intent.mission_id) == "ASSURANCE_1_1"
-                # TaskGraph can also prove a request never materialized. Legacy
-                # unguarded intents retain their historical recovery path.
-                if not graph_enabled and not assured and not intent.config.get("provider_admission_fingerprint"):
-                    continue
-                bridge = orch.bridge_for(intent)  # exact persisted pool; never fallback
-                if graph_enabled or assured:
-                    from .taskgraph_runtime_imports import TaskGraphRuntimeImports
-                    source = TaskGraphRuntimeImports(orch).read_subject(intent)
-                    facts, complete, task_id = source.usage, source.accounting_complete, source.task_id
-                else:
-                    if intent.agent_id is None or intent.expected_turn_id is None:
-                        continue
-                    facts, complete, task_id = _facts(orch.commit, bridge, intent, reservation)
-                imported = orch.commit.import_usage(intent.subject_id, intent.mission_id, facts)
-                settled = (complete and (not (graph_enabled or assured) or source.physical_settled)
-                           and not orch.commit.ledger.has_unknown_usage(intent.subject_id))
-                if settled:
-                    orch.commit._settle_subject(
-                        intent.subject_id, intent.mission_id, task_id=task_id)
-                progressed = progressed or bool(imported) or settled
-        except (BudgetError, ValueError, KeyError, TypeError, UnitOfWorkConflict, SourceUnavailable) as error:
-            orch._note(f"accounting subject {row[0]} held: {error}")
+        progressed = _import_hold(orch, row[0]) or progressed
     after = _holds_generation(orch)
-    orch._late_accounting_quiet = after if after is not None and after == generation else None
+    unchanged = after if after is not None and after == generation else None
+    orch._late_accounting_quiet = unchanged
+    if full:
+        orch._late_accounting_full_quiet = unchanged
     from .taskgraph_action_settlement import settle_resolved_actions
     return settle_resolved_actions(orch) or progressed
 
 
+def _import_hold(orch, intent_id: str) -> bool:
+    store = orch.store
+    try:
+        with store.transaction():
+            intent = store.get_intent(intent_id)
+            reservation = orch.commit.ledger.reservation(intent.subject_id)
+            if reservation is None or reservation["state"] == "SETTLED":
+                return False
+            from .taskgraph_dispatch import taskgraph_enabled
+            graph_enabled = taskgraph_enabled(store, intent.mission_id)
+            from ..storage.assurance_store import AssuranceStore
+            assured = AssuranceStore(store).lane(intent.mission_id) == "ASSURANCE_1_1"
+            # TaskGraph can also prove a request never materialized. Legacy
+            # unguarded intents retain their historical recovery path.
+            if not graph_enabled and not assured and not intent.config.get("provider_admission_fingerprint"):
+                return False
+            bridge = orch.bridge_for(intent)  # exact persisted pool; never fallback
+            if graph_enabled or assured:
+                from .taskgraph_runtime_imports import TaskGraphRuntimeImports
+                source = TaskGraphRuntimeImports(orch).read_subject(intent)
+                facts, complete, task_id = source.usage, source.accounting_complete, source.task_id
+            else:
+                if intent.agent_id is None or intent.expected_turn_id is None:
+                    return False
+                facts, complete, task_id = _facts(orch.commit, bridge, intent, reservation)
+            imported = orch.commit.import_usage(intent.subject_id, intent.mission_id, facts)
+            settled = (complete and (not (graph_enabled or assured) or source.physical_settled)
+                       and not orch.commit.ledger.has_unknown_usage(intent.subject_id))
+            if settled:
+                orch.commit._settle_subject(
+                    intent.subject_id, intent.mission_id, task_id=task_id)
+            return bool(imported) or settled
+    except (BudgetError, ValueError, KeyError, TypeError, UnitOfWorkConflict, SourceUnavailable) as error:
+        orch._note(f"accounting subject {intent_id} held: {error}")
+        return False
+
+
 def _open_holds(store) -> list:
     return store.connection.execute(
-        "SELECT i.intent_id FROM dispatch_intents i JOIN budget_reservations r"
+        "SELECT i.intent_id, i.mission_id FROM dispatch_intents i JOIN budget_reservations r"
         " ON r.subject_id=i.subject_id WHERE r.state='RESERVED'"
         " AND i.state IN ('SETTLED','FAILED') ORDER BY i.created_at",
     ).fetchall()
+
+
+def _live_missions(store) -> frozenset[str]:
+    ended = sorted(str(status) for status in TERMINAL_MISSION)
+    return frozenset(row[0] for row in store.connection.execute(
+        f"SELECT mission_id FROM missions WHERE status NOT IN ({','.join('?' * len(ended))})",
+        ended,
+    ).fetchall())
 
 
 def _connection_generation(connection) -> tuple[int, int, int] | None:

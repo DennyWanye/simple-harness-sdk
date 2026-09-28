@@ -939,7 +939,8 @@ class ProviderBudgetGuard:
             or lease.expires_at <= self._clock()
         )
 
-    def recover(self, uow) -> None:
+    def recover(self, uow, *, missions: frozenset[str] | None = None) -> None:
+        """``missions`` narrows this pass to those Missions' grants; None is every grant."""
         # Read and fence in Orch -> SDK order; no remote reconciliation under this lock.
         overrun = False
         with self.store.transaction():
@@ -948,6 +949,8 @@ class ProviderBudgetGuard:
                 " WHERE state IN ('RESERVED','HANDED_OFF','UNKNOWN')"
                 " OR (state='RELEASED' AND actual_tokens IS NULL)"
             ).fetchall()
+            if missions is not None:
+                rows = [row for row in rows if row["mission_id"] in missions]
             for row in rows:
                 binding = uow.read_agent_binding(row["agent_id"])
                 if binding is None:
