@@ -494,3 +494,30 @@ def test_frozen_request_resume_does_not_re_run_recall(tmp_path):
             assert selections_after == selections_before
 
     asyncio.run(case())
+
+
+def test_empty_rows_are_indexed_once_and_never_rescanned(tmp_path):
+    """2026-09-28 真机：模型只调工具、正文为空的助手行永远拿不到全文索引行，每 5 秒的补建
+    都整表扫描（7 千行 1.6 秒）返回同一批 64 行，后台 CPU 长期满载；检索也误报 fts_partial。"""
+
+    async def case():
+        provider = ScriptedProvider([("session_history_read", {"from_seq": 1, "page_size": 2}), "好了"])
+        async with build_agent_runtime(_ports(tmp_path, provider)) as runtime:
+            agent = await runtime.create(_config(tools=("session_history_read",)), creation_key="empty")
+            await agent.ask("只调用工具", input_id="i1", timeout=5)
+            uow = runtime.uow
+            empty = _rows(uow, "SELECT seq FROM base_agent_session_journal_v1 WHERE agent_id=? "
+                          "AND kind='assistant' AND json_extract(message_json,'$.content')=''", agent.agent_id)
+            assert empty, "fixture must produce an empty assistant row"
+            assert uow.agent_journal_rows_missing_fts(limit=64) == ()
+            assert "fts_partial" not in runtime.retriever.search_sync(agent.agent_id, "工具", limit=5).degradations
+            # 旧库里没有索引行的空行：补建一次后清零，不再每轮重扫
+            connection = uow.database.connection
+            for table in ("base_agent_journal_fts_trigram", "base_agent_journal_fts_words"):
+                connection.execute(f"DELETE FROM {table} WHERE agent_id=?", (agent.agent_id,))
+            connection.commit()
+            assert uow.agent_journal_rows_missing_fts(limit=64)
+            await runtime.index_pending()
+            assert uow.agent_journal_rows_missing_fts(limit=64) == ()
+
+    asyncio.run(case())

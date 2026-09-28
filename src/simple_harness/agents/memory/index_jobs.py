@@ -72,9 +72,12 @@ class SessionIndexer:
             if record.kind not in INDEXABLE_KINDS:
                 continue
             text = record_text(record)
-            if self._fts and text:
+            if self._fts:
+                # An empty row (a tool-call-only turn) still gets its (empty) FTS row: it
+                # matches nothing, but without it the backfill below finds the same rows
+                # "missing" for ever and rescans the whole Journal every interval.
                 self._uow.index_agent_journal_fts(
-                    agent_id=record.agent_id, seq=record.seq, text=text
+                    agent_id=record.agent_id, seq=record.seq, text=text or ""
                 )
             if self._embedding is not None and text:
                 self._uow.enqueue_agent_index_job(
@@ -100,9 +103,9 @@ class SessionIndexer:
             for agent_id, seq, message_json in self._uow.agent_journal_rows_missing_fts(
                 limit=limit
             ):
-                text = _text_of_json(message_json)
-                if text:
-                    self._uow.index_agent_journal_fts(agent_id=agent_id, seq=seq, text=text)
+                self._uow.index_agent_journal_fts(
+                    agent_id=agent_id, seq=seq, text=_text_of_json(message_json) or ""
+                )
         if self._embedding is None:
             if backfill_due:
                 self._last_backfill = now
