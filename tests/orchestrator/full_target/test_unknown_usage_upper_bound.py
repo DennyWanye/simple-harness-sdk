@@ -91,20 +91,28 @@ def test_a_resume_under_new_code_re_evaluates_the_closeout():
     assert "PolicyInterpreterDrift" in CLOSEOUT_SOURCE_EVENTS
 
 
+def _consumer(commit, store):
+    consumer = AssuranceCloseoutConsumer.__new__(AssuranceCloseoutConsumer)
+    consumer.commit, consumer.store = commit, store
+    return consumer
+
+
 def test_a_review_waiting_only_for_an_unanswerable_original_call_does_not_hold_the_closeout(tmp_path):
     """Real forced exit (2026-09-28): the backend was killed while a content review's model
     call was in flight.  After restart the review was recorded as waiting for original-call
     reconciliation (nothing reissued), the Task was redone and the Mission judged — but the
-    SUBMITTED review intent kept the closeout DRAINING for ever.  Such an intent is exempt
-    from the drain when its charge is UNKNOWN; its charge is counted at the upper bound."""
+    SUBMITTED review intent kept the closeout DRAINING (21 minutes, until another restart
+    let recovery fail it).  Such an intent no longer holds a judged Mission open when its
+    charge is UNKNOWN; the charge is counted at the upper bound.  Goes through the same
+    decision ``_evaluate_locked`` uses."""
     from agent_orchestrator.storage.store import DispatchIntent
 
     store, commit, mission = _world(tmp_path)
     ledger = commit._ledger
 
-    def intent(key: str, state: str) -> str:
+    def intent(key: str, state: str = "SUBMITTED", kind: str = "critic") -> str:
         store.insert_intent(DispatchIntent(
-            intent_id=f"intent-{key}", kind="critic", subject_id=f"subject-{key}", mission_id=mission.id,
+            intent_id=f"intent-{key}", kind=kind, subject_id=f"subject-{key}", mission_id=mission.id,
             state=state, version=1, creation_key=key, input_id="in", input_hash="a" * 64, config={},
             expected_turn_id="turn", agent_id="agent", receipt=None, lease_owner=None, lease_expires_at=None,
             replays=0, created_at=store.now))
@@ -114,16 +122,60 @@ def test_a_review_waiting_only_for_an_unanswerable_original_call_does_not_hold_t
         store.insert_receipt(commit_id="assurance-provider-wait:" + intent_id, kind="AssuranceProviderReconciliationRequired",
                              subject_id=intent_id, base_version=0, proposal_hash="0" * 64, receipt={"intent_id": intent_id})
 
-    cut_off, no_record, known, claimed = (intent("cut", "SUBMITTED"), intent("plain", "SUBMITTED"),
-                                          intent("known", "SUBMITTED"), intent("claimed", "CLAIMED"))
-    for i in (cut_off, known, claimed):
-        waiting(i)
-    with store.transaction():
-        for key in ("cut", "plain", "claimed"):
+    def unknown_charge(key: str) -> None:
+        with store.transaction():
             ledger.reserve(account_id=f"budget:{mission.id}", subject_id=f"subject-{key}", tokens=5_000, cost_micros=0, counts_attempt=False)
             ledger.import_usage(subject_id=f"subject-{key}", mission_id=mission.id, facts=[UsageFact(f"call-{key}", 0, 0, 0, unknown=True)])
+
+    consumer = _consumer(commit, store)
+
+    def decide(intents):
+        reserved = [r[0] for r in store.connection.execute(
+            "SELECT subject_id FROM budget_reservations WHERE mission_id=? AND state='RESERVED' ORDER BY subject_id", (mission.id,))]
+        return consumer._drain_decision(mission.id, reasons=[], unknown_effects=[], open_intents=intents,
+                                        open_reservations=reserved, usage_fully_known=ledger.usage_flags(mission.id)["usage_fully_known"])
+
+    cut = intent("cut")
+    waiting(cut)
+    unknown_charge("cut")
+    ready = decide([cut])
+    assert ready["state"] == "READY" and ready["usage_counted_at_upper_bound"]["subjects"] == ["subject-cut"]
+
+    # a second, ordinary open intent still holds the closeout
+    plain = intent("plain")
+    unknown_charge("plain")
+    held = decide([cut, plain])
+    assert held["state"] == "DRAINING" and "OPEN_INTENTS" in held["reasons"]
+
+    # a worker intent with the same record is never exempt; neither is a claimed one
+    worker, claimed, known = intent("worker", kind="attempt"), intent("claimed", state="CLAIMED"), intent("known")
+    for i in (worker, claimed, known):
+        waiting(i)
+    unknown_charge("worker")
+    unknown_charge("claimed")
+    with store.transaction():  # a recorded wait whose charge is known is not exempt
         ledger.reserve(account_id=f"budget:{mission.id}", subject_id="subject-known", tokens=5_000, cost_micros=0, counts_attempt=False)
-    fake = SimpleNamespace(commit=commit, store=store)
-    awaiting = AssuranceCloseoutConsumer._awaiting_original_reconciliation(fake, [cut_off, no_record, known, claimed])
-    assert awaiting == {cut_off}  # recorded wait + UNKNOWN charge + still SUBMITTED, nothing else
+    assert consumer._awaiting_original_reconciliation([cut, plain, worker, claimed, known]) == {cut}
+    store.close()
+
+
+def test_an_exempt_review_whose_reservation_is_gone_still_drains_on_unknown_usage(tmp_path):
+    """The exemption only lets the upper-bound rule count the charge; if the unknown charge
+    is not held by an open reservation, the closeout keeps draining on the unknown usage."""
+    from agent_orchestrator.storage.store import DispatchIntent
+
+    store, commit, mission = _world(tmp_path)
+    store.insert_intent(DispatchIntent(
+        intent_id="intent-cut", kind="critic", subject_id="subject-cut", mission_id=mission.id, state="SUBMITTED",
+        version=1, creation_key="k", input_id="in", input_hash="a" * 64, config={}, expected_turn_id="turn",
+        agent_id="agent", receipt=None, lease_owner=None, lease_expires_at=None, replays=0, created_at=store.now))
+    store.insert_receipt(commit_id="assurance-provider-wait:x", kind="AssuranceProviderReconciliationRequired",
+                         subject_id="intent-cut", base_version=0, proposal_hash="0" * 64, receipt={})
+    with store.transaction():
+        commit._ledger.import_usage(subject_id="subject-cut", mission_id=mission.id,
+                                    facts=[UsageFact("call-cut", 0, 0, 0, unknown=True)])
+    out = _consumer(commit, store)._drain_decision(
+        mission.id, reasons=[], unknown_effects=[], open_intents=["intent-cut"], open_reservations=[],
+        usage_fully_known=commit._ledger.usage_flags(mission.id)["usage_fully_known"])
+    assert out["state"] == "DRAINING" and out["reasons"] == ["USAGE_UNKNOWN"]
     store.close()

@@ -490,43 +490,61 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
         # which a relay that reports nothing can never answer.  Its charge is UNKNOWN and
         # is exactly what the upper-bound rule below counts; it does not hold the judged
         # Mission open for ever.  The intent itself is left to original recovery.
-        awaiting = self._awaiting_original_reconciliation(open_intents)
-        draining_intents = [i for i in open_intents if i not in awaiting]
         body.update(
             open_intents=open_intents[:256],
             open_reservations=open_reservations[:256],
             usage_fully_known=bool(usage["usage_fully_known"]),
             budget_conserved=bool(usage["budget_conserved"]),
         )
-        # User decision 2026-09-26: a judged Mission whose only remaining drain is the
-        # UNKNOWN charge of work that will never run again closes with that charge
-        # counted at its upper bound (overcount, never undercount, never freeze).
-        # Before, one unknown call kept the reservation held forever and the Mission
-        # sat ACTIVE with every criterion met.
-        upper = self._upper_bound_plan(mission.id, open_reservations) if (
+        body.update(self._drain_decision(
+            mission.id, reasons=reasons, unknown_effects=unknown_effects, open_intents=open_intents,
+            open_reservations=open_reservations, usage_fully_known=bool(usage["usage_fully_known"]),
+        ))
+        return body
+
+    def _drain_decision(
+        self, mission_id: str, *, reasons: list[str], unknown_effects: list[str], open_intents: list[str],
+        open_reservations: list[str], usage_fully_known: bool,
+    ) -> dict[str, Any]:
+        """The closeout state once the root facts are read (NOT_READY / BLOCKED_UNKNOWN /
+        DRAINING / READY) and, when READY by the upper-bound rule, what it counts.
+
+        User decision 2026-09-26: a judged Mission whose only remaining drain is the
+        UNKNOWN charge of work that will never run again closes with that charge counted
+        at its upper bound (overcount, never undercount, never freeze).
+        NEXT-TG-1.0 §12 E5 (real forced exit, 2026-09-28): a review turn whose original
+        provider call was cut off waits only for that call's reconciliation, which a
+        relay that reports nothing can never answer; such an intent does not hold the
+        judged Mission open — its UNKNOWN charge is exactly what the rule counts.  The
+        intent itself is left to original recovery.
+        """
+        awaiting = self._awaiting_original_reconciliation(open_intents)
+        draining_intents = [i for i in open_intents if i not in awaiting]
+        out: dict[str, Any] = {}
+        upper = self._upper_bound_plan(mission_id, open_reservations) if (
             not reasons and not unknown_effects and not draining_intents
-            and (open_reservations or not usage["usage_fully_known"])
+            and (open_reservations or not usage_fully_known)
         ) else None
         if upper is not None:
-            body["usage_counted_at_upper_bound"] = upper
+            out["usage_counted_at_upper_bound"] = upper
         if reasons:
-            body.update(state="NOT_READY", reasons=reasons)
+            out.update(state="NOT_READY", reasons=reasons)
         elif unknown_effects:
-            body.update(state="BLOCKED_UNKNOWN", reasons=["EFFECT_UNKNOWN"])
+            out.update(state="BLOCKED_UNKNOWN", reasons=["EFFECT_UNKNOWN"])
         elif upper is not None:
-            body.update(state="READY", reasons=[])
-        elif draining_intents or open_reservations or not usage["usage_fully_known"]:
+            out.update(state="READY", reasons=[])
+        elif draining_intents or open_reservations or not usage_fully_known:
             draining = []
             if draining_intents:
                 draining.append("OPEN_INTENTS")
             if open_reservations:
                 draining.append("OPEN_RESERVATIONS")
-            if not usage["usage_fully_known"]:
+            if not usage_fully_known:
                 draining.append("USAGE_UNKNOWN")
-            body.update(state="DRAINING", reasons=draining)
+            out.update(state="DRAINING", reasons=draining)
         else:
-            body.update(state="READY", reasons=[])
-        return body
+            out.update(state="READY", reasons=[])
+        return out
 
     def _awaiting_original_reconciliation(self, open_intents: list[str]) -> set[str]:
         """Open review intents whose only wait is an unanswerable original provider call:
@@ -535,7 +553,9 @@ class AssuranceCloseoutConsumer(_ConsumerBase):
         awaiting: set[str] = set()
         for intent_id in open_intents:
             intent = self.store.get_intent(intent_id)
-            if intent is None or intent.state != "SUBMITTED":
+            # only Assurance review turns (content reviews run as critic intents, the
+            # purpose reviews as plan intents) ever record this wait
+            if intent is None or intent.state != "SUBMITTED" or intent.kind not in ("critic", "plan"):
                 continue
             recorded = self.store.connection.execute(
                 "SELECT 1 FROM commit_receipts WHERE kind='AssuranceProviderReconciliationRequired' "
