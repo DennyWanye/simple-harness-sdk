@@ -264,6 +264,31 @@ def test_a_step_neither_consumed_nor_linked_still_declares_no_port(three_step: W
     assert three_step.dispatch.declared_output_ports_for(three_step.mission.id, audit) == ()
 
 
+def test_under_the_completion_protocol_a_step_declares_its_own_ports(three_step: World) -> None:
+    """2026-09-29 真机第十二局：最后一步既没被下游消费、也没被方法链接，核对侧
+    （``output_ports_in_revision``）在完成协议下照样算它自己的端口，接受侧的
+    ``read_review_origin`` 却用 ``declared_output_ports`` 算出 0 个端口——两边的输出
+    永远对不上，验收连拒四次、任务停在向人提问。两个读者必须用同一条规则。
+
+    **Mutation**: ignore ``own_ports`` → the first assertion goes red; drop the
+    ``uses_completion_protocol`` flag in ``read_review_origin`` → the second."""
+    import inspect
+
+    from agent_orchestrator.orchestrator import taskgraph_review
+
+    network = three_step.network()
+    audit = next(
+        spec.occurrence_id for spec in network.occurrences
+        if str(network.binding_for_occurrence(spec.occurrence_id).goal_signature.signature_id)
+        == "plan.audit"
+    )
+    own = declared_output_ports(network, audit, own_ports=True)
+    declared = {port.port_key for port in network.binding_for_occurrence(audit).output_ports}
+    assert declared and set(own) == declared
+    source = inspect.getsource(taskgraph_review.read_review_origin)
+    assert "own_ports=uses_completion_protocol(" in source
+
+
 # ======================================================================================
 # 5. review P2-6 / P2-7 / P2-10: the edges of the widened rule
 # ======================================================================================
