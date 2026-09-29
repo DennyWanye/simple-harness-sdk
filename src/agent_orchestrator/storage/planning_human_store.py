@@ -131,4 +131,30 @@ class PlanningHumanStore:
             )
             append_hierarchical_event(self.store, "PlanningHumanAnswered", mission.id, key=decision_id,
                 payload={**receipt, "next_ordinal": row["request"]["next_ordinal"]})
+            self._note_answer_for_workers(mission, row, principal, answer, options)
             return receipt
+
+    def _note_answer_for_workers(self, mission: Any, row: dict[str, Any], principal: Any,
+                                 answer: str, options: list[dict[str, Any]]) -> None:
+        """The answer is also a mission-level human note, so every later Attempt sees it.
+
+        2026-09-29 真机（收口第 6 项第 4 轮）：用户在回答里给了缺的数据，但回答只进规划器；
+        规划器只能让那一步原样重做，重做的执行者看不到回答，照样报缺数据，直到规划次数用完。
+        任务级的 ``HumanCommentAdded``（与界面"带说明重做"同一种备注）在每个 Attempt 开工时
+        作为"信息、不是授权"交给执行者。
+        """
+
+        from ..contracts import Event, ids
+
+        chosen = next((o.get("label") for o in options if o.get("key") == answer), None)
+        question = row["request"]["payload"]["question"]
+        text = (f"用户回答了规划问题（任务补充资料或决定）。\n问：{question}\n"
+                f"答：{answer if chosen is None else f'{chosen}（{answer}）'}")
+        key = f"HumanCommentAdded:{mission.id}:planning-answer:{row['decision_id']}"
+        self.store.append_event(Event(
+            id=ids.event_id(key), type="HumanCommentAdded", trace_id=ids.trace_id(mission.id),
+            mission_id=mission.id, task_id=None, attempt_id=None,
+            actor_type="user", actor_id=principal.principal_id,
+            payload={"target_id": mission.id, "principal_id": principal.principal_id, "text": text,
+                     "via": f"planning_answer:{row['decision_id']}"},
+            idempotency_key=key, created_at=self.store.now))

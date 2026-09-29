@@ -142,4 +142,17 @@ def test_a_blocked_declaration_nobody_can_serve_becomes_a_question_for_the_perso
             assert loop._has_pending_planning_waits(mission.id) is True
             assert provider.calls == 0
 
+            # 2026-09-29 真机第 4 轮：回答只进规划器，重做的执行者看不到，照样报缺数据。
+            # 回答要作为任务级用户备注记下，之后每个执行者开工时都能看到。
+            PlanningHumanStore(loop.store).answer(
+                decision_id=question["decision_id"], tenant_id=mission.tenant_id,
+                principal=Principal(loop._owner), answer="数据如下：2026-07,华东,120",
+                expected_version=question["version"], nonce="n-1")
+            notes = [e for e in _events(loop, mission.id, "HumanCommentAdded")
+                     if e.payload.get("target_id") == mission.id]
+            assert len(notes) == 1
+            assert "data/sales.csv" in notes[0].payload["text"]
+            assert "2026-07,华东,120" in notes[0].payload["text"]
+            assert notes[0].payload["via"] == f"planning_answer:{question['decision_id']}"
+
     asyncio.run(case())
