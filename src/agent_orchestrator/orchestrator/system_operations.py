@@ -346,6 +346,13 @@ def prepare_system_operations(orch: Any, mission_id: str) -> bool:
         if command is None:
             continue
         try:
+            # 人手动提交的入口（``Orchestrator.submit_operation_intent``）先装配操作运行时再提交；
+            # 系统代办直接调底层提交，必须自己先装，否则进程里没人手动提交过时每轮都被
+            # "operation runtime is unavailable" 拒掉、任务空转（2026-09-29 真机）。只在真要
+            # 提交时装：没有发布效果的任务所在环境可能根本没注册发布连接器。
+            from .operation_runtime import ensure_operation_runtime
+
+            ensure_operation_runtime(orch)
             orch.commit.submit_operation_intent(
                 command, tenant_id=plan["tenant_id"], principal=Principal(plan["principal_id"]))
             progressed = True

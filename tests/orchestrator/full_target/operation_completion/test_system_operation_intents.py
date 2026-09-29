@@ -51,7 +51,7 @@ TARGET = "reports/final.json"
 CONTENT = b'{"total": 42}\n'
 
 
-def _world(tmp_path: Path, *, produce: str | None = "final.json") -> dict[str, Any]:
+def _world(tmp_path: Path, *, produce: str | None = "final.json", bind_runtime: bool = True) -> dict[str, Any]:
     published = tmp_path / "published"
     published.mkdir()
     publish = FilePublishConnector(published, tmp_path / "publish-ledger")
@@ -128,12 +128,15 @@ def _world(tmp_path: Path, *, produce: str | None = "final.json") -> dict[str, A
 
     runtime = OperationMaterializationRuntime(
         connectors, deployment, profiles, profiles.policy_for, prepare_review, object())
-    world.service.bind_operation_materialization_runtime(runtime)
+    if bind_runtime:
+        world.service.bind_operation_materialization_runtime(runtime)
     notes: list[str] = []
     stops: list[dict[str, Any]] = []
     orch = SimpleNamespace(
         store=world.store, commit=world.service, _note=notes.append,
         _connectors=connectors, _config=SimpleNamespace(deployment_policy=deployment),
+        connectors=connectors, config=SimpleNamespace(deployment_policy=deployment),
+        _operation_profiles=profiles, _operation_policy_for=profiles.policy_for,
         _commit_fail_mission=lambda mission_id, **kw: stops.append(kw), _new_mode=lambda mission: None)
     return {"world": world, "orch": orch, "notes": notes, "stops": stops, "artifact": artifact,
             "approved": approved, "captured": captured, "runtime": runtime}
@@ -180,6 +183,23 @@ def test_the_system_prepares_the_approved_publish_from_the_reviewed_file(tmp_pat
     assert action["reason_source"] == "system"
     approval = world.store.get_approval(action["approval_request_id"])
     assert approval["summary"]["reason_source"] == "system"
+
+
+def test_the_system_binds_the_operation_runtime_itself_before_submitting(tmp_path, monkeypatch):
+    """2026-09-29 真机（收口第 6 项）：人手动提交的入口先装配操作运行时，系统代办直接调底层提交，
+    进程里没人手动提交过时运行时一直没装，每轮都被"operation runtime is unavailable"拒掉、任务空转。"""
+
+    from agent_orchestrator.orchestrator import operation_runtime
+
+    case = _world(tmp_path, bind_runtime=False)
+    world, orch = case["world"], case["orch"]
+    # 审阅准备沿用夹具里的同一实现（真实实现还要路由服务，与本缺陷无关）。
+    fixture_prepare = case["runtime"].prepare_review
+    monkeypatch.setattr(operation_runtime, "prepare_review",
+                        lambda _orch, sources, payloads, package_id: fixture_prepare(sources, payloads, package_id))
+    assert prepare_system_operations(orch, world.mission.id) is True, case["notes"]
+    assert case["notes"] == []
+    assert len(OperationIntentStore(world.store).for_mission(world.mission.id)) == 1
 
 
 def test_a_missing_file_asks_the_planner_or_stops_visibly(tmp_path):
