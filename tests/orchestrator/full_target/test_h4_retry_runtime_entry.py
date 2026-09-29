@@ -223,3 +223,33 @@ def test_a_failed_attempt_with_an_unknown_charge_can_still_be_retried(tmp_path):
             assert row["status"] == "COMMITTED", row["detail_json"]
             assert pending_retry_permit(loop.store, mission.id, task_id) is not None
     asyncio.run(case())
+
+
+def test_a_step_that_reports_blocked_goes_back_to_the_planner(tmp_path):
+    """2026-09-29 真机第十、十一局：测试步如实报告"卡住"（工作区缺 wordfreq.py），尝试进了
+    "等重试"，但这个结果不在"转规划修补"的来源里——没人问规划器，几秒后判"没有可派发
+    的工作"，整局失败。卡住 / 失败 / 没进展的如实报告都应交给规划器，带上步骤的说明。
+
+    **Mutation**: drop ``OutcomeRecorded`` from the sources → no request, red."""
+    from agent_orchestrator.contracts.models import ResultEnvelope, ResultOutcome
+
+    async def case():
+        async with Orchestrator(_config(tmp_path), RoleScriptedProvider({"planner": []})) as loop:
+            mission, dispatch, task_id = await refined(loop, tmp_path, "h4-blocked-live")
+            first, first_intent = attempt(loop, task_id)
+            loop.commit.claim_intent(first_intent.intent_id, owner=loop._owner, lease_seconds=60)
+            loop.commit.record_agent_created(first_intent.intent_id, agent_id="fixture", expected_turn_id="turn-1")
+            loop.commit.record_submitted(first_intent.intent_id, receipt={"turn_id": "turn-1", "seq": 1})
+            summary = "工作区里没有 wordfreq.py，pytest 收集阶段 ModuleNotFoundError，本步骤无法完成"
+            loop.commit.record_outcome_result(first.id, envelope=ResultEnvelope(
+                id="result-blocked-1", task_id=task_id, attempt_id=first.id, outcome=ResultOutcome.BLOCKED,
+                summary=summary, claims=(), evidence=(), artifacts=(), proposed_tasks=(),
+                used_knowledge=(), risks=(), cost={}, mission_id=mission.id), turn_id="turn-1", usage_refs=())
+            assert collect_triggers(loop, mission)
+            requests = pending_requests(loop.store, mission.id)
+            assert len(requests) == 1
+            request = requests[0]["request"]
+            assert request["trigger_source"] == "WORKER_REJECT"
+            assert summary in json.dumps(request, ensure_ascii=False)
+            assert not collect_triggers(loop, mission), "the same report opens one request only"
+    asyncio.run(case())

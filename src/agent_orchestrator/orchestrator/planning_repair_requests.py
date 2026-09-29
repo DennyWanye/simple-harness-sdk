@@ -62,9 +62,16 @@ def collect_triggers(handler: Any, mission: Any) -> bool:
                "HierarchicalRootReviewRejected": "VerifierAcceptanceRejected"}
     if h4:
         sources.update({"AttemptLost": "WorkerRejected", "AttemptTimedOut": "WorkerRejected"})
+    # 2026-09-29 真机第十、十一局：步骤如实报告"卡住"（缺上游文件）后尝试进"等重试"，却没人
+    # 问规划器，几秒后判"没有可派发的工作"、整局失败。如实的卡住/失败/没进展报告也交给
+    # 规划器（带上步骤自己的说明），由它决定重排、补步骤或重试。
+    sources["OutcomeRecorded"] = "WorkerRejected"
     for event in tuple(store.iter_events(mission.id)):
         source_key = "event:" + event.idempotency_key
         if event.type not in sources or source_key in seen:
+            continue
+        if (event.type == "OutcomeRecorded"
+                and event.payload.get("outcome") not in {"blocked", "failure", "no_progress"}):
             continue
         if h4 and event.task_id and event.task_id not in active_tasks:
             continue

@@ -1,5 +1,5 @@
 {
-  "deployment_id": "6267992919bfb6f7f751d76a2c94ff963a17025c80a229bb14404cd729cca41d",
+  "deployment_id": "fe3d2aa53dd5ad8d9392264f4ed4373c9df40fbfc49d8fd19b7fadecc25c6bae",
   "schema": "taskgraph-htn-wiring-derivation-v1",
   "source_files": {
     "agent_orchestrator/__init__.py": "eb50152258b356bc7866e55823fc45c7209cb6150efe205dd03c40c33beedbc2",
@@ -258,7 +258,7 @@
     "agent_orchestrator/orchestrator/planning_method_proposal.py": "383e4e5da940c9c63c94360ee9c70878a8f5b08e50e72d482566857d7c593c57",
     "agent_orchestrator/orchestrator/planning_protocol_binding.py": "8162dacdb5239ff7037762c10093fb81f4fa9ed44cb9399ec91b80e137eb337b",
     "agent_orchestrator/orchestrator/planning_repair_continuations.py": "01510b57d3a3deb4259b4676a56398374131487a4b6b0bc8b5bf31960c20016d",
-    "agent_orchestrator/orchestrator/planning_repair_requests.py": "a85f1b78a2eabf071b3c0b8afd5802f6c1698628a8fcfaf0da4c74ef13ea9fb5",
+    "agent_orchestrator/orchestrator/planning_repair_requests.py": "70f7203f91b0b114a64125282c8fd31bac731446c1753ee4301fed652f8ae31d",
     "agent_orchestrator/orchestrator/planning_retry.py": "95c8e06eefb4d84b9f7932a71498a974ba411969d3c605bd8c635bb645a24986",
     "agent_orchestrator/orchestrator/planning_runtime_block.py": "f3d5289af118c9fedb54ebcf95c212c0bd583bce7d848979253106ab7f995a80",
     "agent_orchestrator/orchestrator/planning_selection.py": "046c0ef9b6eb0c645258baf751057c3f3d2c5a4c8684f3c53bf12e7a7f13b7ed",
