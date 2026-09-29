@@ -3732,6 +3732,51 @@ class Orchestrator:
             )
         return bool(recorded)
 
+    def _ask_person_about_blockage(self, mission: Mission, intent: Any, decision: Any,
+                                   decision_id: str, context: Any, new_mode: Any) -> bool:
+        """A blockage no method synthesis will take up becomes a question for the person.
+
+        2026-09-29 真机（收口第 6 项）：执行者报"缺外部资料"，修复轮里规划器宣告受阻；方法
+        本身有效，方法合成不接手，宣告受阻又不产生任何动作，任务随后以"没有可派发的工作"
+        失败，用户只看到失败、从没被问过。这里把受阻原因原样登记成一条阻塞式规划问题（与
+        REPAIR/ESCALATE 同一张表、同一条续跑路），任务停在"等人回答"，回答后开下一轮规划。
+        """
+
+        from ..contracts.planning_decisions import RequestHumanDecision
+        from ..storage.planning_human_store import PlanningHumanStore
+
+        try:
+            if new_mode.goals_needing_method(mission.id):
+                return False  # 方法合成这条路还在（已在跑或本轮刚记过），不抢着问人
+        except (GraphIntegrityError, ContractError):
+            return False
+        store = PlanningHumanStore(self.store)
+        if store.pending(mission.id):
+            return False
+        reasons = [str(item.detail or item.code) for item in decision.payload.blockers]
+        question = RequestHumanDecision(
+            "规划器判断这部分工作没法继续：\n"
+            + "\n".join(f"- {reason}" for reason in reasons)
+            + "\n请补充需要的资料或说明（例如提供缺少的数据、告诉它去哪里找），"
+              "也可以说明不做这部分。回答后会按你的说明重新规划。",
+            (), True)
+        with self.store.transaction():
+            row = store.register(
+                decision_id=decision_id, mission_id=mission.id,
+                subject_key=decision.subject_key, payload=question,
+                request_binding={"plan_revision": context.plan_revision,
+                                 "requirements_revision": context.requirements_revision,
+                                 "manager_epoch": new_mode.semantics().epoch(mission.id, "mission")},
+                next_ordinal=int(intent.config.get("ordinal", 1)) + 1)
+            append_hierarchical_event(
+                self.store, "PlanningHumanRequested", mission.id, key=decision_id,
+                payload={"decision_id": decision_id,
+                         "next_ordinal": int(intent.config.get("ordinal", 1)) + 1,
+                         "question_id": decision_id, "state": row["state"],
+                         "origin": "declare_blocked"})
+        self._note(f"blocked declaration {decision_id} asked the person: {'; '.join(reasons)[:300]}")
+        return True
+
     async def _request_method_synthesis(self, mission: Mission) -> bool:
         """Ask for a method when an open goal has none that could ever apply.
 
@@ -5215,6 +5260,8 @@ class Orchestrator:
             HIERARCHICAL_PLANNER_PACKAGE_VERSION,
             PLANNER_HIERARCHICAL_V7,
             PLANNER_HIERARCHICAL_V11,
+            PLANNER_HIERARCHICAL_V11_VERSION,
+            PLANNER_HIERARCHICAL_V12,
             PLANNING_DECISION_PACKAGE_VERSION,
             hierarchical_planner_versions,
         )
@@ -5230,7 +5277,11 @@ class Orchestrator:
         if candidate.prompt_version in hierarchical_planner_versions(package_version):
             return candidate
         if package_version == PLANNING_DECISION_PACKAGE_VERSION:
-            return PLANNER_HIERARCHICAL_V11
+            # 2026-09-29: the package pairs with v11 and v12; a Mission keeps the prompt
+            # its durable binding names (replay stays exact), a new binding names v12.
+            if binding is not None and binding.get("prompt_version") == PLANNER_HIERARCHICAL_V11_VERSION:
+                return PLANNER_HIERARCHICAL_V11
+            return PLANNER_HIERARCHICAL_V12
         if package_version != HIERARCHICAL_PLANNER_PACKAGE_VERSION:
             # 2026-09-25: no historical package/prompt pairings are served any more; a
             # Mission bound to one fails loudly instead of running on a stale prompt.
@@ -8705,7 +8756,9 @@ class Orchestrator:
                 # existing method-synthesis gate.  The decision itself remains
                 # state-free; synthesis is requested only when the live world proves
                 # that no registered method can serve the open goal.
-                await self._request_method_synthesis(mission)
+                if not await self._request_method_synthesis(mission):
+                    self._ask_person_about_blockage(
+                        mission, intent, decision, decision_id, context, new_mode)
             return
         admitted: AdmittedPlanningDecision | Any
         preview_candidate: CandidatePreview | None = None

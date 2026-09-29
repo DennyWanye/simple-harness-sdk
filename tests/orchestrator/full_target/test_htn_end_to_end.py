@@ -1167,16 +1167,18 @@ class _Pinned:
     stub that supplies exactly those runs the **real** chooser against a real pin.
     """
 
-    def __init__(self, pin: str | None, *, package_version: int | None = None) -> None:
+    def __init__(self, pin: str | None, *, package_version: int | None = None,
+                 bound_prompt: str = "planner-hierarchical-v8") -> None:
         from agent_orchestrator.governance.domains import resolve_domain
 
         self._domain = resolve_domain(None)
         self._pin = pin
-        self.store = self._Store(package_version)
+        self.store = self._Store(package_version, bound_prompt)
 
     class _Store:
-        def __init__(self, package_version: int | None) -> None:
+        def __init__(self, package_version: int | None, bound_prompt: str) -> None:
             self._package_version = package_version
+            self._bound_prompt = bound_prompt
 
         class _Result:
             def __init__(self, row: dict[str, Any] | None) -> None:
@@ -1198,7 +1200,7 @@ class _Pinned:
                     "mission_id": "m-1",
                     "protocol_version": "planning-decision-v1",
                     "package_version": self._package_version,
-                    "prompt_version": "planner-hierarchical-v8",
+                    "prompt_version": self._bound_prompt,
                     "binding_hash": "a" * 64,
                     "created_at": 0.0,
                 }
@@ -1313,16 +1315,31 @@ def test_new_planning_decision_mission_selects_the_current_prompt_even_when_lega
 
     from agent_orchestrator.contracts.planning_decisions import UnsupportedPlanningPackage
     from agent_orchestrator.runtime.role_templates import (
-        PLANNER_HIERARCHICAL_V11,
+        PLANNER_HIERARCHICAL_V12,
         PLANNER_HIERARCHICAL_V7,
         PLANNING_DECISION_PACKAGE_VERSION,
     )
 
     assert _Pinned(PLANNER_HIERARCHICAL_V7.prompt_version, package_version=PLANNING_DECISION_PACKAGE_VERSION).choose() is (
-        PLANNER_HIERARCHICAL_V11
+        PLANNER_HIERARCHICAL_V12
     )
     with pytest.raises(UnsupportedPlanningPackage):
         _Pinned(PLANNER_HIERARCHICAL_V7.prompt_version, package_version=4).choose()
+
+
+def test_a_mission_bound_to_planner_v11_keeps_it_after_v12_ships() -> None:
+    """2026-09-29：v12 与 v11 同配第 8 版包；已绑 v11 的任务重放时仍拿 v11，新绑定拿 v12。"""
+
+    from agent_orchestrator.runtime.role_templates import (
+        PLANNER_HIERARCHICAL_V11,
+        PLANNER_HIERARCHICAL_V12,
+        PLANNING_DECISION_PACKAGE_VERSION,
+    )
+
+    assert _Pinned(None, package_version=PLANNING_DECISION_PACKAGE_VERSION,
+                   bound_prompt="planner-hierarchical-v11").choose() is PLANNER_HIERARCHICAL_V11
+    assert _Pinned(None, package_version=PLANNING_DECISION_PACKAGE_VERSION,
+                   bound_prompt="planner-hierarchical-v12").choose() is PLANNER_HIERARCHICAL_V12
 
 
 # ======================================================================================

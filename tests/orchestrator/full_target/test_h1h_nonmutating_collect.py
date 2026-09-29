@@ -103,3 +103,43 @@ def test_p08_state_free_decisions_use_real_collector_without_shape_or_operation_
             assert provider.calls == 0
 
     asyncio.run(case())
+
+
+def test_a_blocked_declaration_nobody_can_serve_becomes_a_question_for_the_person(tmp_path: Path) -> None:
+    """2026-09-29 真机（收口第 6 项第 3 轮）：执行者报"缺 data/sales.csv"，修复轮里规划器宣告受阻；
+    方法本身有效（不会进方法合成），宣告受阻又不产生任何动作，任务以"没有可派发的工作"失败，
+    用户只看到失败、从没被问过。改为：没有方法合成可接手时，把受阻原因登记成一条问用户的
+    规划问题（阻塞式），任务停下等回答；回答后照原路开下一轮规划。"""
+
+    from agent_orchestrator.storage.planning_human_store import PlanningHumanStore
+
+    async def case() -> None:
+        provider = RoleScriptedProvider({"planner": []})
+        async with Orchestrator(_config(tmp_path), provider) as loop:
+            mission, _env, _contract, dispatch = _seed_new_protocol(loop, tmp_path, key="h1h-blocked-ask")
+            opener = await _open_planner_round(loop, mission, dispatch, ordinal=1)
+            PlanningAuthorizationApi(loop.store, tenant_id=mission.tenant_id,
+                                     principal=Principal(loop._owner)).issue(
+                mission.id, command_id="grant-h1h-blocked-ask", request_id=opener.intent_id)
+            body = json.loads((_FIXTURES / "declare-blocked.json").read_text(encoding="utf-8"))
+            body["subject_key"] = opener.config["planning_package"]["planning_subjects"][0]["subject_key"]
+            body["payload"]["blockers"] = [{"code": "OTHER", "detail": "工作区里没有 data/sales.csv，无法汇总"}]
+            reply = serialize_planning_decision(PlanningDecisionEnvelopeV1.from_json(body))
+            if dispatch.goals_needing_method(mission.id):
+                pytest.skip("this seed routes the goal to method synthesis")
+
+            await loop._collect_plan_decision(opener, object(), mission, reply, dispatch)
+
+            questions = PlanningHumanStore(loop.store).list(mission.id)
+            assert len(questions) == 1
+            question = questions[0]
+            assert question["state"] == "PENDING"
+            payload = question["request"]["payload"]
+            assert "data/sales.csv" in payload["question"] and payload["blocking"] is True
+            assert payload["options"] == []
+            assert _events(loop, mission.id, "PlanningHumanRequested")
+            # 等人回答是合法等待：不会被当成"没有可派发的工作"
+            assert loop._has_pending_planning_waits(mission.id) is True
+            assert provider.calls == 0
+
+    asyncio.run(case())

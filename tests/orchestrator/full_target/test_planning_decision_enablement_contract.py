@@ -49,12 +49,17 @@ def test_internal_keys_refuse_kinds_without_repair() -> None:
         internal_enablement_keys(["REPAIR/RETRY_SAME_METHOD"], [])
 
 
-def test_current_package_pairs_with_exactly_one_prompt() -> None:
+def test_current_package_pairs_with_v11_for_bound_missions_and_v12_for_new_ones() -> None:
+    # 2026-09-29: v12 = v11 + "missing external input → REPAIR/ESCALATE"; same package 8.
     assert role_templates.PLANNING_DECISION_PACKAGE_VERSION == 8
-    assert role_templates.PLANNING_DECISION_PROMPT_VERSION == role_templates.PLANNER_HIERARCHICAL_V11_VERSION
+    assert role_templates.PLANNING_DECISION_PROMPT_VERSION == role_templates.PLANNER_HIERARCHICAL_V12_VERSION
     assert role_templates.hierarchical_planner_pairing_is_valid("planner-hierarchical-v11", 8)
+    assert role_templates.hierarchical_planner_pairing_is_valid("planner-hierarchical-v12", 8)
     assert not role_templates.hierarchical_planner_pairing_is_valid("planner-hierarchical-v10", 8)
     assert "enabled_repair_kinds" in role_templates.PLANNER_HIERARCHICAL_V11.instructions
+    v12 = role_templates.PLANNER_HIERARCHICAL_V12.instructions
+    assert v12.startswith(role_templates.PLANNER_HIERARCHICAL_V11.instructions)
+    assert "repair_kind=ESCALATE" in v12 and "target=human" in v12
 
 
 def test_package_lists_types_and_kinds_and_admission_reads_internal_keys(tmp_path: Path) -> None:
@@ -62,7 +67,7 @@ def test_package_lists_types_and_kinds_and_admission_reads_internal_keys(tmp_pat
         async with Orchestrator(_config(tmp_path), RoleScriptedProvider({"planner": []})) as loop:
             mission, _world, _binding, _dispatch = _seed_new_protocol(loop, tmp_path, key="enablement")
             binding = PlanningDecisionStore(loop.store).get_mission_protocol(mission.id)
-            assert (binding["package_version"], binding["prompt_version"]) == (8, "planner-hierarchical-v11")
+            assert (binding["package_version"], binding["prompt_version"]) == (8, "planner-hierarchical-v12")
             intent = await loop._create_planner_intent(mission.id, ordinal=1)
             protocol = intent.config["planning_package"]["planning_protocol"]
             assert protocol["enabled_decision_types"] == sorted(protocol["enabled_decision_types"])

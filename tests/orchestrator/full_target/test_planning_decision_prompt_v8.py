@@ -172,9 +172,9 @@ def test_the_example_ref_is_a_valid_four_tuple_the_merged_core_accepts() -> None
 def test_package_four_is_new_and_the_default_package_stays_three() -> None:
     assert role_templates.PLANNING_DECISION_PACKAGE_VERSION == 8
     assert role_templates.HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[8] == frozenset(
-        {"planner-hierarchical-v11"}
+        {"planner-hierarchical-v11", "planner-hierarchical-v12"}
     )
-    assert role_templates.PLANNING_DECISION_PROMPT_VERSION == "planner-hierarchical-v11"
+    assert role_templates.PLANNING_DECISION_PROMPT_VERSION == "planner-hierarchical-v12"
     assert role_templates.HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[7] == frozenset(
         {"planner-hierarchical-v10"}
     )

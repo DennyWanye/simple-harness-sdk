@@ -7,7 +7,7 @@ import json
 from agent_orchestrator.api.planning_authorization import PlanningAuthorizationApi
 from agent_orchestrator.governance.permissions import Principal
 from agent_orchestrator.orchestrator.event_handler import Orchestrator
-from agent_orchestrator.runtime.role_templates import PLANNER_HIERARCHICAL_V11, PLANNING_DECISION_PACKAGE_LABEL
+from agent_orchestrator.runtime.role_templates import PLANNER_HIERARCHICAL_V12, PLANNING_DECISION_PACKAGE_LABEL
 from agent_orchestrator.storage.planning_decision_store import PlanningDecisionStore
 from agent_orchestrator.testing.fixtures import RoleScriptedProvider
 from test_h1i_production_entry import _config, _seed_new_protocol, _refine_reply
@@ -18,7 +18,7 @@ def test_package7_initial_refinement_reaches_atomic_commit(tmp_path):
         async with Orchestrator(_config(tmp_path), RoleScriptedProvider({"planner": []})) as loop:
             mission, _world, _binding, dispatch = _seed_new_protocol(loop, tmp_path, key="h4-package7")
             intent = await loop._create_planner_intent(mission.id, ordinal=1)
-            assert intent.config["prompt_version"] == PLANNER_HIERARCHICAL_V11.prompt_version
+            assert intent.config["prompt_version"] == PLANNER_HIERARCHICAL_V12.prompt_version
             package = intent.config["planning_package"]
             assert package["package_version"] == PLANNING_DECISION_PACKAGE_LABEL
             assert {"REPAIR", "BIND_EXISTING_GOAL"}.issubset(package["planning_protocol"]["enabled_decision_types"])

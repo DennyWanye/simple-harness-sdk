@@ -828,6 +828,24 @@ PLANNER_HIERARCHICAL_V11 = RoleTemplate(
 )
 register_template(PLANNER_HIERARCHICAL_V11)
 
+#: 2026-09-29 真机（收口第 6 项）：执行者报"缺 data/sales.csv"，修复轮里规划器照 v8 起的
+#: "证明不了就 DECLARE_BLOCKED" 宣告受阻；方法本身有效、方法合成不接手，任务以"没有可派发
+#: 的工作"失败，用户从没被问过。v12 = v11 + 一条修复轮规则：缺外部资料/输入时用
+#: REPAIR/ESCALATE 问人。与 v11 同配第 8 版包（包内容不变）；新任务用 v12，已绑 v11 的任务不变。
+PLANNER_HIERARCHICAL_V12_VERSION = "planner-hierarchical-v12"
+PLANNER_HIERARCHICAL_V12 = RoleTemplate(
+    name="planner", prompt_version=PLANNER_HIERARCHICAL_V12_VERSION, tool_names=(),
+    instructions=PLANNER_HIERARCHICAL_V11.instructions + (
+        "\n缺外部资料时问人：修复轮里，如果失败原因是缺少外部资料或输入（执行者报告在工作区和任务资料里"
+        "都找不到，系统内也不能凭空生成，例如缺一份数据文件、缺账号或缺用户才知道的信息），不要用"
+        " DECLARE_BLOCKED。若 enabled_repair_kinds 含 ESCALATE，用 decision_type=REPAIR、"
+        "payload.repair_kind=ESCALATE、target=human：question 用中文写清缺什么、执行者已经找过哪里、"
+        "需要用户提供什么或怎么决定；options 留空让用户直接写回答，blocking=true。用户回答后会再开一轮"
+        "规划，你按回答补步骤或调整计划。DECLARE_BLOCKED 只用于确实没有任何可用方法、问人也解决不了的情况。"
+    ),
+)
+register_template(PLANNER_HIERARCHICAL_V12)
+
 #: Every registered prompt version that belongs to the *hierarchical* Planner.
 #: P2.3c part 2b: a deployment's frozen ``prompt_versions`` pins ``planner`` to a
 #: DAG-Planner version (``planner-v4``), and ``template_for`` honours that pin for
@@ -849,6 +867,7 @@ HIERARCHICAL_PLANNER_VERSIONS: frozenset[str] = frozenset(
         PLANNER_HIERARCHICAL_V9_VERSION,
         PLANNER_HIERARCHICAL_V10_VERSION,
         PLANNER_HIERARCHICAL_V11_VERSION,
+        PLANNER_HIERARCHICAL_V12_VERSION,
     }
 )
 
@@ -909,14 +928,20 @@ HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE: Mapping[int, frozenset[str]] = {
     7: frozenset({PLANNER_HIERARCHICAL_V10_VERSION}),
     # package 8 (2026-09-25): ``enabled_decision_types`` holds only legal decision
     # types and ``enabled_repair_kinds`` the repair sub-kinds; v11 says so.
-    PLANNING_DECISION_PACKAGE_VERSION: frozenset({PLANNER_HIERARCHICAL_V11_VERSION}),
+    # 2026-09-29: v12 is v11 plus the "missing external input → ESCALATE" rule on the
+    # same package; Missions already bound to v11 keep it, new ones bind v12.
+    PLANNING_DECISION_PACKAGE_VERSION: frozenset(
+        {PLANNER_HIERARCHICAL_V11_VERSION, PLANNER_HIERARCHICAL_V12_VERSION}
+    ),
 }
 
-#: The one prompt the current package pairs with.  Derived, never hand-written, so a
-#: package bump cannot leave the durable binding on the previous prompt.
-(PLANNING_DECISION_PROMPT_VERSION,) = tuple(
-    HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[PLANNING_DECISION_PACKAGE_VERSION]
-)
+#: The prompt a *new* binding on the current package uses: its newest version.  Still
+#: derived from the package table, so a package bump cannot leave the durable binding
+#: on the previous package's prompt.
+PLANNING_DECISION_PROMPT_VERSION = PLANNER_HIERARCHICAL_V12_VERSION
+assert PLANNING_DECISION_PROMPT_VERSION in HIERARCHICAL_PLANNER_VERSIONS_BY_PACKAGE[
+    PLANNING_DECISION_PACKAGE_VERSION
+]
 
 
 def hierarchical_planner_versions(
