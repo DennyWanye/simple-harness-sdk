@@ -105,6 +105,70 @@ def test_p08_state_free_decisions_use_real_collector_without_shape_or_operation_
     asyncio.run(case())
 
 
+def test_an_answer_with_material_is_registered_as_a_source_the_next_attempt_mounts(tmp_path: Path) -> None:
+    """架构方案 C（2026-09-30）：用户回答里给的数据登记成任务资料，不只是一条备注。
+
+    真机第 4、5 轮：回答只进规划器和备注，执行者拿不到文件；"换输入"决定绑不到资料。资料是
+    按每次尝试冻结、只读挂载的，所以把回答登记为 sources/answers/<问题 id>.md，规划器让那一步
+    原样重试，新尝试自动挂上它。回答与登记同一事务、同按问题 id 幂等；选项式问题不附资料。"""
+
+    from agent_orchestrator.api.planning_answers import answer_planning_question, answer_source_path
+    from agent_orchestrator.contracts import ContractError
+    from agent_orchestrator.contracts.planning_decisions import RequestHumanDecision
+    from agent_orchestrator.storage.planning_human_store import PlanningHumanStore
+
+    async def case() -> None:
+        provider = RoleScriptedProvider({"planner": []})
+        async with Orchestrator(_config(tmp_path), provider) as loop:
+            mission, _env, _contract, dispatch = _seed_new_protocol(loop, tmp_path, key="h1h-answer-source")
+            opener = await _open_planner_round(loop, mission, dispatch, ordinal=1)
+            PlanningAuthorizationApi(loop.store, tenant_id=mission.tenant_id,
+                                     principal=Principal(loop._owner)).issue(
+                mission.id, command_id="grant-h1h-answer-source", request_id=opener.intent_id)
+            body = json.loads((_FIXTURES / "declare-blocked.json").read_text(encoding="utf-8"))
+            body["subject_key"] = opener.config["planning_package"]["planning_subjects"][0]["subject_key"]
+            body["payload"]["blockers"] = [{"code": "OTHER", "detail": "工作区里没有 data/sales.csv，无法汇总"}]
+            reply = serialize_planning_decision(PlanningDecisionEnvelopeV1.from_json(body))
+            if dispatch.goals_needing_method(mission.id):
+                pytest.skip("this seed routes the goal to method synthesis")
+            await loop._collect_plan_decision(opener, object(), mission, reply, dispatch)
+            question = PlanningHumanStore(loop.store).list(mission.id)[0]
+
+            data = "month,region,amount\n2026-07,华东,120\n2026-08,华北,98"
+            call = dict(tenant_id=mission.tenant_id, principal=Principal(loop._owner),
+                        decision_id=question["decision_id"], answer=data,
+                        expected_version=question["version"], nonce="n-src", attach_as_source=True)
+            receipt = answer_planning_question(loop, **call)
+
+            path = answer_source_path("sources/", question["decision_id"])
+            assert receipt["source"]["path"] == path
+            sources = {s["path"]: s for s in loop.store.list_sources(mission.id, active_only=True)}
+            assert sources[path]["version_hash"] == receipt["source"]["version_hash"]
+            assert sources[path]["trust"] == "untrusted_external"
+            assert len(_events(loop, mission.id, "SourceRegistered")) == 1
+            assert _events(loop, mission.id, "PlanningHumanAnswered")
+            note = [e for e in _events(loop, mission.id, "HumanCommentAdded")
+                    if e.payload.get("target_id") == mission.id][0]
+            assert path in note.payload["text"] and "2026-07,华东,120" in note.payload["text"]
+            # 下一次派发冻结的就是现行资料：这份文件在里面，执行者原样重试时直接挂载
+            assert loop._active_source_binding(mission.id)["source_versions"][path] == receipt["source"]["version_hash"]
+
+            # 重放同一回答：回答与登记都幂等，不多登记一次
+            assert answer_planning_question(loop, **call) == receipt
+            assert len(_events(loop, mission.id, "SourceRegistered")) == 1
+
+            # 选项式问题的回答是选项键，不能当资料
+            PlanningHumanStore(loop.store).register(
+                decision_id="q-choice", mission_id=mission.id, subject_key=body["subject_key"],
+                payload=RequestHumanDecision("选哪个？", ({"key": "a", "label": "甲"},), True),
+                request_binding=dict(question["request"]["binding"]), next_ordinal=3)
+            with pytest.raises(ContractError, match="choice answer"):
+                answer_planning_question(loop, **{**call, "decision_id": "q-choice", "answer": "a",
+                                                  "expected_version": 0, "nonce": "n-choice"})
+
+    asyncio.run(case())
+
+
 def test_a_blocked_declaration_nobody_can_serve_becomes_a_question_for_the_person(tmp_path: Path) -> None:
     """2026-09-29 真机（收口第 6 项第 3 轮）：执行者报"缺 data/sales.csv"，修复轮里规划器宣告受阻；
     方法本身有效（不会进方法合成），宣告受阻又不产生任何动作，任务以"没有可派发的工作"失败，

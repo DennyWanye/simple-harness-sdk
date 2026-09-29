@@ -343,18 +343,30 @@ class MissionControlV1:
 
     @_native_root
     def answer_planning_question(self, command: Mapping[str, Any]) -> dict[str, Any]:
-        from ..storage.planning_human_store import PlanningHumanStore
-        if set(command) != {"decision_id", "answer", "expected_version", "nonce"}:
-            raise FacadeError("invalid_request", "answer requires decision_id, answer, expected_version and nonce")
+        from .planning_answers import answer_planning_question
+
+        required = {"decision_id", "answer", "expected_version", "nonce"}
+        if (not isinstance(command, Mapping) or not required <= set(command)
+                or set(command) - required - {"attach_as_source"}):
+            raise FacadeError("invalid_request", "answer requires decision_id, answer, expected_version "
+                              "and nonce; attach_as_source is optional")
         if not all(isinstance(command[k], str) for k in ("decision_id", "answer", "nonce")):
             raise FacadeError("invalid_request", "answer fields must be strings")
         if type(command["expected_version"]) is not int:
             raise FacadeError("invalid_request", "expected_version must be an integer")
+        attach = command.get("attach_as_source", False)
+        if type(attach) is not bool:
+            raise FacadeError("invalid_request", "attach_as_source must be a boolean")
         self._clean(command["answer"])
         try:
-            return PlanningHumanStore(self._store).answer(
-                **dict(command), tenant_id=self._tenant, principal=self._principal)
-        except (ValueError, StoreError) as error:
+            return answer_planning_question(
+                self._orchestrator, tenant_id=self._tenant, principal=self._principal,
+                decision_id=command["decision_id"], answer=command["answer"],
+                expected_version=command["expected_version"], nonce=command["nonce"],
+                attach_as_source=attach)
+        except SourceCommitError as error:
+            raise FacadeError(error.code, str(error)) from error
+        except (ValueError, StoreError, ContractError) as error:
             raise FacadeError("invalid_request", str(error)) from error
 
     @_native_root

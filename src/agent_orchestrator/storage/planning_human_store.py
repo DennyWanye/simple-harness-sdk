@@ -99,7 +99,8 @@ class PlanningHumanStore:
             return result
 
     def answer(self, *, decision_id: str, tenant_id: str, principal: Any,
-               answer: str, expected_version: int, nonce: str) -> dict[str, Any]:
+               answer: str, expected_version: int, nonce: str,
+               attached_source_path: str | None = None) -> dict[str, Any]:
         if principal.kind != "human" or not nonce.strip() or not answer.strip() or len(answer) > 12000:
             raise ContractError("human answer requires an authenticated caller, nonce and bounded text")
         from .store import StoreConflict
@@ -131,11 +132,13 @@ class PlanningHumanStore:
             )
             append_hierarchical_event(self.store, "PlanningHumanAnswered", mission.id, key=decision_id,
                 payload={**receipt, "next_ordinal": row["request"]["next_ordinal"]})
-            self._note_answer_for_workers(mission, row, principal, answer, options)
+            self._note_answer_for_workers(mission, row, principal, answer, options,
+                                          attached_source_path)
             return receipt
 
     def _note_answer_for_workers(self, mission: Any, row: dict[str, Any], principal: Any,
-                                 answer: str, options: list[dict[str, Any]]) -> None:
+                                 answer: str, options: list[dict[str, Any]],
+                                 attached_source_path: str | None = None) -> None:
         """The answer is also a mission-level human note, so every later Attempt sees it.
 
         2026-09-29 真机（收口第 6 项第 4 轮）：用户在回答里给了缺的数据，但回答只进规划器；
@@ -150,6 +153,9 @@ class PlanningHumanStore:
         question = row["request"]["payload"]["question"]
         text = (f"用户回答了规划问题（任务补充资料或决定）。\n问：{question}\n"
                 f"答：{answer if chosen is None else f'{chosen}（{answer}）'}")
+        if attached_source_path:
+            # 架构方案 C（2026-09-30）：回答同时登记成任务资料，下一次尝试自动挂载。
+            text += f"\n（这份回答已作为资料附上：{attached_source_path}，执行者可以直接读取）"
         key = f"HumanCommentAdded:{mission.id}:planning-answer:{row['decision_id']}"
         self.store.append_event(Event(
             id=ids.event_id(key), type="HumanCommentAdded", trace_id=ids.trace_id(mission.id),
