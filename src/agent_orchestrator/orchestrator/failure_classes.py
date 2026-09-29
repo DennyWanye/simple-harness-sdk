@@ -85,3 +85,41 @@ def non_model_failures(attempts: Any) -> int:
 
     return sum(1 for attempt in attempts
                if getattr(attempt, "failure", None) and not charges_attempt(attempt.failure))
+
+
+# 2026-09-29：被重启打断的审阅调用（不挂在执行尝试上的审阅：整局最终审查、发布结果审阅）。
+# 审阅协议每个审阅只准调用 2 次；被打断的那次也占一次，第 2 次被打断后审阅就"用完"了，
+# 原来整局只能停下。采集时把"这次调用是被打断的"单独记一条回执（不改已有回执），
+# 用完且第 2 次是被打断的，最终审查就重切一个新审阅包（新审阅、新的 2 次机会）。
+REVIEW_TURN_INTERRUPTED = "AssuranceReviewTurnInterrupted"
+
+
+def review_turn_interrupted(error: Mapping[str, Any] | None) -> bool:
+    """A review call that did not commit because the run was interrupted, not answered badly."""
+    return isinstance(error, Mapping) and str(error.get("error_code", "")) in _INTERRUPTED_TURN_CODES
+
+
+def record_review_interruption(store: Any, *, mission_id: str, review_key: str, ordinal: int,
+                               intent_id: str, error_code: str) -> None:
+    """Once per review call (keyed by its intent); replays write nothing."""
+    from ..contracts.semantic_base import content_hash_of
+
+    receipt_id = "assurance-review-interrupted:" + intent_id
+    if store.get_receipt(receipt_id) is not None:
+        return
+    body = {"mission_id": mission_id, "review_key": review_key, "invocation_ordinal": int(ordinal),
+            "intent_id": intent_id, "error_code": error_code}
+    store.insert_receipt(commit_id=receipt_id, kind=REVIEW_TURN_INTERRUPTED, subject_id=intent_id,
+                         base_version=0, proposal_hash=content_hash_of(body), receipt=body)
+
+
+def review_exhausted_by_interruption(store: Any, review_key: str) -> bool:
+    """The review ran out of calls and its last (second) call was interrupted."""
+    if store.get_receipt("assurance-review-format-exhausted:" + review_key) is None:
+        return False
+    row = store.connection.execute(
+        "SELECT 1 FROM commit_receipts WHERE kind=? AND json_extract(receipt_json,'$.review_key')=? "
+        "AND json_extract(receipt_json,'$.invocation_ordinal')=2 LIMIT 1",
+        (REVIEW_TURN_INTERRUPTED, review_key),
+    ).fetchone()
+    return row is not None

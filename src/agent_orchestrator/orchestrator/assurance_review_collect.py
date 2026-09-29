@@ -22,6 +22,7 @@ from ..verification.reviewer_evidence_tools import (
     record_disclosure_batch,
 )
 from .assurance_review_transport import read_review_invocation_locked
+from .failure_classes import record_review_interruption, review_turn_interrupted
 
 
 async def collect_assurance_review(orchestrator: Any, intent: Any) -> None:
@@ -207,6 +208,12 @@ async def collect_assurance_review(orchestrator: Any, intent: Any) -> None:
                     "parsed_verdict": None if reply is None else reply.verdict,
                 },
             )
+        if classification == "TURN_FAILED" and review_turn_interrupted(result.error):
+            # 2026-09-29：被重启打断的调用单独记一条，不改上面的分类回执。
+            record_review_interruption(
+                store, mission_id=mission.id, review_key=bound["review_key"],
+                ordinal=int(value["ordinal"]), intent_id=intent.intent_id,
+                error_code=str((result.error or {}).get("error_code", "")))
 
 
 def _import_initial_exposure(

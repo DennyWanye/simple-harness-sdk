@@ -745,6 +745,14 @@ class RootReviewCoordinator:
             was = int(recorded.payload.get("scope_epoch", 0))
             if was != int(semantics.epoch(mission_id, self.scope_id)):
                 reasons.append("SCOPE_EPOCH_MOVED")
+        from .assurance_purpose_reviews import purpose_review_key
+        from .failure_classes import review_exhausted_by_interruption
+
+        # 2026-09-29：这个包的审阅两次调用都用完、且第 2 次是被重启打断的——不是审阅员的
+        # 结论。重切一个新包就是新审阅、新的 2 次机会（仍受每版切包次数上限约束）。
+        key = purpose_review_key(str(package.purpose), mission_id, str(package.package_id))
+        if review_exhausted_by_interruption(self.store, key):
+            reasons.append("REVIEW_INTERRUPTED")
         return tuple(reasons)
 
     def state(self, mission_id: str) -> RootReviewState:

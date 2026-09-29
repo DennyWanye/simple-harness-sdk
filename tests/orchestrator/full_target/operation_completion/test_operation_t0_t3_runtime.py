@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 import dataclasses
 import hashlib
@@ -89,7 +91,32 @@ def _submit_review_intent(world, *, subject, role, package_id, extra):
     return world.store.get_intent(intent.intent_id), agent_id, turn_id
 
 
-def test_operation_t0_t3_runs_real_file_publish_and_commits_formal_completion(tmp_path) -> None:
+def _exhaust_by_interruption(world, binding_id: str) -> str:
+    """The outcome review's two calls ran out and the second was interrupted by a restart."""
+    from agent_orchestrator.orchestrator.failure_classes import record_review_interruption
+    from agent_orchestrator.orchestrator.operation_outcomes import outcome_review_key
+
+    key = outcome_review_key(world.mission.id, binding_id)
+    world.store.insert_receipt(
+        commit_id="assurance-review-format-exhausted:" + key, kind="AssuranceReviewFormatExhausted",
+        subject_id=key, base_version=0, proposal_hash="0" * 64,
+        receipt={"mission_id": world.mission.id, "review_key": key, "classification_ref": {},
+                 "reason": "REVIEW_TURN_RETRY_EXHAUSTED"})
+    record_review_interruption(world.store, mission_id=world.mission.id, review_key=key, ordinal=2,
+                               intent_id="intent-" + binding_id, error_code="base_agent_driver_exception")
+    return key
+
+
+@pytest.mark.parametrize("interrupted_first", [False, True])
+def test_operation_t0_t3_runs_real_file_publish_and_commits_formal_completion(
+    tmp_path, interrupted_first: bool
+) -> None:
+    """``interrupted_first``（2026-09-29 真机第七局一类）：这份发布的结果审阅两次调用用完、
+    第 2 次被重启打断——不是审阅员的结论。重审一次：新审阅包、新审阅编号，同一份回执；
+    验收认重审版的清单；重审也用完才算到头（最多多给一次机会）。
+
+    **Mutation**: drop the retake manifest field, or accept only the original manifest at
+    acceptance, or allow a second retake → red."""
     (tmp_path / "published").mkdir()
     publish = FilePublishConnector(tmp_path / "published", tmp_path / "publish-ledger")
     connectors = {"file_publish": publish}
@@ -311,6 +338,29 @@ def test_operation_t0_t3_runs_real_file_publish_and_commits_formal_completion(tm
     )
     with world.store.transaction():
         persist_operation_outcome_review(world.service, prepared, runtime=runtime)
+    if interrupted_first:
+        from agent_orchestrator.orchestrator.operation_outcomes import (
+            outcome_exhaustion_is_final,
+            outcome_retake_due,
+        )
+
+        completion = OperationCompletionStore(world.store)
+        first = prepared
+        first_key = _exhaust_by_interruption(world, first.binding_id)
+        bindings = completion.list_outcome_bindings_for_intent(world.mission.id, submitted["intent_id"])
+        assert outcome_retake_due(world.store, world.mission.id, bindings)
+        assert not outcome_exhaustion_is_final(world.store, world.mission.id, first_key)
+        prepared = prepare_operation_outcome_review(
+            world.store, intent_id=submitted["intent_id"], connectors=connectors,
+            profiles=profiles, retake=True)
+        assert prepared.binding_id != first.binding_id
+        assert prepared.manifest == {**first.manifest, "review_retake": 1}
+        with world.store.transaction():
+            persist_operation_outcome_review(world.service, prepared, runtime=runtime)
+        bindings = completion.list_outcome_bindings_for_intent(world.mission.id, submitted["intent_id"])
+        assert len(bindings) == 2
+        assert not outcome_retake_due(world.store, world.mission.id, bindings), "one retake only"
+        assert not outcome_exhaustion_is_final(world.store, world.mission.id, first_key)
     outcome_dispatch, _, outcome_turn = _submit_review_intent(
         world,
         subject="operation-outcome-review:" + prepared.binding_id,
@@ -370,3 +420,7 @@ def test_operation_t0_t3_runs_real_file_publish_and_commits_formal_completion(tm
     assert replay.acceptance == completion_receipt.acceptance
     assert world.store.list_events(world.mission.id) == events_before
     assert published_path.read_bytes() == body
+    if interrupted_first:
+        # the retake ran out too: now the effect has reached its end, nothing more to wait for
+        _exhaust_by_interruption(world, prepared.binding_id)
+        assert outcome_exhaustion_is_final(world.store, world.mission.id, first_key)

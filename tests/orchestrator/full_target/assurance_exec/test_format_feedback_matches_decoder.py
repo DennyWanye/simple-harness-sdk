@@ -49,7 +49,7 @@ def _exhausted_store(payloads):
     from types import SimpleNamespace
 
     rows = [(json.dumps(p),) for p in payloads]
-    return SimpleNamespace(connection=SimpleNamespace(
+    return SimpleNamespace(get_receipt=lambda receipt_id: None, connection=SimpleNamespace(
         execute=lambda sql, params: SimpleNamespace(fetchall=lambda: list(rows))))
 
 
@@ -70,7 +70,7 @@ def test_a_stop_after_an_unreadable_final_review_says_so():
     final = {"review_key": "assurance-mission-final:k", "reason": "REVIEW_FORMAT_REPAIR_EXHAUSTED"}
     assert Orchestrator._final_review_unreadable_detail(_orch([content, final]), "m1") == {
         "final_review": {"reason": "REVIEW_FORMAT_REPAIR_EXHAUSTED",
-                         "review_key": "assurance-mission-final:k"}}
+                         "review_key": "assurance-mission-final:k", "interrupted": False}}
     assert Orchestrator._final_review_unreadable_detail(_orch([content]), "m1") == {}
 
 
@@ -87,4 +87,4 @@ def test_an_operation_outcome_review_that_ran_out_is_not_a_legal_wait(monkeypatc
     monkeypatch.setattr(scoped, "uses_completion_protocol", lambda store, mission_id: True)
     assert Orchestrator._has_pending_operation_completion(fake, SimpleNamespace(id="m1")) is False
     assert Orchestrator._final_review_unreadable_detail(fake, "m1") == {
-        "operation_outcome_review": outcome}
+        "operation_outcome_review": {**outcome, "interrupted": False}}

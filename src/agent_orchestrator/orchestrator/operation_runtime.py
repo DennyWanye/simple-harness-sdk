@@ -368,6 +368,7 @@ def advance_operation_outcomes(orchestrator: Any, mission_id: str) -> bool:
     from .operation_outcomes import (
         _effect_owner,
         accept_operation_outcome,
+        outcome_retake_due,
         persist_operation_outcome_review,
         prepare_operation_outcome_review,
     )
@@ -397,6 +398,7 @@ def advance_operation_outcomes(orchestrator: Any, mission_id: str) -> bool:
                 if item["document"].completion_scope_id == owner.scope_id
                 and item["document"].spec_hash == spec.content_hash()
             )
+            retake = False
             if current:
                 # An official rejection or failed dispatch is not permission to buy
                 # another verdict. Recovery consumes only the existing accepted one.
@@ -413,12 +415,16 @@ def advance_operation_outcomes(orchestrator: Any, mission_id: str) -> bool:
                             binding_id=existing["binding_id"], service_authority=runtime.service_authority,
                         )
                         return True
-                continue
+                # 2026-09-29：唯一一份审阅被重启打断而用完（不是审阅员的结论）——重审一次。
+                if not outcome_retake_due(store, mission_id, current):
+                    continue
+                retake = True
             prepared = prepare_operation_outcome_review(
                 store,
                 intent_id=row["intent_id"],
                 connectors=runtime.connectors,
                 profiles=runtime.profiles,
+                retake=retake,
             )
             decision = orchestrator._route_service("critic", mission_id)
             config = AgentConfig(

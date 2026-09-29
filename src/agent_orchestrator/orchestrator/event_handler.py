@@ -2650,9 +2650,13 @@ class Orchestrator:
         from .scoped_content_review import uses_completion_protocol
         if not uses_completion_protocol(self.store, mission.id):
             return False
-        if self._exhausted_reviews(mission.id, "assurance-operation-outcome:"):
-            # 2026-09-29 真机第七局：一份发布的结果审阅两次都没做成（第二次被重启打断），
-            # 这项效果永远核不完；再把它当合法等待，任务就一直挂着。交给卡死检测明确停下。
+        from .operation_outcomes import outcome_exhaustion_is_final
+
+        if any(outcome_exhaustion_is_final(self.store, mission.id, item["review_key"])
+               for item in self._exhausted_reviews(mission.id, "assurance-operation-outcome:")):
+            # 2026-09-29 真机第七局：一份发布的结果审阅两次都没做成，这项效果永远核不完；
+            # 再把它当合法等待，任务就一直挂着。交给卡死检测明确停下。被重启打断而用完的
+            # 还有一次重审（outcome_retake_due），重审没用完前仍是合法等待。
             return False
         from ..storage.htn_store import HtnStore
         from .completion_status import read_occurrence_completion
@@ -12903,6 +12907,9 @@ class Orchestrator:
         for prefix, name in (("assurance-mission-final:", "final_review"),
                              ("assurance-operation-outcome:", "operation_outcome_review")):
             found = self._exhausted_reviews(mission_id, prefix)
+            if name == "final_review":
+                # 被打断而用完的最终审查已重切新包（新审阅），不是停止原因。
+                found = [item for item in found if not item["interrupted"]]
             if found:
                 detail[name] = found[0]
         return detail
@@ -12915,12 +12922,15 @@ class Orchestrator:
             "ORDER BY seq",
             (mission_id,),
         ).fetchall()
+        from .failure_classes import review_exhausted_by_interruption
+
         found = []
         for (raw,) in rows:
             payload = json.loads(raw or "{}")
-            if str(payload.get("review_key", "")).startswith(prefix):
-                found.append({"reason": str(payload.get("reason", "")),
-                              "review_key": str(payload.get("review_key", ""))})
+            key = str(payload.get("review_key", ""))
+            if key.startswith(prefix):
+                found.append({"reason": str(payload.get("reason", "")), "review_key": key,
+                              "interrupted": review_exhausted_by_interruption(self.store, key)})
         return found
 
     def _root_review_stop_detail(

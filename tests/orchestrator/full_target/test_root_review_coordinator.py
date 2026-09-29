@@ -1537,3 +1537,67 @@ def test_ready_says_which_half_of_the_question_is_ready(cut: World) -> None:
     assert state.status is RootReviewStatus.READY
     assert "success expression" in state.detail
     assert "commit_goal_resolution" in state.detail
+
+
+def _exhaust_final_review(world: World, package: Any, *, interrupted: bool) -> str:
+    """The final review's two calls ran out; the second was interrupted, or answered badly."""
+    from agent_orchestrator.orchestrator.assurance_purpose_reviews import purpose_review_key
+    from agent_orchestrator.orchestrator.failure_classes import record_review_interruption
+
+    key = purpose_review_key(str(package.purpose), world.mission.id, str(package.package_id))
+    body = {"mission_id": world.mission.id, "review_key": key, "classification_ref": {},
+            "reason": "REVIEW_TURN_RETRY_EXHAUSTED"}
+    world.store.insert_receipt(commit_id="assurance-review-format-exhausted:" + key,
+                               kind="AssuranceReviewFormatExhausted", subject_id=key,
+                               base_version=0, proposal_hash="0" * 64, receipt=body)
+    if interrupted:
+        for _ in range(2):  # a replayed collection writes nothing new
+            record_review_interruption(world.store, mission_id=world.mission.id, review_key=key,
+                                       ordinal=2, intent_id="intent-final-2",
+                                       error_code="base_agent_driver_exception")
+    return key
+
+
+def test_a_final_review_interrupted_out_of_its_calls_is_cut_again(cut: World) -> None:
+    """2026-09-29 真机第七局一类：审阅每个包只准调用 2 次，第 2 次被重启打断后审阅就
+    用完了，整局只能停下。被打断不是审阅员的结论：重切一个新包（新审阅、新的 2 次机会），
+    仍受每版切包上限约束；审阅员答坏两次的照旧不重切。
+
+    **Mutation**: drop the ``REVIEW_INTERRUPTED`` reason → the first assertion goes red;
+    count a badly answered review as interrupted → the last one does."""
+    import inspect
+
+    from agent_orchestrator.orchestrator import assurance_review_collect
+
+    first = coordinator(cut).live_package(cut.mission.id)
+    assert first is not None
+    key = _exhaust_final_review(cut, first, interrupted=True)
+    state = coordinator(cut).state(cut.mission.id)
+    assert state.status is RootReviewStatus.RECUT_REQUIRED
+    assert state.stale_reasons == ("REVIEW_INTERRUPTED",)
+    assert len([r for r in cut.store.connection.execute(
+        "SELECT 1 FROM commit_receipts WHERE kind='AssuranceReviewTurnInterrupted'").fetchall()]) == 1
+    second = coordinator(cut).cut(cut.mission.id, now_ms=NOW_MS + 200_000)
+    assert str(second.package_id) != str(first.package_id)
+    assert coordinator(cut).state(cut.mission.id).stale_reasons == ()
+    assert "REVIEW_INTERRUPTED" in events(cut, ROOT_REVIEW_SUPERSEDED)[-1].payload["reasons"]
+    assert key.startswith("assurance-mission-final:")
+    # the collector records the interruption from the turn's own error code
+    assert "record_review_interruption(" in inspect.getsource(
+        assurance_review_collect.collect_assurance_review)
+
+
+def test_a_final_review_answered_badly_twice_is_not_cut_again(cut: World) -> None:
+    package = coordinator(cut).live_package(cut.mission.id)
+    assert package is not None
+    _exhaust_final_review(cut, package, interrupted=False)
+    assert coordinator(cut).state(cut.mission.id).stale_reasons == ()
+
+
+def test_only_an_interrupted_turn_code_counts_as_interrupted() -> None:
+    from agent_orchestrator.orchestrator.failure_classes import review_turn_interrupted
+
+    assert review_turn_interrupted({"error_code": "base_agent_driver_exception"})
+    assert review_turn_interrupted({"error_code": "react_wall_clock_exceeded"})
+    assert not review_turn_interrupted({"error_code": "react_max_turns_exceeded"})
+    assert not review_turn_interrupted(None)

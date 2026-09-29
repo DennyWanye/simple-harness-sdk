@@ -140,7 +140,7 @@ class OutcomeReviewPreparation:
 
 
 def prepare_operation_outcome_review(
-    store: Store, *, intent_id: str, connectors: Any, profiles: Any
+    store: Store, *, intent_id: str, connectors: Any, profiles: Any, retake: bool = False
 ) -> OutcomeReviewPreparation:
     """Readback outside any write transaction; no connector execution or invented receipts."""
     if store._depth:
@@ -227,6 +227,10 @@ def prepare_operation_outcome_review(
         "receipt_adapter": dict(profile.receipt_adapter),
         "milestone_policy_ref": slot.milestone_policy_ref.to_json(),
     }
+    if retake:
+        # 2026-09-29：上一份审阅被重启打断而用完（见 outcome_retake_due）。只多这一个字段，
+        # 审阅包与审阅编号随之更新，同一份回执换一个新审阅、新的 2 次调用机会。
+        manifest["review_retake"] = 1
     manifest_hash = content_hash_of(manifest)
     binding_id = derive_outcome_binding_id(
         intent_id=intent_id,
@@ -363,8 +367,10 @@ def persist_operation_outcome_review(
                 "OP_OUTCOME_SOURCE_UNAVAILABLE", "immutable receipt conflict"
             )
     htn = HtnStore(store)
+    # 重审版清单另起一个登记号（登记按任务+步骤+登记号唯一；读取都按清单哈希）。
+    retake = ":review-retake" if prepared.manifest.get("review_retake") else ""
     htn.insert_input_manifest(
-        binding.mission_id, owner.task_ref.id, prepared.manifest, request_id=binding.intent_id
+        binding.mission_id, owner.task_ref.id, prepared.manifest, request_id=binding.intent_id + retake
     )
     try:
         existing_package = htn.get_review_package(str(prepared.package.package_id))
@@ -566,7 +572,8 @@ def validate_scoped_outcome_command(
         "covered_handoff_ids": list(binding.covered_handoff_ids),
         "receipt_adapter": dict(profile.receipt_adapter), "milestone_policy_ref": slot.milestone_policy_ref.to_json()}
     producer = store.get_receipt(str(row["producer_receipt_id"]))
-    if (content_hash_of(manifest) != row["source_manifest_hash"]
+    if (row["source_manifest_hash"] not in {content_hash_of(manifest),
+                                            content_hash_of({**manifest, "review_retake": 1})}
         or command.package.binding.input_manifest_hash != row["source_manifest_hash"]
         or command.package.binding.subject_ref != TypedRef(TypedRefKind.OPERATION,
             binding.operation_id, 1, resolved.envelope.content_hash())
@@ -762,3 +769,51 @@ def _accept_operation_outcome(commit: Any, mission_id: str, binding_id: str, can
             },
         )
         return receipt
+
+
+def outcome_review_key(mission_id: str, binding_id: str) -> str:
+    """The review round key of one outcome binding's package."""
+    from .assurance_purpose_reviews import purpose_review_key
+
+    return purpose_review_key("OPERATION_OUTCOME", mission_id, "pkg-" + str(binding_id))
+
+
+def outcome_retake_due(store: Store, mission_id: str, bindings: Any) -> bool:
+    """2026-09-29：这份发布的结果审阅被重启打断而用完，且还没重审过——准备一次重审。
+
+    只在唯一一份审阅、未验收、没有正式结论、两次调用用完且第 2 次是被打断时成立；
+    重审本身再用完就不再重审（最多多给一次机会）。
+    """
+    from .failure_classes import review_exhausted_by_interruption
+
+    items = tuple(bindings)
+    if len(items) != 1:
+        return False
+    only = items[0]
+    if OperationCompletionStore(store).get_acceptance_scope_exact(mission_id, "acc-" + only["binding_id"]):
+        return False
+    if HtnStore(store).official_review_record(only["review_package_id"]) is not None:
+        return False
+    return review_exhausted_by_interruption(store, outcome_review_key(mission_id, only["binding_id"]))
+
+
+def outcome_exhaustion_is_final(store: Store, mission_id: str, review_key: str) -> bool:
+    """Whether an exhausted outcome review ends that effect (no retake left to wait for)."""
+    from .failure_classes import review_exhausted_by_interruption
+
+    if not review_exhausted_by_interruption(store, review_key):
+        return True
+    completion = OperationCompletionStore(store)
+    rows = store.connection.execute(
+        "SELECT binding_id, intent_id FROM operation_outcome_review_bindings WHERE mission_id=?",
+        (mission_id,)).fetchall()
+    intent = next((r[1] for r in rows if outcome_review_key(mission_id, r[0]) == review_key), None)
+    if intent is None:
+        return True
+    siblings = completion.list_outcome_bindings_for_intent(mission_id, intent)
+    if len(siblings) == 1:
+        return not outcome_retake_due(store, mission_id, siblings)
+    # 重审已开：只有重审也用完才算到头（重审自己的记录会单独出现在用完列表里）。
+    exhausted = {r[0] for r in store.connection.execute(
+        "SELECT subject_id FROM commit_receipts WHERE kind='AssuranceReviewFormatExhausted'").fetchall()}
+    return all(outcome_review_key(mission_id, item["binding_id"]) in exhausted for item in siblings)
