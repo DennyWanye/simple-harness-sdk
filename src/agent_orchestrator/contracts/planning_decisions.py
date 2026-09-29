@@ -966,10 +966,15 @@ class PlanningUncertaintyV1:
     @classmethod
     def from_json(cls, value: object, name: str = "uncertainty") -> PlanningUncertaintyV1:
         data = fields_of(value, name, required=("statement", "severity", "affects"))
+        affects = data["affects"]
+        if isinstance(affects, str) and affects.strip():
+            # 只是说明（不作安全判定）：模型写成一段文字时当一条，不让整份提案作废
+            # （2026-09-29 真机；09-26 用户决定"规划器回复宽容"）。
+            affects = [affects]
         return cls(
             statement=data["statement"],
             severity=data["severity"],
-            affects=data["affects"],
+            affects=affects,
         )
 
 

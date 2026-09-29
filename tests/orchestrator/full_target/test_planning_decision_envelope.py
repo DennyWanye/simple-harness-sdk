@@ -286,6 +286,25 @@ def test_uncertainty_severity_decode_path_is_closed() -> None:
         PlanningDecisionEnvelopeV1.from_json(raw)
 
 
+def test_uncertainty_affects_given_as_text_counts_as_one_entry() -> None:
+    """2026-09-29 真机（收口第 6 项）：规划器补救时把 ``uncertainty.affects`` 写成一段文字，
+    整份提案被判"读不懂"，两次格式重试用完、任务失败。不确定性只是说明（不作安全判定），
+    按 09-26 用户决定"规划器回复宽容"：一段文字当一条；类型仍须是文字或文字列表。"""
+
+    raw = _envelope(
+        "REFINE",
+        REFINE_PAYLOAD,
+        uncertainties=[{"statement": "u", "severity": "LOW", "affects": "sales_report.md 的数据来源"}],
+    )
+    decoded = PlanningDecisionEnvelopeV1.from_json(raw)
+    assert [u.affects for u in decoded.uncertainties] == [("sales_report.md 的数据来源",)]
+    for bad in ("", 3, {"a": 1}):
+        with pytest.raises(ContractError):
+            PlanningDecisionEnvelopeV1.from_json(_envelope(
+                "REFINE", REFINE_PAYLOAD,
+                uncertainties=[{"statement": "u", "severity": "LOW", "affects": bad}]))
+
+
 def test_alternative_disposition_decode_path_is_closed() -> None:
     raw = _envelope(
         "REFINE",
