@@ -28,9 +28,10 @@ def source_change_triggers(handler: Any, dispatch: Any, mission: Any, *, seen: s
     """架构方案 B：资料换版本 / 撤销 → 只对**有证据**的受影响对象发一条"证据失效"修复请求。
 
     派发时冻结的 ``source_versions`` 是当时全部现行资料，不是这一步用了哪些，所以：
-    正在跑的尝试按冻结版本判定（它们确实拿着旧挂载）；已通过的结果只按引用（claims 的
-    citations）判定；还没派发的步骤不算（下次派发自动拿新版）。新登记的资料不发请求。
-    影响范围由已有的影响分析沿依赖算到下游；请求以资料事件的幂等键去重。
+    已通过的结果只按引用（claims 的 citations）判定；拿着旧版还在跑的尝试等它跑完再评估
+    （验收会对照当前资料，被拒走普通的验收失败请求）；还没派发的步骤不算（下次派发自动
+    拿新版）。新登记的资料不发请求。影响范围由已有的影响分析沿依赖算到下游；请求以资料
+    事件的幂等键去重。
     """
     from ..contracts.state_machines import TERMINAL_ATTEMPT
 
@@ -48,14 +49,19 @@ def source_change_triggers(handler: Any, dispatch: Any, mission: Any, *, seen: s
         path, old_hash = str(old.get("path") or ""), str(old.get("version_hash") or "")
         revoked = reason == "source_revoked"
         new_hash = None if revoked else next((str(r.get("version_hash")) for r in rows[1:]), None)
-        running: list[str] = []
+        # 拿着旧版跑的尝试：还在跑就**先不评估**——2026-09-30 真机：当轮发请求，规划器只会回 WAIT
+        # 等它跑完，修复轮又拒绝 WAIT，白花两轮次数；它跑完后验收本来就对照当前资料（审阅员按
+        # 现行版本判、引用按当前性判），被拒就走普通的验收失败请求。跑完再评估，把它们记在案。
+        on_old_version: list[str] = []
+        still_running = False
         for task_id in sorted(active_tasks):
             for attempt in store.list_attempts(task_id):
-                if attempt.status in TERMINAL_ATTEMPT:
-                    continue
                 frozen = handler._frozen_source_binding(attempt).get("source_versions", {})
                 if path in frozen and (revoked or str(frozen[path]) == old_hash):
-                    running.append(attempt.id)
+                    on_old_version.append(attempt.id)
+                    still_running |= attempt.status not in TERMINAL_ATTEMPT
+        if still_running:
+            continue
         accepted: list[str] = []
         for result_id, task_id in store.connection.execute(
                 "SELECT result_id, task_id FROM results WHERE mission_id=? AND verification_state='DONE'"
@@ -71,8 +77,8 @@ def source_change_triggers(handler: Any, dispatch: Any, mission: Any, *, seen: s
                 accepted.append(str(result_id))
         detail = {"reason": reason, "path": path, "old_version": old_hash, "new_version": new_hash,
                   "source_event": event.idempotency_key,
-                  "affected": {"running_attempts": running, "accepted_results": accepted}}
-        refs = tuple(running + accepted)
+                  "affected": {"attempts_on_old_version": on_old_version, "accepted_results": accepted}}
+        refs = tuple(accepted)
         if not refs:
             append_hierarchical_event(store, SOURCE_CHANGE_ASSESSED, mission.id, key=source_key,
                                       payload={"source_key": source_key, **detail})

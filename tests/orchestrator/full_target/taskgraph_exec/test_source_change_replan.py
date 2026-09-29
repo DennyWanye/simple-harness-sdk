@@ -31,7 +31,6 @@ from agent_orchestrator.orchestrator.planning_repair_requests import (  # noqa: 
     REQUESTED,
     SOURCE_CHANGE_ASSESSED,
     collect_triggers,
-    pending_requests,
 )
 from agent_orchestrator.testing.fixtures import envelope_step  # noqa: E402
 
@@ -75,44 +74,46 @@ def test_a_superseded_source_reopens_planning_for_the_running_attempt_and_the_sy
             assert loop._frozen_source_binding(attempt)["source_versions"][PATH] == first["version_hash"]
             assert collect_triggers(loop, mission) is False and not _events(loop, mission.id, REQUESTED)
 
-            # 换版本（经一次批准）→ 正在跑、冻结了旧版的尝试是有证据的受影响对象
+            # 换版本（经一次批准）。尝试还在跑：**先不评估**（2026-09-30 真机：当轮发请求，规划器只会
+            # 回 WAIT 等它跑完，修复轮又拒绝 WAIT，白花两轮；跑完后验收本来就对照当前资料）。
             proposal = control.supersede_source({"mission_id": mission.id, "path": PATH, "content": "region,amount\n华东,2\n",
                                                  "kind": "text", "idempotency_key": "sup-data-1",
                                                  "expected_version_hash": first["version_hash"]})
             control.decide(proposal["request_id"], "approve", nonce="approve-sup-1")
             assert _events(loop, mission.id, "SourceSuperseded")
-            assert collect_triggers(loop, mission) is True
-            [request] = _events(loop, mission.id, REQUESTED)
-            assert request.payload["source_key"].startswith("source:")
-            body = request.payload["request"]
-            assert attempt.id in body["trigger_refs"]
-            assert body["context"]["reason"] == "source_superseded"
-            assert body["context"]["old_version"] == first["version_hash"]
-            assert body["context"]["affected"] == {"running_attempts": [attempt.id], "accepted_results": []}
-            assert attempt.task_id in request.payload["impact"]["revalidate"]
-            assert [r["request_id"] for r in pending_requests(loop.store, mission.id)] == [body["request_id"]]
-            # 同一次变更不重复；新登记的资料不发请求
-            collect_triggers(loop, mission)
+            assert collect_triggers(loop, mission) is False
+            assert not _source_requests(loop, mission.id) and not _events(loop, mission.id, SOURCE_CHANGE_ASSESSED)
+            # 新登记的资料不发请求
             control.register_source({"mission_id": mission.id, "path": "sources/extra.md", "content": "extra",
                                      "kind": "markdown", "idempotency_key": "reg-extra-1"})
             collect_triggers(loop, mission)
-            assert len(_source_requests(loop, mission.id)) == 1
+            assert not _source_requests(loop, mission.id)
 
-            # 执行者跑完（这个夹具不做验收，系统消费见 test_root_review_coordinator 的同名用例）
+            # 执行者跑完（这个夹具的脚本执行者不交 claim，验收判 FAIL，走普通的验收失败请求）
             await _run_worker(world)
             assert loop.store.get_attempt(attempt.id).status in TERMINAL_ATTEMPT
-            assert not [e for e in _events(loop, mission.id, ADDRESSED)]
+            collect_triggers(loop, mission)
+            # 现在评估：拿着旧版跑过的尝试记在案，通过的结果没有引用它 → 只记评估、不发资料请求
+            [assessed] = _events(loop, mission.id, SOURCE_CHANGE_ASSESSED)
+            assert assessed.payload["reason"] == "source_superseded"
+            assert assessed.payload["old_version"] == first["version_hash"]
+            assert assessed.payload["affected"] == {"attempts_on_old_version": [attempt.id], "accepted_results": []}
+            assert not _source_requests(loop, mission.id)
+            assert [e.payload["source_key"] for e in _events(loop, mission.id, REQUESTED)] == [
+                "event:" + next(e.idempotency_key for e in _events(loop, mission.id, "VerificationFailed"))]
+            assert not _events(loop, mission.id, ADDRESSED)
+            collect_triggers(loop, mission)
+            assert len(_events(loop, mission.id, SOURCE_CHANGE_ASSESSED)) == 1
 
-            # 跑完后再换一次版本：没有在跑的尝试、通过的结果没有引用它 → 只记评估、不发请求
+            # 跑完后再换一次版本：没有拿着这一版跑过的尝试 → 评估记录为空
             second = control.supersede_source({"mission_id": mission.id, "path": PATH, "content": "region,amount\n华东,3\n",
                                                "kind": "text", "idempotency_key": "sup-data-2",
                                                "expected_version_hash": proposal["version_hash"]})
             control.decide(second["request_id"], "approve", nonce="approve-sup-2")
             collect_triggers(loop, mission)
-            assert len(_source_requests(loop, mission.id)) == 1
-            [assessed] = _events(loop, mission.id, SOURCE_CHANGE_ASSESSED)
-            assert assessed.payload["affected"] == {"running_attempts": [], "accepted_results": []}
-            collect_triggers(loop, mission)
-            assert len(_events(loop, mission.id, SOURCE_CHANGE_ASSESSED)) == 1
+            assert not _source_requests(loop, mission.id)
+            assert [e.payload["affected"] for e in _events(loop, mission.id, SOURCE_CHANGE_ASSESSED)][-1] == {
+                "attempts_on_old_version": [], "accepted_results": []}
+            assert len(_events(loop, mission.id, SOURCE_CHANGE_ASSESSED)) == 2
 
     asyncio.run(case())
