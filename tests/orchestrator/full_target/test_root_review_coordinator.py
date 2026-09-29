@@ -1379,6 +1379,78 @@ def test_mutant_a_parser_that_defaults_to_pass_would_pass_every_malformed_reply(
 # ======================================================================================
 
 
+def test_source_versions_moving_is_its_own_recut_channel(cut: World) -> None:
+    """架构方案 B 前置 1（2026-09-30）：终审此前不看资料版本——带资料的通用任务用旧资料会
+    静默完成。切包时记下现行资料版本集；之后登记 / 换版本 / 撤销任何一份，包就过时。"""
+
+    coordination = coordinator(cut)
+    package = coordination.live_package(cut.mission.id)
+    assert package is not None
+    assert coordination.stale_reasons(cut.mission.id, package) == ()
+    recorded = next(e for e in coordination._cut_events(cut.mission.id)
+                    if e.payload["package_id"] == str(package.package_id))
+    assert recorded.payload["source_versions_hash"]  # a domain with source roots records the set
+    from agent_orchestrator.governance.permissions import Principal as _Principal
+
+    principal = cut.principal if isinstance(cut.principal, _Principal) else _Principal(str(cut.principal))
+    cut.service.register_source(mission_id=cut.mission.id, tenant_id=cut.mission.tenant_id,
+                                principal=principal, path="sources/late.md", content="late",
+                                kind="markdown", idempotency_key="late-source-1")
+    assert coordination.stale_reasons(cut.mission.id, package) == ("SOURCES_MOVED",)
+
+
+def test_the_system_settles_a_repair_request_once_every_affected_leaf_is_reaccepted(tmp_path) -> None:
+    """架构方案 B 前置 2（用户 2026-09-29 决定）：修复请求此前只有计划改动能消费；规划器判断
+    旧贡献不用重做时，请求永远挂着，逼着开新轮直到次数用完。影响范围里没有新增工作、每个受
+    影响的叶子步骤都在请求之后重新验收通过时，系统自己记"已处理"。"""
+
+    from types import SimpleNamespace
+
+    from test_htn_end_to_end import _leaf_task
+
+    from agent_orchestrator.orchestrator.planning_repair_requests import (
+        ADDRESSED,
+        pending_requests,
+        record_request,
+        settle_addressed_requests,
+    )
+
+    world = committed(tmp_path, key="p23c-system-settle", demand=True)
+    world.dispatch.issue_input_witnesses(world.mission.id, world.network(), now_ms=1_000_000)
+    handler = SimpleNamespace(store=world.store)
+    leaf = _leaf_task(world)
+    assert record_request(world.dispatch, world.mission.id, event_type="EvidenceInvalidated",
+                          trigger_refs=(leaf,), source_key="source:test-1",
+                          detail={"reason": "source_superseded", "path": "sources/data.csv"})
+    [request] = pending_requests(world.store, world.mission.id)
+    assert leaf in request["impact"]["revalidate"] and not request["impact"]["new_work"]
+    # 还没有重新验收：不消费
+    assert settle_addressed_requests(handler, world.dispatch, world.mission) is False
+    assert pending_requests(world.store, world.mission.id)
+
+    _accept_every_child(world)  # 叶子与评审步骤都在请求之后真实验收通过
+    completed = {e.task_id for e in world.store.list_events(world.mission.id) if e.type == "AcceptanceCommitted"}
+    assert leaf in completed
+
+    assert settle_addressed_requests(handler, world.dispatch, world.mission) is True
+    [addressed] = [e for e in world.store.list_events(world.mission.id) if e.type == ADDRESSED]
+    assert addressed.payload["decision_type"] == "SYSTEM_REVALIDATED"
+    assert addressed.payload["repair_request_ids"] == [request["request_id"]]
+    assert leaf in addressed.payload["settled_by"]
+    assert pending_requests(world.store, world.mission.id) == []
+    # 幂等：再判一次不再写
+    assert settle_addressed_requests(handler, world.dispatch, world.mission) is False
+
+    # 影响范围里有新增工作的请求，只有计划改动能了结
+    assert record_request(world.dispatch, world.mission.id, event_type="EvidenceInvalidated",
+                          trigger_refs=(leaf,), source_key="source:test-2", detail={"reason": "source_revoked"})
+    [again] = pending_requests(world.store, world.mission.id)
+    if not again["impact"]["new_work"]:
+        # 请求晚于验收：叶子没有在它之后再次通过，不能消费
+        assert settle_addressed_requests(handler, world.dispatch, world.mission) is False
+        assert pending_requests(world.store, world.mission.id)
+
+
 def test_contributions_moving_is_its_own_recut_channel(cut: World) -> None:
     """P2-3: ``CONTRIBUTIONS_MOVED`` had no test — ``REQUIREMENTS_MOVED`` hid it.
 

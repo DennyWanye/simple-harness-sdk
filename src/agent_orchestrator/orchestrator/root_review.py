@@ -673,6 +673,22 @@ class RootReviewCoordinator:
             event for event in self.store.list_events(mission_id) if event.type == ROOT_REVIEW_CUT
         )
 
+    def _source_versions_hash(self, mission_id: str) -> str | None:
+        """The current active source set (path -> version) of the Mission, hashed; None
+        for a domain without source roots."""
+        from ..contracts.semantic_base import content_hash_of
+        from ..verification.evidence_resolver import in_source_roots
+
+        domain = self.commit.domain_for(mission_id)
+        if not domain.source_roots:
+            return None
+        versions = {
+            str(row["path"]): str(row["version_hash"])
+            for row in self.store.list_sources(mission_id, active_only=True)
+            if in_source_roots(row["path"], domain.source_roots)
+        }
+        return content_hash_of(versions)
+
     def superseded_package_ids(self, mission_id: str) -> frozenset[str]:
         """Package ids this coordinator has retired.  A row is never rewritten."""
 
@@ -745,6 +761,11 @@ class RootReviewCoordinator:
             was = int(recorded.payload.get("scope_epoch", 0))
             if was != int(semantics.epoch(mission_id, self.scope_id)):
                 reasons.append("SCOPE_EPOCH_MOVED")
+            # 架构方案 B 前置 1（用户 2026-09-29 决定）：此前终审不看资料版本，带资料的
+            # 通用任务用旧资料会静默完成。切包时记下现行资料的版本集，变了就重切。
+            was_sources = recorded.payload.get("source_versions_hash")
+            if was_sources is not None and was_sources != self._source_versions_hash(mission_id):
+                reasons.append("SOURCES_MOVED")
         from .assurance_purpose_reviews import purpose_review_key
         from .failure_classes import review_exhausted_by_interruption
 
@@ -1000,6 +1021,7 @@ class RootReviewCoordinator:
                 "input_manifest_hash": manifest,
                 "scope_epoch": int(semantics.epoch(mission_id, self.scope_id)),
                 "manager_epoch": int(semantics.epoch(mission_id, self.scope_id)),
+                "source_versions_hash": self._source_versions_hash(mission_id),
                 "superseded": None if previous is None else str(previous.package_id),
                 "recut_reasons": list(state.stale_reasons),
                 "policy_ref": ROOT_REVIEW_POLICY,
