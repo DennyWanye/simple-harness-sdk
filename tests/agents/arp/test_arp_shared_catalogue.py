@@ -225,3 +225,61 @@ def test_the_product_entry_installs_once_shows_every_pool_and_suspends_everywher
             assert item["pools"]["owner"]["usable"] and item["pools"]["member"]["usable"]
 
     asyncio.run(case())
+
+
+def test_a_skill_in_trial_is_usable_only_by_its_own_evaluation_mission_in_every_pool(tmp_path) -> None:
+    """NEXT-TG-1.0 §11 admission evaluation: the evaluation Mission really uses the Skill in
+    TRIAL (SKILL-CATALOGUE §3); any other Mission, an undispatched or expired trial, and a
+    suspension on the owner are refused — in the owner and in a member pool alike."""
+    async def case() -> None:
+        shared = SharedSkillCatalogue(caller=mirror_caller("realm-test"))
+        owner, member = _pools(tmp_path, shared)
+        async with owner, member:
+            revision = import_skill(owner, md_bundle("trial", "试用口令 白鹭。"), command="i1").revision
+            binding = owner.arp.lifecycle.begin_trial(trial_command(owner, revision), caller=trusted_caller(), command_id="t1")
+            shared.sync()
+            assert _state(member, revision.pin) == "TRIAL"
+            owner_session, member_session = await _session(owner, "k-owner"), await _session(member, "k-member")
+            missions = {"owner": "mission-eval", "member": "mission-eval"}
+            owner.arp.skill_use.session_mission = lambda session: missions["owner"]
+            member.arp.skill_use.session_mission = lambda session: missions["member"]
+            # not dispatched yet: nobody may use it
+            assert _code(lambda: _load(owner, owner_session, revision.pin, "c1")) == "SKILL_NOT_ADMITTED"
+            assert _code(lambda: _load(member, member_session, revision.pin, "c1")) == "SKILL_NOT_ADMITTED"
+            evaluation = Pin.from_json(binding["evaluation_ref"])
+            owner.arp.lifecycle.record_evaluation_dispatch(evaluation, mission_id="mission-eval", task_id="root", caller=trusted_caller(), command_id="d1")
+            assert shared.trial_mission_for(revision.pin) == "mission-eval"
+            # its own evaluation Mission: usable in both pools, each records its own use
+            assert _load(owner, owner_session, revision.pin, "c2")["skill_ref"] == revision.pin.to_json()
+            assert _load(member, member_session, revision.pin, "c2")["skill_ref"] == revision.pin.to_json()
+            # another Mission, or a Session without a Mission: refused
+            missions["member"] = "mission-other"
+            assert _code(lambda: _load(member, member_session, revision.pin, "c3")) == "SKILL_NOT_ADMITTED"
+            member.arp.skill_use.session_mission = lambda session: None
+            assert _code(lambda: _load(member, member_session, revision.pin, "c4")) == "SKILL_NOT_ADMITTED"
+            member.arp.skill_use.session_mission = lambda session: missions["member"]
+            missions["member"] = "mission-eval"
+            # a suspension on the owner refuses the next use everywhere, before any mirror
+            owner.arp.lifecycle.transition(lifecycle_command(owner, revision, "SUSPEND", acceptance=None), caller=trusted_caller(), command_id="s1")
+            assert _code(lambda: _load(member, member_session, revision.pin, "c5")) == "SKILL_NOT_ADMITTED"
+            assert _code(lambda: _load(owner, owner_session, revision.pin, "c5")) == "SKILL_NOT_ADMITTED"
+
+    asyncio.run(case())
+
+
+def test_an_expired_trial_is_not_usable_even_by_its_evaluation_mission(tmp_path) -> None:
+    async def case() -> None:
+        now = {"ms": 1_800_000_000_000}
+        owner = build(tmp_path / "owner", ScriptedProvider(["好的。"] * 4), acceptance=AcceptingAssurance(), clock_ms=lambda: now["ms"])
+        async with owner:
+            revision = import_skill(owner, md_bundle("late", "迟到。"), command="i1").revision
+            binding = owner.arp.lifecycle.begin_trial(trial_command(owner, revision), caller=trusted_caller(), command_id="t1")
+            owner.arp.lifecycle.record_evaluation_dispatch(Pin.from_json(binding["evaluation_ref"]), mission_id="mission-eval", task_id="root",
+                                                           caller=trusted_caller(), command_id="d1")
+            session = await _session(owner, "k")
+            owner.arp.skill_use.session_mission = lambda session: "mission-eval"
+            assert _load(owner, session, revision.pin, "c1")["skill_ref"] == revision.pin.to_json()
+            now["ms"] = int(binding["expires_at_ms"]) + 1
+            assert _code(lambda: _load(owner, session, revision.pin, "c2")) == "SKILL_NOT_ADMITTED"
+
+    asyncio.run(case())

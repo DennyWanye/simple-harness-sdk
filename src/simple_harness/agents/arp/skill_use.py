@@ -73,11 +73,35 @@ class SkillUseService:
     # NEXT-TG-1.0 §11: the shared catalogue owner; every use first needs the same pin to be
     # usable there, so one suspension on the owner refuses the next use in every pool.
     authority: Any | None = None
+    # NEXT-TG-1.0 §11 (admission evaluation): a Skill in TRIAL is usable only by a Session
+    # of the evaluation Mission its trial was dispatched to (SKILL-CATALOGUE §3: the
+    # original eval Mission really executes it).  ``trial_mission`` names that Mission for
+    # a pin (the owner's lifecycle, or the shared catalogue owner for a member pool);
+    # ``session_mission`` names a Session's Mission (its recorded MISSION sources).
+    trial_mission: Callable[[Pin], str | None] | None = None
+    session_mission: Callable[[store.SessionRow], str | None] | None = None
 
     # ---- lookups ----------------------------------------------------------------------------
 
-    def usable_skill(self, pin: Pin) -> tuple[cat.RevisionRow, cat.ActivationRow, Mapping[str, Any]]:
-        """An ADMITTED, currently usable Skill with a complete lock, else a named refusal."""
+    def mission_of(self, session: store.SessionRow | None) -> str | None:
+        if session is None:
+            return None
+        if self.session_mission is not None:
+            return self.session_mission(session)
+        from .mission_sources import read_record
+
+        record = read_record(self.uow.database.connection, session.session_id)
+        mission = None if record is None else dict(record.get("sources") or {}).get("mission_id")
+        return mission if isinstance(mission, str) and mission else None
+
+    def trial_session(self, pin: Pin, session: store.SessionRow | None) -> bool:
+        """This Session belongs to the evaluation Mission this pin's current trial names."""
+        mission = self.mission_of(session)
+        return mission is not None and self.trial_mission is not None and self.trial_mission(pin) == mission
+
+    def usable_skill(self, pin: Pin, session: store.SessionRow | None = None) -> tuple[cat.RevisionRow, cat.ActivationRow, Mapping[str, Any]]:
+        """An ADMITTED, currently usable Skill with a complete lock — or a Skill in TRIAL
+        used by its own evaluation Mission — else a named refusal."""
 
         connection = self.catalogue.connection
         revision = cat.resolve_pin(connection, self.catalogue.namespace_id, pin)
@@ -89,13 +113,14 @@ class SkillUseService:
         if activation.state == "QUARANTINED":
             raise ArpError("SKILL_TRIAL_REQUIRED", f"skill {revision.entry_id}@{revision.revision} is quarantined")
         ok, reasons = self.catalogue.usable(activation, now_ms=self.clock_ms())
-        if not ok:
+        trial = not ok and reasons == ["STATE_TRIAL"] and self.trial_session(revision.pin, session)
+        if not ok and not trial:
             raise ArpError("SKILL_NOT_ADMITTED", f"skill {revision.entry_id}@{revision.revision} is not usable: {', '.join(reasons)}", detail={"reasons": reasons})
         lock = self.skills.latest_lock(revision)
         if lock is None or not lock["complete"]:
             raise ArpError("DEPENDENCY_UNRESOLVED", "skill has no complete dependency lock")
         if self.authority is not None:
-            self.authority.require_usable(revision.pin)
+            self.authority.require_usable(revision.pin, trial_mission_id=self.mission_of(session) if trial else None)
         return revision, activation, lock
 
     def _turn_id(self, session: store.SessionRow) -> str:
@@ -152,7 +177,7 @@ class SkillUseService:
 
     def load(self, session: store.SessionRow, *, call_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         value = check("SkillLoadRequest", plain(request))
-        revision, activation, lock = self.usable_skill(Pin.from_json(value["skill_ref"]))
+        revision, activation, lock = self.usable_skill(Pin.from_json(value["skill_ref"]), session)
         turn_id = self._turn_id(session)
         files = self.instruction_files(revision)
         self._budget_gate(session, revision, files)
@@ -224,7 +249,7 @@ class SkillUseService:
 
     def _begin_execute(self, session: store.SessionRow, *, call_id: str, request: Mapping[str, Any]) -> "dict[str, Any] | _PreparedScript":
         value = check("SkillExecutionRequest", plain(request))
-        revision, activation, lock = self.usable_skill(Pin.from_json(value["skill_ref"]))
+        revision, activation, lock = self.usable_skill(Pin.from_json(value["skill_ref"]), session)
         kind = str(revision.body["implementation"]["kind"])
         tool_ref = self._execute_tool_ref()
         self._require_exposed(session, revision)

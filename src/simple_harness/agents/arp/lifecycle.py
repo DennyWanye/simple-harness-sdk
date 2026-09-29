@@ -81,6 +81,18 @@ class SkillLifecycleService:
         ).fetchone()
         return None if raw is None else json.loads(str(raw[0]))
 
+    def trial_mission_for(self, pin: Pin) -> str | None:
+        """NEXT-TG-1.0 §11: the evaluation Mission this pin's current trial binding was
+        dispatched to, while the binding is unexpired; else None (read-only)."""
+        revision = cat.read_revision(self.catalogue.connection, self.catalogue.namespace_id, "SKILL", pin.id, pin.revision)
+        if revision is None or revision.pin != pin:
+            return None
+        binding = self.binding_for(revision)
+        if binding is None or binding.get("skill_ref") != pin.to_json() or int(binding["expires_at_ms"]) < self.clock_ms():
+            return None
+        dispatch = self.dispatch_for(Pin.from_json(binding["evaluation_ref"]))
+        return None if dispatch is None else str(dispatch["mission_id"])
+
     def binding_by_evaluation(self, evaluation: Pin) -> Mapping[str, Any] | None:
         raw = self.catalogue.connection.execute(
             "SELECT body_json FROM arp_skill_evaluations WHERE namespace_id=? AND evaluation_id=? AND revision=? AND content_hash=?",

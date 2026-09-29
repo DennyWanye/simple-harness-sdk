@@ -111,8 +111,16 @@ class SharedSkillCatalogue:
         ok, reasons = service.usable(activation, now_ms=service.clock_ms())
         return {"present": True, "usable": ok, "state": activation.state, "reasons": list(reasons)}
 
-    def require_usable(self, pin: Pin) -> None:
+    def trial_mission_for(self, pin: Pin) -> str | None:
+        """The evaluation Mission the owner's current trial of exactly this pin was
+        dispatched to (None: no current trial, expired, or not dispatched)."""
+        return self._owner_arp().lifecycle.trial_mission_for(pin)
+
+    def require_usable(self, pin: Pin, *, trial_mission_id: str | None = None) -> None:
         view = self.skill_view(pin)
+        if (not view["usable"] and trial_mission_id is not None and view["state"] == "TRIAL"
+                and view["reasons"] == ["STATE_TRIAL"] and self.trial_mission_for(pin) == trial_mission_id):
+            return  # its own evaluation Mission, re-checked on the owner at every use
         if not view["usable"]:
             raise ArpError(
                 "SKILL_NOT_ADMITTED", f"skill {pin.id}@{pin.revision} is not usable in the shared catalogue",

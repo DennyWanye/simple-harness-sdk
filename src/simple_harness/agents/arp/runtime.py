@@ -335,10 +335,12 @@ def build_arp_runtime(
             state.catalogue, state.skills, runtime.uow, arp.clock_ms, ports.clock, policy.approval_ref, str(arp.profile.owner_mode), script_runner=arp.script_runner,
             count=index.count, skill_capacity=skill_capacity, loaded_blocks=lambda session: skill_blocks_for(state, session, count=index.count),
         )
+        state.skill_use.trial_mission = state.lifecycle.trial_mission_for
         if arp.catalogue_authority is not None:
             state.skills.managed_by = arp.catalogue_authority
             state.lifecycle.managed_by = arp.catalogue_authority
             state.skill_use.authority = arp.catalogue_authority
+            state.skill_use.trial_mission = arp.catalogue_authority.trial_mission_for
         state.sessions = SessionLifecycleService(
             runtime=runtime, root=root, index=index, recall=state.recall, access_for=lambda session, turn_id: holder["context"]._access(session, turn_id),
             capture=lambda session, highwater: holder["context"]._capture(session, highwater), release=state.release_session,

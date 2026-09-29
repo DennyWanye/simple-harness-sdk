@@ -22,6 +22,7 @@ from simple_harness.tools import FunctionTool, ToolContext, ToolHandler, ToolOut
 
 from . import store
 from .errors import ArpError
+from .pins import Pin
 from .strict import plain
 from .tools import ArpSessionHistoryTools
 
@@ -129,13 +130,21 @@ class ArpSkillTools:
         resolved = self._resolve(context)
         if resolved is None:
             return self._unbound(context)
-        arp, _session = resolved
+        arp, session = resolved
         command = {"namespace_id": arp.catalogue.namespace_id, "kind": kind, "cursor": arguments.get("cursor"), "limit": int(arguments.get("limit", DEFAULT_PAGE))}
         try:
             page = arp.catalogue.page(command, access_view="MODEL")
         except ArpError as error:
             return self._failure(context, error)
-        return ToolResult.succeeded(cast(CallId, context.call_id), cast(JsonValue, _json(page)))
+        value = _json(page)
+        # NEXT-TG-1.0 §11: a Skill in TRIAL is usable by its own evaluation Mission — say so
+        # to that Mission's Agents (load/execute re-check it at the call).
+        for item in value.get("items", []):
+            if (item.get("kind") == "SKILL" and item.get("state") == "TRIAL" and not item.get("current_usable")
+                    and item.get("reason_codes") == ["STATE_TRIAL"]
+                    and arp.skill_use.trial_session(Pin.from_json(item["definition_ref"]), session)):
+                item["current_usable"], item["reason_codes"] = True, []
+        return ToolResult.succeeded(cast(CallId, context.call_id), cast(JsonValue, value))
 
     async def _skill_discover(self, arguments: dict, context: ToolContext) -> ToolResult:  # type: ignore[type-arg]
         return await self._discover("SKILL", arguments, context)
