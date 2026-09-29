@@ -14230,6 +14230,11 @@ class Orchestrator:
         )
         if operator_tool_limit is not None:
             allowed = tuple(name for name in allowed if name in operator_tool_limit)
+        # NEXT-TG-1.0 §11: Skill tools are served by a native-plane pool's own runtime;
+        # a pool that does not serve them never has them frozen into its request.
+        skill_tools = set(self._config.deployment_policy.skill_tools)
+        if skill_tools and not self.assembled.pool(decision.profile_id).bridge.native_plane:
+            allowed = tuple(name for name in allowed if name not in skill_tools)
         # D6-8: the Attempt's tool-call cap = the deployment's per-turn cap, narrowed by the
         # Task budget's own dimension; it is reserved up front and enforced at the gateway
         tool_cap = self._config.max_tool_calls_per_turn

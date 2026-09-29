@@ -215,9 +215,14 @@ FROZEN_PROMPT_DIGESTS: dict[str, tuple[str, str]] = {
     ),
     # P2.3s+t+u merge: v4 carries t's finding sentence and u's "do not rewrite
     # existing files; put the suggestion in the report".  v3 keeps t's bytes.
-    "WORKER_HIERARCHICAL": (
+    "WORKER_HIERARCHICAL_V4": (
         "worker-hierarchical-v4",
         "d59d78049330d71d8a837f709b7b72003275be3999e36f8c3b20ce2ea6d61c52",
+    ),
+    # NEXT-TG-1.0 §11: v5 = v4 plus the Skill tools and one paragraph on using them.
+    "WORKER_HIERARCHICAL": (
+        "worker-hierarchical-v5",
+        "dc176cf841c8cc3250f2bae1bed554be0f0af909acba86aa17db445996720cbb",
     ),
     # P2.3g: the synthesiser's v1 is what the Grok episode ran on and stays pinnable;
     # v2 spells the codec's field list.  The hierarchical Planner's v3 is frozen for
@@ -377,6 +382,9 @@ def test_the_frozen_digests_cover_the_prompts_this_slice_depends_on() -> None:
     assert "WORKER_HIERARCHICAL_V3" in FROZEN_PROMPT_DIGESTS, (
         "worker-hierarchical-v3 keeps P2.3t's bytes after the P2.3u merge added v4"
     )
+    assert "WORKER_HIERARCHICAL_V4" in FROZEN_PROMPT_DIGESTS, (
+        "worker-hierarchical-v4 keeps its bytes after v5 added the Skill tools"
+    )
     assert {"PLANNER", "CRITIC", "CRITIC_V2"} <= set(FROZEN_PROMPT_DIGESTS)
     assert FROZEN_PROMPT_DIGESTS["WORKER_HIERARCHICAL"][0] == WORKER_HIERARCHICAL_VERSION
     assert WORKER.prompt_version == "worker-v3"
@@ -397,6 +405,7 @@ def test_the_hierarchical_worker_version_is_registered_and_pinnable() -> None:
     assert HIERARCHICAL_WORKER_VERSIONS == frozenset(
         {
             WORKER_HIERARCHICAL_VERSION,
+            "worker-hierarchical-v4",
             "worker-hierarchical-v3",
             "worker-hierarchical-v2",
             "worker-hierarchical-v1",

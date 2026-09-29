@@ -20,6 +20,11 @@ from typing import Any
 from ..contracts.models import STEP2_IMPLEMENTED_LAYERS
 from ..runtime.tool_gateway import TOOL_NAMES
 
+#: NEXT-TG-1.0 §11: the model-side Skill tools a native-plane pool's own runtime serves
+#: (catalogue discovery, instruction load, execution).  They are not gateway tools; a
+#: deployment whose pools serve them declares them in ``skill_tools``.
+SKILL_TOOL_NAMES: tuple[str, ...] = ("skill_discover", "skill_load", "skill_execute")
+
 POLICY_VERSION = "deployment-policy-v1"
 CODE_EXECUTION_MODES = ("off", "sandboxed", "process_only")  # P3.2 plan v3 D2
 
@@ -33,6 +38,9 @@ class DeploymentPolicy:
     are_tools: tuple[str, ...] = field(default=(), kw_only=True)
     domain_tools: tuple[str, ...] = field(default=(), kw_only=True)
     domain_read_only_tools: tuple[str, ...] = field(default=(), kw_only=True)
+    # NEXT-TG-1.0 §11: Skill tools served by this deployment's native-plane pools; a pool
+    # that does not serve them never has them frozen into a request (dispatch narrows).
+    skill_tools: tuple[str, ...] = field(default=(), kw_only=True)
     operator_tool_allowlists: tuple[tuple[str, tuple[str, ...]], ...] = field(default=(), kw_only=True)
     require_operator_tool_policy: bool = field(default=False, kw_only=True)
     denied_path_prefixes: tuple[str, ...] = ()  # workspace paths no Agent may read or write
@@ -85,9 +93,12 @@ class DeploymentPolicy:
             raise ValueError("domain tools cannot replace existing tools")
         if not set(self.domain_read_only_tools) <= set(self.domain_tools):
             raise ValueError("read-only domain tools must be deployed")
+        if not set(self.skill_tools) <= set(SKILL_TOOL_NAMES) or len(set(self.skill_tools)) != len(self.skill_tools):
+            raise ValueError(f"skill tools must be distinct names from {list(SKILL_TOOL_NAMES)}")
         unknown = (
             set(self.allowed_tools) - set(TOOL_NAMES)
             - set(self.agentdojo_tools) - set(self.are_tools) - set(self.domain_tools)
+            - set(self.skill_tools)
         )
         if unknown:
             raise ValueError(f"deployment policy names unknown tools: {sorted(unknown)}")
@@ -116,6 +127,7 @@ class DeploymentPolicy:
             **({"agentdojo_tools": list(self.agentdojo_tools)} if self.agentdojo_tools else {}),
             **({"are_tools": list(self.are_tools)} if self.are_tools else {}),
             **({"domain_tools": list(self.domain_tools), "domain_read_only_tools": list(self.domain_read_only_tools)} if self.domain_tools else {}),
+            **({"skill_tools": list(self.skill_tools)} if self.skill_tools else {}),
             "denied_path_prefixes": list(self.denied_path_prefixes),
             "enabled_connectors": list(self.enabled_connectors),
             **({"enabled_event_operations": list(self.enabled_event_operations)} if self.enabled_event_operations else {}),

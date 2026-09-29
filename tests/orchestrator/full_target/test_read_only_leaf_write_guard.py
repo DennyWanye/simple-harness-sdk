@@ -471,7 +471,7 @@ def test_the_hierarchical_worker_v4_forbids_rewriting_and_v2_is_frozen() -> None
     )
 
     assert WORKER_HIERARCHICAL.prompt_version == WORKER_HIERARCHICAL_VERSION
-    assert WORKER_HIERARCHICAL_VERSION == "worker-hierarchical-v4"
+    assert WORKER_HIERARCHICAL_VERSION == "worker-hierarchical-v5"  # v4 + Skill tools
     v4 = WORKER_HIERARCHICAL.instructions
     v2 = WORKER_HIERARCHICAL_V2.instructions
     for sentence in ("不能改已有文件", "报告里写明建议"):
