@@ -194,3 +194,125 @@ def test_an_acceptance_issued_before_the_dispatch_was_recorded_cannot_admit(tmp_
                 assert activation_of(runtime, revision).state == "TRIAL"
 
     asyncio.run(case())
+
+
+FINAL_REPLY = {"schema_version": 2, "verdict": "ACCEPT", "assessments": [{"criterion_id": "criterion-report", "verdict": "PASS",
+               "evidence_ids": [], "reason": "fixture root review", "limitations": []}], "findings": []}
+
+
+async def _root_resolution(rt):  # type: ignore[no-untyped-def]
+    """The original chain the final-writer seam drives: leaf accept → MISSION_FINAL official
+    record → ``attempt_root_resolution`` → a USABLE ACCEPT certificate for ROOT_RESOLUTION."""
+    from agent_orchestrator.assurance.checks import CriterionPolicy
+    from agent_orchestrator.governance.permissions import Principal
+    from agent_orchestrator.orchestrator.hierarchical_dispatch import HierarchicalDispatch
+    from agent_orchestrator.orchestrator.plan_commits import PlanPrincipal
+    from agent_orchestrator.orchestrator.root_review import RootReviewCoordinator
+    from agent_orchestrator.storage.htn_store import HtnStore
+    from _assured_fixture import TENANT, requirements_ref  # noqa: E402
+
+    import json as _json
+
+    store, commit, mission = rt.store, rt.commit, rt.mission
+    commit._assurance_validity = rt.validity
+    verdict, record = await rt.run_critic()
+    assert verdict.passed
+    rt.record_critic_layer(record)
+    rt.settle_fixture_worker()
+    rt.accept_now()
+    req = HtnStore(store).get_requirements_revision(mission.id, 1)
+    commit.approve_assurance_check_policy(tenant_id=TENANT, mission_id=mission.id, command_id="fixture-mission-final-policy",
+        principal=Principal("fixture-authenticated-user"), requirements_ref=requirements_ref(req),
+        completion_scope=rt.scope_ref, purpose="MISSION_FINAL", candidate_mapping=(CriterionPolicy("criterion-report", "SEMANTIC", ()),))
+    dispatch = HierarchicalDispatch(store, commit)
+    coordinator = RootReviewCoordinator(store, commit, dispatch, scope_id="mission", issued_by="runner-fixture", max_cuts_per_revision=2)
+    package = coordinator.cut(mission.id, now_ms=int(store.now * 1000))
+    rt.provider.script.append(_json.dumps(FINAL_REPLY))
+    assert await rt.orch._ask_root_reviewer(mission, coordinator, package) is True
+    [key] = [r[0] for r in store.connection.execute(
+        "SELECT review_key FROM assurance_review_invocations WHERE mission_id=? AND review_key LIKE ? AND ordinal=1",
+        (mission.id, "assurance-mission-final:%"))]
+    await rt.drive_review(key)
+    outcome = dispatch.attempt_root_resolution(mission.id, principal=PlanPrincipal("fixture-authenticated-user"), command_id="fixture-root-resolution")
+    assert outcome.committed, outcome
+    resolution = HtnStore(store).get_goal_resolution(outcome.resolution_id)
+    [row] = store.connection.execute(
+        "SELECT certificate_id, certificate_hash FROM assurance_use_certificates WHERE mission_id=? AND consumer_kind='ROOT_RESOLUTION'",
+        (mission.id,)).fetchall()
+    return str(resolution.goal_task_id), Pin("acceptance", str(row[0]), 0, str(row[1]))
+
+
+async def _evaluation_world(tmp_path, link):  # type: ignore[no-untyped-def]
+    """One content-only assured Mission and one Skill trial; ``link(lifecycle, evaluation, rt)``
+    records the dispatch before the root resolution exists (None: after it)."""
+    seams = str(SDK_ROOT / "scripts/assurance_seams")
+    if seams not in sys.path:
+        sys.path.insert(0, seams)
+    from _assured_fixture import AssuredRuntime  # noqa: E402
+
+    out: dict = {}
+    async with AssuredRuntime(tmp_path / "assured", [ACCEPT_REPLY], content_only=True) as rt:
+        reader = AssuranceSkillAcceptance(store=rt.store, clock_ms=lambda: int(rt.store.now * 1000),
+                                          root_incarnation=rt.commit._assurance_root_gate.require_execution)
+        runtime = build(tmp_path / "arp", ScriptedProvider([]), acceptance=reader)
+        async with runtime:
+            lifecycle = runtime.arp.lifecycle
+            revision = import_skill(runtime, md_bundle("root-skill"), command="i1").revision
+            binding = lifecycle.begin_trial(trial_command(runtime, revision), caller=trusted_caller(), command_id="t1")
+            evaluation = Pin.from_json(binding["evaluation_ref"])
+            _bind_mission(rt.store, rt.mission.id, evaluation)
+            if link is not None:
+                link(lifecycle, evaluation, rt)
+            goal_task, certificate = await _root_resolution(rt)
+            if link is None:
+                lifecycle.record_evaluation_dispatch(evaluation, mission_id=rt.mission.id, task_id=goal_task, caller=trusted_caller(), command_id="d-late")
+            out.update(goal_task=goal_task, certificate=certificate)
+            try:
+                out["admitted"] = lifecycle.admit(_admit(binding, certificate, revision), caller=trusted_caller(), command_id="a1")
+                out["view"] = reader.verify(binding, certificate)
+            except ArpError as error:
+                out["refused"] = error
+            out["state"] = activation_of(runtime, revision).state
+            other = import_skill(runtime, md_bundle("other-skill"), command="i2").revision
+            other_binding = lifecycle.begin_trial(trial_command(runtime, other), caller=trusted_caller(), command_id="t2")
+            try:
+                lifecycle.admit(_admit(other_binding, certificate, other), caller=trusted_caller(), command_id="a2")
+            except ArpError as error:
+                out["borrowed"] = error
+    return out
+
+
+def _link_root(lifecycle, evaluation, rt):  # type: ignore[no-untyped-def]
+    # the Mission-scope root binding exists from creation (the Host links its fixed
+    # ``desktop-root-<mission>`` the same way, before anything ran)
+    from agent_orchestrator.storage.htn_store import HtnStore
+
+    root = "task-completion-root"  # the fixture world's root task (``_mixed_world``)
+    assert [b for b in HtnStore(rt.store).list_task_semantics(rt.mission.id) if str(b.task_id) == root]  # bound before anything ran
+    lifecycle.record_evaluation_dispatch(evaluation, mission_id=rt.mission.id, task_id=root, caller=trusted_caller(), command_id="d1")
+
+
+def test_a_content_evaluation_is_admitted_through_its_root_resolution(tmp_path) -> None:
+    """NEXT-TG-1.0 §11 (2026-09-29 真机): a content-only evaluation Mission writes no acceptance
+    row for its root task; its whole-Mission pass is the independent final review's
+    ROOT_RESOLUTION certificate.  The evaluation linked to the root task is admitted through
+    exactly that certificate; another evaluation cannot borrow it."""
+    out = asyncio.run(_evaluation_world(tmp_path, _link_root))
+    assert "refused" not in out, out.get("refused") and out["refused"].detail
+    assert out["state"] == "ADMITTED"
+    view = out["view"]
+    assert view["accepted"] is True and view["consumer_kind"] == "ROOT_RESOLUTION" and view["task_id"] == out["goal_task"]
+    assert out["borrowed"].detail["reason"] == "EVALUATION_NOT_DISPATCHED"
+
+
+def test_a_root_resolution_of_another_task_is_refused(tmp_path) -> None:
+    def link_elsewhere(lifecycle, evaluation, rt):  # type: ignore[no-untyped-def]
+        lifecycle.record_evaluation_dispatch(evaluation, mission_id=rt.mission.id, task_id="task-elsewhere", caller=trusted_caller(), command_id="d1")
+
+    out = asyncio.run(_evaluation_world(tmp_path, link_elsewhere))
+    assert out["refused"].detail["reason"] == "TASK_MISMATCH" and out["state"] == "TRIAL"
+
+
+def test_a_root_resolution_issued_before_the_dispatch_was_recorded_cannot_admit(tmp_path) -> None:
+    out = asyncio.run(_evaluation_world(tmp_path, None))
+    assert out["refused"].detail["reason"] == "ACCEPTANCE_BEFORE_DISPATCH" and out["state"] == "TRIAL"

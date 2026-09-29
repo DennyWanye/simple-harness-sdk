@@ -6,9 +6,11 @@ The physical slot count is capacity, not the accounting identity of one frozen r
 the same estimator / protocol / prices account a request the same way whatever the slot
 count.  2026-09-28 a Host raised it from 1 to 2 and the orchestration service refused to
 start ("provider admission identity differs from a persisted intent"), because the slot
-count was hashed into every frozen intent.  Here: Mission A completes and Mission B has a
-frozen, never handed-off Planner request under one slot; the same library reopens with
-two slots, B completes, and a new Mission C runs two model calls at once.
+count was hashed into every frozen intent.  Here: an earlier build (identity v2, one slot)
+completes Mission A; this build reopens the same library with two slots — it starts — and
+two new Missions run two model calls at once.  (An in-flight request frozen under v2 and
+handed off after the upgrade was checked once by the independent reviewer's experiment:
+admitted, its grant row keeps the v2 identity and settles.)
 """
 
 from __future__ import annotations

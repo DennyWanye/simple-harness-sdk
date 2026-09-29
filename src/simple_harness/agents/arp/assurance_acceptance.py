@@ -36,6 +36,7 @@ ASSURANCE_1_1 = "ASSURANCE_1_1"
 USE_CERTIFIED_KIND = "AssuranceUseCertified"
 ACCEPT_PURPOSE = "ACCEPT"
 ACCEPTANCE_CONSUMER = "ACCEPTANCE"
+ROOT_RESOLUTION_CONSUMER = "ROOT_RESOLUTION"
 
 
 def evaluation_mission_key(evaluation: Pin) -> str:
@@ -110,16 +111,28 @@ class AssuranceSkillAcceptance:
             if receipt_body.get("certificate_hash") != str(certificate_hash) or receipt_body.get("mission_id") != str(mission_id):
                 raise ArpError("SOURCE_HASH_CONFLICT", "the certificate receipt names another certificate")
             record_id = str(receipt_body.get("record_id"))
-            acceptance = connection.execute(
-                "SELECT acceptance_id, task_id, validity, accepted_at_ms FROM acceptances WHERE mission_id=? AND review_record_id=?",
-                (str(mission_id), record_id),
-            ).fetchone()
-        if str(purpose) != ACCEPT_PURPOSE or str(consumer_kind) != ACCEPTANCE_CONSUMER:
+            if str(consumer_kind) == ROOT_RESOLUTION_CONSUMER:
+                # NEXT-TG-1.0 §11 (2026-09-29): a content-only evaluation Mission writes no
+                # acceptance row for its root task; its whole-Mission pass is the adopted,
+                # current ACCEPT root resolution the independent final review licensed.
+                resolution = connection.execute(
+                    "SELECT resolution_id, goal_task_id, validity, CAST(created_at*1000 AS INTEGER), verdict, adopted, review_receipt_id"
+                    " FROM goal_resolutions WHERE mission_id=? AND resolution_id=?",
+                    (str(mission_id), str(consumer_id)),
+                ).fetchone()
+                acceptance = None if resolution is None or str(resolution[4]) != "ACCEPT" or not resolution[5] or str(resolution[6]) != record_id \
+                    else resolution[:4]
+            else:
+                acceptance = connection.execute(
+                    "SELECT acceptance_id, task_id, validity, accepted_at_ms FROM acceptances WHERE mission_id=? AND review_record_id=?",
+                    (str(mission_id), record_id),
+                ).fetchone()
+        if str(purpose) != ACCEPT_PURPOSE or str(consumer_kind) not in (ACCEPTANCE_CONSUMER, ROOT_RESOLUTION_CONSUMER):
             raise _incomplete("NOT_AN_ACCEPTANCE_CERTIFICATE", purpose=str(purpose), consumer_kind=str(consumer_kind))
         if str(mission_id) != dispatch["mission_id"]:
             raise _incomplete("MISSION_MISMATCH", certificate_mission_id=str(mission_id), dispatched_mission_id=dispatch["mission_id"])
         if acceptance is None:
-            raise _incomplete("ACCEPTANCE_ROW_MISSING", record_id=record_id)
+            raise _incomplete("ACCEPTANCE_ROW_MISSING", record_id=record_id, consumer_kind=str(consumer_kind))
         acceptance_id, task_id, validity, accepted_at_ms = (str(acceptance[0]), str(acceptance[1]), str(acceptance[2]), int(acceptance[3]))
         if task_id != dispatch["task_id"]:
             raise _incomplete("TASK_MISMATCH", accepted_task_id=task_id, dispatched_task_id=dispatch["task_id"])
@@ -152,6 +165,7 @@ class AssuranceSkillAcceptance:
             "dispatch_recorded_at_ms": recorded_at_ms,
             "record_id": record_id,
             "consumer_id": str(consumer_id),
+            "consumer_kind": str(consumer_kind),
             "certificate_hash": str(certificate_hash),
             "policy_ref": body.get("policy_ref"),
             "issued_at_ms": int(issued_at_ms),
