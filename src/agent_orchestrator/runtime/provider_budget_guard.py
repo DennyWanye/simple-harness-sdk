@@ -126,14 +126,19 @@ def held_guarded_grants(store) -> int:
     ).fetchone()[0])
 
 
+#: Slot counts an earlier build may have frozen into a v2 admission identity.
+LEGACY_SLOT_RANGE = 16
+
+
 class ProviderBudgetCommitAdapter:
     """Narrow accounting writer; shares CommitService's Store and BudgetLedger."""
 
-    def __init__(self, commit, *, owner: str, fingerprint: str) -> None:
+    def __init__(self, commit, *, owner: str, fingerprint: str, accepted: frozenset[str] | None = None) -> None:
         self.commit = commit
         self.store = commit.store
         self.owner = owner
         self.fingerprint = fingerprint
+        self.accepted = frozenset({fingerprint}) if accepted is None else accepted
 
     def _accepted_fragment_manager(self, intent, task) -> bool:
         # A verified fragment completes before Manager can reconnect consumers.
@@ -179,7 +184,7 @@ class ProviderBudgetCommitAdapter:
             raise _deny("provider subject Mission is terminal")
         if intent.state not in {"AGENT_CREATED", "SUBMITTED"}:
             raise _deny("provider dispatch intent is stopped")
-        if intent.config.get("provider_admission_fingerprint") != self.fingerprint:
+        if intent.config.get("provider_admission_fingerprint") not in self.accepted:
             raise _deny("provider admission differs from frozen intent")
         task_id = intent.config.get("task_id")
         lease = intent
@@ -339,34 +344,25 @@ class ProviderBudgetGuard:
         if not 0 < poll_seconds <= 1:
             raise ValueError("provider admission polling must be in (0,1]")
         self.estimator = estimator
-        self.fingerprint = (
-            "provider-budget-admission-v2:"
-            + sha256(
-                canonical_json(
-                    {
-                        "estimator": estimator.fingerprint,
-                        "protocol": estimator.bound_protocol,
-                        "prior_output": estimator.requires_prior_output_reserve,
-                        "max_slots": max_slots,
-                        **(
-                            {"profile_slots": dict(self.profile_slots)}
-                            if self.profile_slots is not None
-                            else {}
-                        ),
-                        "version": 2,
-                        "requires_price": priced,
-                        "prices": None
-                        if self.price_tables is None
-                        else {
-                            key: None if value is None else value.snapshot_json()
-                            for key, value in self.price_tables.items()
-                        },
-                    }
-                ).encode()
-            ).hexdigest()
-        )
+        # NEXT-TG-1.0 §9 多任务并发 (2026-09-29): the physical slot count is capacity, not
+        # how one frozen request is accounted.  v3 leaves it out, so raising the slots
+        # keeps every frozen intent's identity; a request frozen by an earlier build (v2
+        # hashed the slot count in) is the same accounting identity under any slot count.
+        self.fingerprint = self._identity(version=3)
+        self.accepted_fingerprints = frozenset({
+            self.fingerprint,
+            *(
+                self.legacy_fingerprint(max_slots=n, profile_slots=variant)
+                for n in range(1, LEGACY_SLOT_RANGE + 1)
+                for variant in (
+                    None,
+                    None if self.profile_slots is None else dict(self.profile_slots),
+                    None if self.profile_slots is None else {key: n for key in self.profile_slots},
+                )
+            ),
+        })
         self.adapter = ProviderBudgetCommitAdapter(
-            commit, owner=owner, fingerprint=self.fingerprint
+            commit, owner=owner, fingerprint=self.fingerprint, accepted=self.accepted_fingerprints
         )
         self.store = commit.store
         self.poll_seconds = poll_seconds
@@ -399,6 +395,35 @@ class ProviderBudgetGuard:
             raise
         finally:
             self._waiting.pop(record.invocation_id, None)
+
+    def _identity(self, *, version: int, max_slots: int | None = None,
+                  profile_slots: Mapping[str, int] | None = None) -> str:
+        body: dict[str, Any] = {
+            "estimator": self.estimator.fingerprint,
+            "protocol": self.estimator.bound_protocol,
+            "prior_output": self.estimator.requires_prior_output_reserve,
+        }
+        if version == 2:  # the earlier builds' byte order: slots between prior_output and version
+            body["max_slots"] = max_slots
+            if profile_slots is not None:
+                body["profile_slots"] = dict(profile_slots)
+        body.update({
+            "version": version,
+            "requires_price": self.requires_price,
+            "prices": None if self.price_tables is None else {
+                key: None if value is None else value.snapshot_json()
+                for key, value in self.price_tables.items()
+            },
+        })
+        return f"provider-budget-admission-v{version}:" + sha256(canonical_json(body).encode()).hexdigest()
+
+    def legacy_fingerprint(self, *, max_slots: int, profile_slots: Mapping[str, int] | None) -> str:
+        """The v2 identity an earlier build froze for this same accounting under that slot count."""
+        return self._identity(version=2, max_slots=max_slots, profile_slots=profile_slots)
+
+    def accepts(self, fingerprint: object) -> bool:
+        """A frozen request's admission identity is this accounting (any slot count)."""
+        return fingerprint in self.accepted_fingerprints
 
     def waiting_for_slot(self, *, agent_id: str, turn_id: str) -> bool:
         """Actual local waiters only; not a synthetic SDK progress increment."""
@@ -476,6 +501,12 @@ class ProviderBudgetGuard:
                     raise _deny("provider SDK runtime lease is no longer current")
                 intent, reservation = self.adapter.authority(
                     agent_id=binding.agent_id, turn_id=turn.turn_id
+                )
+                # The grant and ticket carry the identity the request was frozen with
+                # (accepted by ``authority``), so every later equality check agrees.
+                ticket = ProviderAdmissionTicket(
+                    ticket.invocation_id, ticket.handoff_ordinal, ticket.wire_fingerprint,
+                    str(intent.config["provider_admission_fingerprint"]),
                 )
                 if (
                     self.profile_slots is not None
@@ -618,7 +649,7 @@ class ProviderBudgetGuard:
                         "agent_id": binding.agent_id,
                         "turn_id": turn.turn_id,
                         "intent_id": intent.intent_id,
-                        "fingerprint": self.fingerprint,
+                        "fingerprint": ticket.authority_fingerprint,
                         "request_hash": record.request_fingerprint,
                         "wire_hash": wire_hash,
                         "public_input_upper": public_input,
@@ -743,7 +774,7 @@ class ProviderBudgetGuard:
                             self.adapter.owner,
                             execution_lease.owner_id,
                             execution_lease.epoch,
-                            self.fingerprint,
+                            ticket.authority_fingerprint,
                             record.request_fingerprint,
                             wire_hash,
                             public_input,
@@ -802,8 +833,8 @@ class ProviderBudgetGuard:
             if cancel.is_cancelled:
                 raise _deny("provider cancelled before handoff", reason_code="cancelled")
             if (
-                ticket.authority_fingerprint != self.fingerprint
-                or row["fingerprint"] != self.fingerprint
+                not self.accepts(ticket.authority_fingerprint)
+                or row["fingerprint"] != ticket.authority_fingerprint
                 or row["wire_hash"] != provider_request_fingerprint(request)
             ):
                 raise _deny("provider wire changed after admission")

@@ -194,9 +194,9 @@ class TaskGraphExecutionImports:
         selected = body["routing_inputs"]["selected_profile"]
         if selected is not None and selected != profile_id:
             raise StoreConflict("TASKGRAPH_EXECUTION_MISSION_PROFILE_CHANGED")
-        guard = self.orchestrator._admission_for(profile_id)
-        fingerprint = None if guard is None else guard.fingerprint
-        if intent_config.get("provider_admission_fingerprint") != fingerprint:
+        from ..runtime.assembly import admission_accepts
+
+        if not admission_accepts(self.orchestrator._admission_for(profile_id), intent_config.get("provider_admission_fingerprint")):
             raise StoreConflict("TASKGRAPH_EXECUTION_PROVIDER_ADMISSION_CHANGED")
         limits = body["resource_limits"]
         tool_limit = limits["max_tool_calls_per_turn"]

@@ -54,10 +54,11 @@ def profile_has_frozen_admission(config, profile_id: str) -> bool | None:
         for (encoded,) in db.execute("SELECT config_json FROM dispatch_intents"):
             frozen = json.loads(encoded)
             if str(frozen.get("runtime_profile_id") or "default") == profile_id:
-                identities.add(frozen.get("provider_admission_fingerprint"))
+                # guarded or not; a guarded pool's identity may change form (v2 → v3)
+                identities.add(frozen.get("provider_admission_fingerprint") is not None)
         if len(identities) > 1:
             raise ValueError("pool has inconsistent frozen provider admission identities")
-        return None if not identities else next(iter(identities)) is not None
+        return None if not identities else next(iter(identities))
 
 
 def held_legacy_slots(store, profile_id=None) -> int:

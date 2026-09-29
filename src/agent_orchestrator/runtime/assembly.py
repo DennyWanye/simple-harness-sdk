@@ -492,6 +492,15 @@ def _bind_context_identity(database: Path, profile: RuntimeProfile) -> None:
             Path(temporary).unlink(missing_ok=True)
 
 
+def admission_accepts(admission: Any, frozen: object) -> bool:
+    """A frozen intent's admission identity against this deployment's admission: none on
+    both sides, or one the guard accepts (the slot count is not part of it)."""
+    if admission is None:
+        return frozen is None
+    accepts = getattr(admission, "accepts", None)
+    return accepts(frozen) if callable(accepts) else frozen == admission.fingerprint
+
+
 def _check_intent_contexts(
     config: OrchestratorConfig, profile: RuntimeProfile, provider_admission: Any = None,
 ) -> None:
@@ -510,10 +519,7 @@ def _check_intent_contexts(
             if str(frozen.get("runtime_profile_id") or DEFAULT_PROFILE) == profile.profile_id:
                 if frozen.get("runtime_context") != profile.context_snapshot():
                     raise ValueError("context identity differs from a persisted dispatch intent")
-                admission_fingerprint = (
-                    None if provider_admission is None else provider_admission.fingerprint
-                )
-                if frozen.get("provider_admission_fingerprint") != admission_fingerprint:
+                if not admission_accepts(provider_admission, frozen.get("provider_admission_fingerprint")):
                     raise ValueError("provider admission identity differs from a persisted intent")
 
 

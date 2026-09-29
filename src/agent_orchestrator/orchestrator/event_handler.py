@@ -789,7 +789,7 @@ class Orchestrator:
                     if len(guards) == 1:
                         return guards[0]
                     frozen = self._frozen_admission_fingerprints(key)
-                    return next((guard for guard in guards if guard.fingerprint in frozen), guards[0])
+                    return next((guard for guard in guards if any(guard.accepts(f) for f in frozen)), guards[0])
 
                 self._provider_admissions = {key: admission_for(key) for key in self._profiles}
                 self._provider_admission = self._provider_admissions[self._default_profile]
@@ -2050,10 +2050,9 @@ class Orchestrator:
         profile = self.assembled.pool(profile_id).profile
         if config.get("runtime_context") != profile.context_snapshot():
             raise ContractError("context identity differs from the frozen dispatch intent")
-        admission = self._admission_for(profile_id)
-        if config.get("provider_admission_fingerprint") != (
-            None if admission is None else admission.fingerprint
-        ):
+        from ..runtime.assembly import admission_accepts
+
+        if not admission_accepts(self._admission_for(profile_id), config.get("provider_admission_fingerprint")):
             raise ContractError(
                 "provider admission identity differs from the frozen dispatch intent"
             )
@@ -5600,6 +5599,7 @@ class Orchestrator:
         schema_feedback: Sequence[str] = (),
         synthesis_round: int = 1,
         review_feedback: Sequence[str] = (),
+        turn_failures: int = 0,
     ) -> DispatchIntent:
         """The MethodSynthesizer's own dispatch (§7.3 source 4, §18.5 C8, §13 v1.4).
 
@@ -5685,6 +5685,7 @@ class Orchestrator:
                 "budget_account": str(ReviewAccount.MISSION_PLANNING),
                 "goal_task_id": str(goal_task_id),
                 "synthesis_round": int(synthesis_round),
+                **({"turn_failures": int(turn_failures)} if turn_failures else {}),
                 **self._service_config(decision),
             },
             reservation=self._reservation(self._config.planner_reserve_tokens, decision.profile_id),
@@ -7502,6 +7503,11 @@ class Orchestrator:
         # the method adopted on revision n-1).  Read off the intent so the record and
         # the retry stay on the round the request was opened for.
         synthesis_round = int(intent.config.get("synthesis_round", 1) or 1)
+        # 2026-09-29: turns that ended without any reply (provider error, timeout,
+        # interruption) before this one — they are not answers and use up no ask
+        # (same grace as the Planner's).  ``answered`` is which real ask this is.
+        turn_failures = int(intent.config.get("turn_failures", 0) or 0)
+        answered = ordinal - turn_failures
         if new_mode is None:
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
@@ -7516,7 +7522,7 @@ class Orchestrator:
             # User decision 2026-09-26: the first ask of a round is held to the
             # one-step-per-file granularity; the re-ask is admitted as written.
             receipt = new_mode.apply_synthesizer_reply(
-                mission.id, text, enforce_granularity=ordinal == 1)
+                mission.id, text, enforce_granularity=answered == 1)
             admitted = bool(receipt.admitted)
             problems = rejection_problems(receipt)
             method_ref = str(receipt.method_ref.method_id)
@@ -7575,7 +7581,9 @@ class Orchestrator:
 
         retry_refused = ""
         exhausted: BudgetExhausted | None = None
-        if feedback is not None and ordinal < MAX_SYNTHESIS_ASKS:
+        no_reply = result.state is not AgentTurnState.COMMITTED
+        forgiven = no_reply and turn_failures < PLANNER_TURN_FAILURE_GRACE
+        if feedback is not None and (answered < MAX_SYNTHESIS_ASKS or forgiven):
             self._settle_intent(intent, "FAILED")
             self._settle_service_if_known(intent.subject_id, mission.id)
             try:
@@ -7588,6 +7596,7 @@ class Orchestrator:
                     # for and carries the root review's findings it was carrying.
                     synthesis_round=synthesis_round,
                     review_feedback=self._carried_review_feedback(intent),
+                    turn_failures=turn_failures + (1 if forgiven else 0),
                 )
             except BudgetExhausted as error:
                 # The second ask reserves on the Mission's planning account like the

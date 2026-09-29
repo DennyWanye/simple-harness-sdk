@@ -741,7 +741,8 @@ def test_the_second_ask_is_opened_before_the_first_is_written_down_and_the_gate_
     assert "if not admitted and rejection_is_correctable(receipt):" in source
     assert "feedback = synthesis_rejection_feedback(receipt)" in source
     assert "record_synthesis_reply_rejected(" in source
-    assert "and ordinal < MAX_SYNTHESIS_ASKS:" in source
+    # 2026-09-29: the bound counts real answers; a turn without a reply is forgiven
+    assert "and (answered < MAX_SYNTHESIS_ASKS or forgiven):" in source
     assert source.count("< MAX_SYNTHESIS_ASKS") == 1, "one bound, one gate"
     # P2-1: the intent is created first; the first-ask record only on success
     assert source.index("await self._create_synthesizer_intent(") < source.index(
@@ -872,3 +873,69 @@ def test_a_synthesizer_turn_that_never_replied_is_asked_once_more(tmp_path):
     assert outcome["synthesis"][0]["admitted"] is True and outcome["synthesis"][0]["asks"] == 2
     assert "没有得到模型回复" in outcome["synth_requests"][1]["schema_feedback"][0]
     assert outcome["committed"], outcome["types"]
+
+
+def _fail_turns(count):
+    """Make the first ``count`` synthesizer turns end without a reply (provider error)."""
+    from dataclasses import replace as _replace
+
+    from simple_harness.agents.contracts import AgentTurnState
+
+    def tweak(loop):
+        original = loop._collect_synthesizer
+        seen = {"n": 0}
+
+        async def collect(intent, result, mission, text):
+            seen["n"] += 1
+            if seen["n"] <= count:
+                result = _replace(result, state=AgentTurnState.FAILED, public_output=None,
+                                  error={"error_code": "provider_protocol_error", "source_kind": "tool_parse"})
+                text = ""
+            return await original(intent, result, mission, text)
+
+        loop._collect_synthesizer = collect
+
+    return tweak
+
+
+def test_synthesizer_turns_without_a_reply_do_not_use_up_its_asks(tmp_path):
+    """2026-09-29 真机（技能评估任务）：方法合成两次都以服务商报错结束（工具调用解析失败），
+    两次询问就此用完、整个任务失败。与规划器一致：没有回复的回合不算一次回答，原地再问，
+    宽限 6 次；第一次真正的回答仍按"第一问"对待。
+
+    **Mutation**: count a turn without a reply as an ask → red (round refused after two)."""
+
+    outcome = _run(
+        tmp_path,
+        key="synth-turn-failed-grace",
+        synthesizer_steps=[
+            method_proposal_step(_corrected().to_json()),
+            method_proposal_step(_corrected().to_json()),
+            method_proposal_step(_corrected().to_json()),
+        ],
+        planner_steps=[
+            "nothing to propose",
+            "still nothing",
+            saturation._adopt(_corrected().method_ref()),
+        ],
+        tweak=_fail_turns(2),
+    )
+    assert [item["block_defect"] for item in outcome["unreadable"]] == ["turn_failed", "turn_failed"], outcome["synthesis"]
+    assert outcome["synthesis"][0]["admitted"] is True, outcome["synthesis"]
+    assert outcome["committed"], outcome["types"]
+    third = [row for row in outcome["synth_intents"] if row[3] == 3]
+    assert third, outcome["synth_intents"]
+
+
+def test_synthesizer_turn_failures_beyond_the_grace_count_again(tmp_path):
+    """The grace is bounded: a provider that stays broken still ends the round."""
+
+    outcome = _run(
+        tmp_path,
+        key="synth-turn-failed-grace-spent",
+        synthesizer_steps=[method_proposal_step(_corrected().to_json()) for _ in range(9)],
+        planner_steps=["nothing to propose", "still nothing", "still nothing"],
+        tweak=_fail_turns(99),
+    )
+    assert outcome["synthesis"] and outcome["synthesis"][0]["admitted"] is False
+    assert max(row[3] for row in outcome["synth_intents"]) == 8  # 6 forgiven + 2 asks

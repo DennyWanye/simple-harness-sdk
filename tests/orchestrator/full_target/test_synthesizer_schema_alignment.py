@@ -547,7 +547,8 @@ def test_a_second_unreadable_reply_concludes_the_round_and_nobody_is_asked_a_thi
 
 def test_the_retry_is_bounded_by_a_constant_read_off_the_intents_ordinal():
     source = inspect.getsource(Orchestrator._collect_synthesizer)
-    assert "and ordinal < MAX_SYNTHESIS_ASKS:" in source
+    # 2026-09-29: the bound counts real answers (a turn without a reply is forgiven)
+    assert "and (answered < MAX_SYNTHESIS_ASKS or forgiven):" in source
     assert "record_synthesis_reply_unreadable(" in source
     assert "feedback = synthesis_schema_feedback(unreadable)" in source
     assert "except SynthesisReplyUnreadable as unreadable:" in source
