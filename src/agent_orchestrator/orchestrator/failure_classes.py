@@ -95,8 +95,19 @@ REVIEW_TURN_INTERRUPTED = "AssuranceReviewTurnInterrupted"
 
 
 def review_turn_interrupted(error: Mapping[str, Any] | None) -> bool:
-    """A review call that did not commit because the run was interrupted, not answered badly."""
-    return isinstance(error, Mapping) and str(error.get("error_code", "")) in _INTERRUPTED_TURN_CODES
+    """A review call that did not commit through no fault of the reviewer.
+
+    Interrupted (restart, wall clock) or the provider failed — the same line
+    ``classify_failure`` draws for an Attempt's turn (INTERRUPTED / INFRA); a
+    reviewer that looped or called tools wrongly stays its own fault.
+    """
+    if not isinstance(error, Mapping):
+        return False
+    code = str(error.get("error_code", ""))
+    if code in _MODEL_TURN_CODES:
+        return False
+    return (code in _INTERRUPTED_TURN_CODES or code.startswith("provider_")
+            or error.get("source_kind") == "tool_parse")
 
 
 def record_review_interruption(store: Any, *, mission_id: str, review_key: str, ordinal: int,

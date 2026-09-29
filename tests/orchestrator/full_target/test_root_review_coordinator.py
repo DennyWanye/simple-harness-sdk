@@ -1599,5 +1599,10 @@ def test_only_an_interrupted_turn_code_counts_as_interrupted() -> None:
 
     assert review_turn_interrupted({"error_code": "base_agent_driver_exception"})
     assert review_turn_interrupted({"error_code": "react_wall_clock_exceeded"})
+    # 2026-09-29 第十五局：审阅调用以服务商协议错误结束（工具调用解析不了）——执行尝试那边
+    # 这类算"服务出错"不扣次数，审阅这边同样不是审阅员的错。
+    assert review_turn_interrupted({"error_code": "provider_protocol_error", "source_kind": "tool_parse"})
+    assert review_turn_interrupted({"error_code": "provider_server_error"})
     assert not review_turn_interrupted({"error_code": "react_max_turns_exceeded"})
+    assert not review_turn_interrupted({"error_code": "invalid_tool_arguments"})
     assert not review_turn_interrupted(None)
